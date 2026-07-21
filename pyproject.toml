@@ -1,0 +1,41 @@
+[project]
+name = "cook_AD"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "jax>=0.4.30",
+    "jaxlib>=0.4.30",
+    "tensorflow-probability>=0.24",
+    "dynamax>=0.1.5",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "matplotlib>=3.9",
+    "seaborn>=0.13",
+]
+
+# Optional appendix track: open-vocab embeddings (EPIC stress test only).
+# Fully torch-free: Flax encoders + Equinox projector + optax. Kept out of the
+# default install so the core stays lean, but there is no PyTorch anywhere.
+[project.optional-dependencies]
+embeddings = [
+    "equinox>=0.11",
+    "transformers[flax]>=4.44",   # Flax encoder variants (FlaxAutoModel); no torch
+    "optax>=0.2",                 # optimizer for the projector triplet-loss loop
+]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.6",
+    "ipykernel>=6.29",
+]
+
+[tool.uv]
+# Pin a resolution strategy; JAX/jaxlib drift is the usual breakage.
+# Add an index/extra here if you need CUDA jaxlib wheels rather than CPU.
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
