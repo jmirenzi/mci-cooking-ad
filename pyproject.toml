@@ -29,6 +29,12 @@ dev = [
     "ipykernel>=6.29",
 ]
 
+# GPU (Linux/WSL2 only -- JAX ships no native Windows CUDA wheels, so this extra
+# cannot resolve on win_amd64; use it from inside WSL2, not the Windows venv).
+gpu = [
+    "jax[cuda12]>=0.4.30",
+]
+
 [tool.uv]
 # Pin a resolution strategy; JAX/jaxlib drift is the usual breakage.
 # Add an index/extra here if you need CUDA jaxlib wheels rather than CPU.
