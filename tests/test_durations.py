@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from cook_ad.hsmm import durations
@@ -37,6 +38,22 @@ def test_survival_matches_reverse_cumsum_of_pmf():
     pmf = jnp.exp(log_pmf)
     reverse_cumsum_survival = jnp.flip(jnp.cumsum(jnp.flip(pmf, axis=-1), axis=-1), axis=-1)
     assert jnp.max(jnp.abs(reverse_cumsum_survival - jnp.exp(log_survival))) < 1e-6
+
+
+def test_cdf_matches_scipy_and_partitions_with_survival():
+    """Left CDF P(D<=d) = betainc(r,d,p) vs scipy.stats.nbinom.cdf(d-1,r,p), plus the exact
+    partition survival(d) + cdf(d) - pmf(d) == 1 (the two tails overlap only at d itself)."""
+    from scipy.stats import nbinom
+
+    r, p = 4.0, 0.3
+    d = jnp.arange(1, 40, dtype=jnp.float64)
+    log_cdf = durations.nb_log_cdf(d, jnp.array(r), jnp.array(p))
+    scipy_cdf = nbinom.cdf(np.asarray(d) - 1, r, p)
+    assert jnp.max(jnp.abs(jnp.exp(log_cdf) - scipy_cdf)) < 1e-9
+
+    surv = jnp.exp(durations.nb_log_survival(d, jnp.array(r), jnp.array(p)))
+    pmf = jnp.exp(durations.nb_log_pmf(d, jnp.array(r), jnp.array(p)))
+    assert jnp.max(jnp.abs(surv + jnp.exp(log_cdf) - pmf - 1.0)) < 1e-9
 
 
 @pytest.mark.parametrize(

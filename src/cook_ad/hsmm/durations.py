@@ -27,6 +27,16 @@ def nb_log_survival(d, r, p):
     return jnp.where(d <= 1.0, 0.0, jnp.log1p(-cdf_part))
 
 
+def nb_log_cdf(d, r, p):
+    """log P(D <= d), the left tail. Same regularized-incomplete-beta identity as
+    nb_log_survival: P(D<=d) = P(D'<=d-1) = I_p(r, d) = betainc(r, d, p) for d>=1 (verified
+    against scipy.stats.nbinom.cdf(d-1, r, p) to machine precision; the second beta shape arg
+    is d itself, always >= 1 on the support, so no d<=1 special-case is needed the way survival
+    needs one). Used for the retrospective 'left too early' temporal channel.
+    """
+    return jnp.log(betainc(r, d, p))
+
+
 def nb_log_hazard(d, r, p):
     """h(d) = P(D=d)/P(D>=d). Guarded: once the fitted tail has genuinely vanished
     (log_survival == -inf), pmf - survival would be -inf - -inf = NaN; return -inf instead.

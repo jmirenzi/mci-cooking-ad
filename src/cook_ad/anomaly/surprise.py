@@ -9,11 +9,19 @@ from cook_ad.anomaly import temporal
 from cook_ad.hsmm import emissions, messages, params
 from cook_ad.recipe import recipe_hmm, segmentize
 
+# Emission/transition channels are raw neg-log-probs; their thresholds are plain nats.
+# The temporal channels (s_temporal / s_dur_two) are -log(tail probability), so a single
+# global threshold -log(alpha) is automatically per-state calibrated (see temporal.py) -- it
+# fires exactly when the duration reaches that state's alpha tail quantile. Not hand-tuned per
+# state; that per-state calibration is precisely the point of the tail-probability framing.
+DEFAULT_ALPHA = 0.05
+
 DEFAULT_THRESHOLDS = {
     "s_emit": 6.0,
     "s_verb": 4.0,
     "s_noun": 4.0,
-    "s_temporal": 4.0,
+    "s_temporal": -float(np.log(DEFAULT_ALPHA)),
+    "s_dur_two": -float(np.log(DEFAULT_ALPHA)),
     "s_transition": 4.0,
     "s_recipe_transition": 4.0,
 }
@@ -25,15 +33,20 @@ class SurpriseTrace(NamedTuple):
     s_emit: np.ndarray               # (T,) observational anomaly, -log P(v,n|Z_t,o_{<t})
     s_verb: np.ndarray               # (T,) verb-isolated channel
     s_noun: np.ndarray                # (T,) noun-isolated channel
-    s_temporal: np.ndarray            # (T,) live hazard-based stall surprise
+    s_temporal: np.ndarray            # (T,) live 'stuck' surprise -log P(D>=d_elapsed), monotone within a segment
+    s_dur_long: np.ndarray            # (T,) retrospective -log P(D>=d), at segment-end ticks (0 elsewhere)
+    s_dur_short: np.ndarray           # (T,) retrospective -log P(D<=d), at segment-end ticks (0 elsewhere)
+    s_dur_two: np.ndarray             # (T,) retrospective two-sided p-value surprise, at segment-end ticks
     s_transition: np.ndarray          # (T,) subtask-transition surprise, 0 except segment starts
     s_recipe_transition: np.ndarray   # (T,) recipe-transition surprise, 0 except segment starts
+    pit: np.ndarray                    # (T,) mid-PIT duration coordinate at segment-end ticks (NaN elsewhere), calibration diagnostic
     z_star: np.ndarray                 # (T,) believed subtask (Viterbi) per tick
     expected_verb: np.ndarray          # (T,) argmax_v P(v|z_star) per tick
     expected_noun: np.ndarray          # (T,) argmax_n P(n|z_star) per tick
     expected_next_state: np.ndarray    # (T,) argmax next subtask at segment starts, -1 elsewhere
     expected_next_recipe: np.ndarray   # (T,) argmax next recipe at segment starts, -1 elsewhere
-    attribution: np.ndarray            # (T,) "item"/"action"/"none" per tick
+    attribution: np.ndarray            # (T,) "item"/"action"/"none" per tick (emission attribution)
+    temporal_attribution: np.ndarray   # (T,) "stuck"/"left_early"/"none" at segment-end ticks
 
 
 def emission_surprise(pi_all, log_emit_v, log_emit_n, verb_ids, noun_ids):
@@ -60,6 +73,19 @@ def attribute(s_verb, s_noun, margin=DEFAULT_ATTRIBUTION_MARGIN):
     labels[(s_noun_np - s_verb_np) > margin] = "item"
     labels[(s_verb_np - s_noun_np) > margin] = "action"
     return labels
+
+
+def _scatter_segment_end(segments, per_segment_values, fill=0.0, dtype=np.float64):
+    """Place one value per segment at that segment's LAST tick (segment-completion events),
+    filling all other ticks with `fill` -- the retrospective/PIT analogue of how
+    transition_surprise places values at segment *start* ticks."""
+    t_true = sum(d for _, d in segments)
+    out = np.full(t_true, fill, dtype=dtype)
+    pos = 0
+    for (state, d), value in zip(segments, per_segment_values):
+        out[pos + d - 1] = value
+        pos += d
+    return out
 
 
 def transition_surprise(segments, log_trans):
@@ -115,12 +141,16 @@ def recipe_transition_surprise(segments, seg_recipe_ids, recipe_log_trans):
     return s_trans, expected_next
 
 
-def flag(trace, thresholds=None):
-    """Per-channel boolean flags from a simple constant/quantile threshold. Rigorous
-    precision/recall tuning against injected error types is Phase 6; this is a diagnostic
-    default, not a calibrated detector."""
-    thresholds = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
-    return {name: np.asarray(getattr(trace, name)) > thresholds[name] for name in DEFAULT_THRESHOLDS}
+def flag(trace, alpha=DEFAULT_ALPHA, thresholds=None):
+    """Per-channel boolean flags. Temporal channels default to the tail-probability threshold
+    -log(alpha) (per-state calibrated); emission/transition channels use raw-nat thresholds.
+    Rigorous precision/recall tuning against injected error types is Phase 6."""
+    resolved = {**DEFAULT_THRESHOLDS}
+    if alpha != DEFAULT_ALPHA:
+        resolved["s_temporal"] = -float(np.log(alpha))
+        resolved["s_dur_two"] = -float(np.log(alpha))
+    resolved.update(thresholds or {})
+    return {name: np.asarray(getattr(trace, name)) > resolved[name] for name in resolved}
 
 
 def compute_trace(hsmm_params, recipe_params, verb_ids, noun_ids, d_max):
@@ -155,8 +185,20 @@ def compute_trace(hsmm_params, recipe_params, verb_ids, noun_ids, d_max):
     expected_verb = np.argmax(log_emit_v_np[z_star], axis=-1)
     expected_noun = np.argmax(log_emit_n_np[z_star], axis=-1)
 
-    s_temporal = temporal.live_stall_surprise(segments, hsmm_params.dur_r, hsmm_params.dur_p, d_max)
+    s_temporal = temporal.live_stall_surprise(segments, log_probs.log_dur_survival, d_max)
     s_transition, expected_next_state = transition_surprise(segments, log_probs.log_trans)
+
+    s_long, s_short, s_two, temporal_attr = temporal.completed_segment_surprise(
+        segments, hsmm_params.dur_r, hsmm_params.dur_p
+    )
+    pit_per_seg = temporal.pit_coordinate(segments, hsmm_params.dur_r, hsmm_params.dur_p)
+    s_dur_long = _scatter_segment_end(segments, s_long)
+    s_dur_short = _scatter_segment_end(segments, s_short)
+    s_dur_two = _scatter_segment_end(segments, s_two)
+    pit = _scatter_segment_end(segments, pit_per_seg, fill=np.nan)
+    temporal_attribution = _scatter_segment_end(
+        segments, temporal_attr, fill="none", dtype=object
+    )
 
     subtask_symbols = [state for state, _ in segments]
     seg_recipe_ids = _segment_recipe_path(recipe_params, subtask_symbols)
@@ -172,12 +214,17 @@ def compute_trace(hsmm_params, recipe_params, verb_ids, noun_ids, d_max):
         s_verb=np.asarray(s_verb),
         s_noun=np.asarray(s_noun),
         s_temporal=s_temporal,
+        s_dur_long=s_dur_long,
+        s_dur_short=s_dur_short,
+        s_dur_two=s_dur_two,
         s_transition=s_transition,
         s_recipe_transition=s_recipe_transition,
+        pit=pit,
         z_star=z_star,
         expected_verb=expected_verb,
         expected_noun=expected_noun,
         expected_next_state=expected_next_state,
         expected_next_recipe=expected_next_recipe,
         attribution=labels,
+        temporal_attribution=temporal_attribution,
     )

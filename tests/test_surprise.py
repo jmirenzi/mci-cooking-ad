@@ -126,25 +126,78 @@ def test_transition_surprise_flags_unexpected_boundary():
     assert expected_next[5] == 0    # state 1 "normally" goes to 0, not the observed 2
 
 
-def test_live_stall_surprise_spikes_past_expected_duration():
+def _survival_table(dur_r, dur_p, d_max):
+    from cook_ad.hsmm import durations
+
+    log_pmf, log_survival = durations.duration_tables(dur_r, dur_p, d_max)
+    return log_survival
+
+
+def test_live_stall_surprise_is_calibrated_survival():
+    """Live signal = -log P(D>=d), so it must (a) rise monotonically within a segment and
+    (b) equal the state's survival surprise column exactly -- the property that makes a single
+    -log(alpha) threshold a per-state tail quantile."""
     dur_r = jnp.array([4.0])
-    dur_p = jnp.array([0.3])  # mean(d') ~= 9.3 ticks
+    dur_p = jnp.array([0.3])
+    d_max = 150
+    log_survival = _survival_table(dur_r, dur_p, d_max)
     segments = [(0, 30)]
 
-    s_temporal = temporal.live_stall_surprise(segments, dur_r, dur_p, d_max=150)
+    s_temporal = temporal.live_stall_surprise(segments, log_survival, d_max)
 
     assert np.all(np.isfinite(s_temporal))
-    assert np.all(np.diff(s_temporal) >= -1e-9)  # monotonically rising as the stall continues
-    assert s_temporal[-1] > 5.0 * s_temporal[2]
+    assert np.all(np.diff(s_temporal) >= -1e-9)
+    assert s_temporal[0] == pytest.approx(0.0, abs=1e-9)  # P(D>=1) = 1
+    np.testing.assert_allclose(s_temporal, -np.asarray(log_survival)[0, :30], atol=1e-9)
 
 
 def test_live_stall_surprise_handles_duration_past_d_max():
     dur_r = jnp.array([4.0])
     dur_p = jnp.array([0.3])
+    d_max = 5
+    log_survival = _survival_table(dur_r, dur_p, d_max)
     segments = [(0, 10)]
 
-    s_temporal = temporal.live_stall_surprise(segments, dur_r, dur_p, d_max=5)
+    s_temporal = temporal.live_stall_surprise(segments, log_survival, d_max)
 
     assert s_temporal.shape[0] == 10
     assert np.all(np.isfinite(s_temporal))
     np.testing.assert_allclose(s_temporal[4:], s_temporal[4])
+
+
+def test_completed_segment_surprise_catches_both_tails():
+    """A normally ~9-tick subtask (r=4,p=0.3): a 1-tick close is 'left_early' (only the
+    retrospective left tail catches it; the live survival signal at d=1 is exactly 0), a
+    40-tick close is 'stuck', and a ~9-tick close is unremarkable on both tails. (A 2-tick
+    close sits at a two-sided p of ~0.061, honestly just above alpha=0.05 and so left
+    unflagged -- the calibration is real, not tuned to always fire.)"""
+    dur_r = jnp.array([4.0])
+    dur_p = jnp.array([0.3])
+
+    s_long, s_short, s_two, attr = temporal.completed_segment_surprise(
+        [(0, 1), (0, 9), (0, 40)], dur_r, dur_p
+    )
+
+    assert attr[0] == "left_early"
+    assert s_short[0] > s_long[0]
+    assert attr[2] == "stuck"
+    assert s_long[2] > s_short[2]
+    assert s_two[1] < s_two[0] and s_two[1] < s_two[2]  # mid duration least surprising
+
+    # single -log(alpha) threshold flags both extremes, not the middle
+    thresh = -np.log(surprise.DEFAULT_ALPHA)
+    assert s_two[0] > thresh and s_two[2] > thresh and s_two[1] < thresh
+
+
+def test_pit_uniform_for_well_fit_durations():
+    """Mid-PIT of durations SAMPLED from the fitted NB should be ~Uniform[0,1] (mean ~0.5):
+    the calibration diagnostic's null. A gross duration-model mismatch would shift the mean."""
+    from scipy.stats import nbinom
+
+    r, p = 6.0, 0.35
+    d_prime = nbinom.rvs(r, p, size=4000, random_state=0)
+    segments = [(0, int(dp) + 1) for dp in d_prime]  # D = D' + 1 on support >= 1
+
+    pit = temporal.pit_coordinate(segments, jnp.array([r]), jnp.array([p]))
+    assert 0.45 < pit.mean() < 0.55
+    assert pit.min() >= 0.0 and pit.max() <= 1.0
