@@ -1,0 +1,26 @@
+tick_seconds: 1.0
+
+vocab:
+  verbs: 15   # 14 real verbs + "stall" (SIL)
+  nouns: 36   # 35 real nouns + "kitchen" (SIL)
+
+k_subtask: 64   # weak-limit nominal; covers 48 actions + 1 SIL/"stall" state + headroom
+k_recipe: 16    # weak-limit nominal; covers 10 known recipes + headroom
+
+duration:
+  d_max_ticks: 200   # ~p99 of segment lengths at 1s ticks; longer segments right-censor into the last bin
+
+em:
+  restarts: 10
+  annealing: false   # deterministic annealing toggle, off by default; flip on if restarts alone don't escape the non-log-concave prior
+
+ambient_gaps:
+  inject_synthetic_gaps: false   # SIL is 7.3% of frames (near-dense) -> skip per spec's audit rule
+  sil_verb: "stall"
+  sil_noun: "kitchen"
+
+data:
+  dataset_root: "dataset/breakfast_actions/segmentation_coarse"
+  fps: 15
+  n_recipes: 10
+  n_unique_trials: 503   # (participant, recipe) pairs; NOT the 1712 file count (camera-view duplicates)
