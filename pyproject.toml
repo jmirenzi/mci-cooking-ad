@@ -5,13 +5,13 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "jax>=0.4.30",
     "jaxlib>=0.4.30",
-    "dynamax>=0.1.5",
     "numpy>=1.26",
     "pandas>=2.2",
     "matplotlib>=3.9",
     "seaborn>=0.13",
     "pyyaml>=6.0",
     "tqdm>=4.66",
+    "scipy>=1.11",
 ]
 
 # Optional appendix track: open-vocab embeddings (EPIC stress test only).
