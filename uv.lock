@@ -216,6 +216,7 @@ dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "pyyaml" },
     { name = "seaborn" },
     { name = "tensorflow-probability" },
 ]
@@ -244,6 +245,7 @@ requires-dist = [
     { name = "optax", marker = "extra == 'embeddings'", specifier = ">=0.2" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "seaborn", specifier = ">=0.13" },
     { name = "tensorflow-probability", specifier = ">=0.24" },
