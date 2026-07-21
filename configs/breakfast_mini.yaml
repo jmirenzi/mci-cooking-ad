@@ -1,0 +1,26 @@
+tick_seconds: 1.0
+
+vocab:
+  verbs: 15   # same global vocab as configs/breakfast.yaml -- only ~6 verbs actually used here
+  nouns: 36   # same global vocab as configs/breakfast.yaml -- only ~10 nouns actually used here
+
+k_subtask: 20   # weak-limit nominal; covers the 13 distinct subtask labels (incl. SIL/"stall") in cereals+coffee+tea + headroom
+k_recipe: 6     # weak-limit nominal; covers the 3 recipes here + headroom
+
+duration:
+  d_max_ticks: 50   # p99 segment length is 44 ticks, max 65, for cereals+coffee+tea -- comfortably covers the real distribution
+
+em:
+  restarts: 10
+  annealing: false
+
+ambient_gaps:
+  inject_synthetic_gaps: false
+  sil_verb: "stall"
+  sil_noun: "kitchen"
+
+data:
+  dataset_root: "dataset/breakfast_actions/segmentation_coarse"
+  fps: 15
+  n_recipes: 3
+  n_unique_trials: 152   # cereals (52) + coffee (49) + tea (51), from dataset/processed/breakfast_mini/
