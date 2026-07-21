@@ -3,6 +3,7 @@ import functools
 import jax
 import jax.numpy as jnp
 import numpy as np
+from tqdm.auto import tqdm
 
 from cook_ad.hsmm import durations, emissions, messages, params
 
@@ -145,6 +146,7 @@ def run_em(
     tol=1e-4,
     annealing=False,
     chunk_size=8,
+    progress=False,
 ):
     """Plain Python loop over restarts (embarrassingly parallel via vmap later if profiling
     says so -- not built up front). Each restart: fresh random init, iterate E/M to
@@ -161,7 +163,9 @@ def run_em(
     best_params, best_loglik = None, -jnp.inf
     history = []
 
-    for restart_key in jax.random.split(key, n_restarts):
+    restart_keys = jax.random.split(key, n_restarts)
+    restart_bar = tqdm(restart_keys, desc="restarts", disable=not progress)
+    for restart_idx, restart_key in enumerate(restart_bar):
         p = params.init_weak_limit_params(
             restart_key,
             k_subtask,
@@ -176,17 +180,24 @@ def run_em(
         prev_loglik = -jnp.inf
         loglik = -jnp.inf
         restart_history = []
-        for iteration in range(max_iters):
+        iter_bar = tqdm(
+            range(max_iters), desc=f"restart {restart_idx + 1}/{n_restarts}", leave=False, disable=not progress
+        )
+        for iteration in iter_bar:
             temperature = _anneal_schedule(iteration) if annealing else 1.0
             stats, loglik = e_step(p, verb_ids, noun_ids, mask, d_max, temperature, chunk_size)
             p = m_step(p, stats, alpha_init, alpha_trans, alpha_emit_v, alpha_emit_n, d_max)
-            restart_history.append(float(loglik))
-            if abs(float(loglik) - float(prev_loglik)) < tol:
+            loglik_value = float(loglik)
+            restart_history.append(loglik_value)
+            iter_bar.set_postfix(loglik=f"{loglik_value:.1f}", temp=f"{temperature:.2f}")
+            if abs(loglik_value - float(prev_loglik)) < tol:
                 break
             prev_loglik = loglik
+        iter_bar.close()
 
         history.append(restart_history)
         if float(loglik) > float(best_loglik):
             best_params, best_loglik = p, loglik
+        restart_bar.set_postfix(best_loglik=f"{float(best_loglik):.1f}")
 
     return best_params, best_loglik, history

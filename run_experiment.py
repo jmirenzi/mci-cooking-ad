@@ -38,6 +38,8 @@ def main():
         max_iters=args.max_iters,
         tol=args.tol,
         annealing=config["em"]["annealing"],
+        chunk_size=config["em"]["chunk_size"],
+        progress=True,
     )
     elapsed = time.time() - start
 

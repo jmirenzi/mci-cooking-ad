@@ -13,6 +13,7 @@ duration:
 em:
   restarts: 10
   annealing: false
+  chunk_size: 8
 
 ambient_gaps:
   inject_synthetic_gaps: false
