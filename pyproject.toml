@@ -5,7 +5,6 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "jax>=0.4.30",
     "jaxlib>=0.4.30",
-    "tensorflow-probability>=0.24",
     "dynamax>=0.1.5",
     "numpy>=1.26",
     "pandas>=2.2",
