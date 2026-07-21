@@ -75,6 +75,59 @@ def forward_pass(loglik, log_init, log_trans, log_dur_pmf, log_dur_survival, mas
     return log_norm, astar_all
 
 
+def predictive_occupancy(loglik, log_init, log_trans, log_dur_pmf, log_dur_survival, mask, d_max):
+    """Live (causal) state-occupancy prior: pi_all[t,:] = log P(Z_t=k | o_{0:t-1}), the belief
+    over the current state *before* seeing tick t's emission -- the weighting anomaly
+    detection needs, since scoring o_t against a distribution that already conditions on o_t
+    would be circular.
+
+    Mirrors forward_pass's window/cumsum recursion exactly (same carry, same window advance
+    using the real astar/aocc computed WITH o_t, so later ticks still benefit from o_t once
+    it's observed) -- the only difference is the extra `pred_terms` computed per step, which
+    reads the cumsum window through t-1 (excludes o_t) and combines it with the survival
+    weight (segment may still be in progress, duration not yet resolved), the same combination
+    forward_pass uses for its own right-censored final-tick normalizer. Row-normalized to a
+    proper log-distribution over k at every t.
+    """
+    T, K = loglik.shape
+    cum_padded, offset = _padded_cumsum(loglik, d_max)
+
+    r_range = jnp.arange(d_max)
+    log_dur_pmf_t = log_dur_pmf.T             # (D,K)
+    log_dur_survival_t = log_dur_survival.T   # (D,K)
+
+    window_init = jnp.concatenate(
+        [log_init[None, :], jnp.full((d_max - 1, K), -jnp.inf, dtype=loglik.dtype)], axis=0
+    )
+
+    def step(window, t):
+        end_val = jax.lax.dynamic_slice_in_dim(cum_padded, offset + t + 1, 1, axis=0)[0]  # (K,)
+        end_val_pred = jax.lax.dynamic_slice_in_dim(cum_padded, offset + t, 1, axis=0)[0]  # (K,)
+        cum_window = jax.lax.dynamic_slice_in_dim(cum_padded, offset + t - d_max + 1, d_max, axis=0)
+        cum_window = jnp.flip(cum_window, axis=0)  # (D,K): Cum[t-r,:]
+
+        valid_r = r_range <= t
+        logL = jnp.where(valid_r[:, None], end_val[None, :] - cum_window, -jnp.inf)
+        logL_pred = jnp.where(valid_r[:, None], end_val_pred[None, :] - cum_window, -jnp.inf)
+
+        pred_terms = window + log_dur_survival_t + logL_pred  # (D,K), excludes o_t
+        pi_unnorm = logsumexp(pred_terms, axis=0)  # (K,)
+        pi_t = pi_unnorm - logsumexp(pi_unnorm)
+
+        astar = logsumexp(window + log_dur_pmf_t + logL, axis=0)
+
+        new_boundary = logsumexp(astar[:, None] + log_trans, axis=0)  # (K,): F(t+1,:)
+        window_next = jnp.concatenate([new_boundary[None, :], window[:-1, :]], axis=0)
+
+        is_real = mask[t]
+        window_next = jnp.where(is_real, window_next, window)
+
+        return window_next, pi_t
+
+    _, pi_all = jax.lax.scan(step, window_init, jnp.arange(T))
+    return pi_all
+
+
 def backward_pass(loglik, log_trans, log_dur_pmf, log_dur_survival, mask, d_max):
     """Mirrored scan, run in reverse (t = T-1 downto 0) via jax.lax.scan(..., reverse=True).
 

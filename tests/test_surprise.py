@@ -1,0 +1,150 @@
+import jax
+import jax.numpy as jnp
+import numpy as np
+import pytest
+from test_messages import _brute_force_segmentations, _brute_force_stats, _random_log_probs
+
+from cook_ad.anomaly import surprise, temporal
+from cook_ad.hsmm import emissions, messages, params
+
+jax.config.update("jax_enable_x64", True)
+
+
+@pytest.mark.parametrize(
+    "t, k, d_max",
+    [
+        (6, 3, 3),
+        (8, 3, 4),
+        (7, 4, 4),
+    ],
+)
+def test_predictive_occupancy_matches_bruteforce(t, k, d_max):
+    """pi_all[t,:] = P(Z_t=k | o_{<t}) is, by construction, equal to the posterior state
+    marginal at the LAST tick of a length-(t+1) prefix whose final tick's emission is
+    zeroed out (no evidence contributed) but whose final segment is still survival-weighted
+    (censored, may continue) -- exactly what the existing brute-force segmentation oracle
+    already computes when given t_true = t+1 and a zeroed final-tick loglik. This lets the
+    from-scratch enumerator (test_messages.py's, unmodified) double as pi_all's oracle too.
+    """
+    rng = np.random.default_rng(1)
+    log_init, log_trans, log_dur_pmf, log_dur_survival = _random_log_probs(rng, k, d_max)
+    loglik_np = rng.standard_normal((t, k)) * 0.4
+    mask_np = np.array([True] * t)
+
+    loglik = jnp.array(loglik_np)
+    mask = jnp.array(mask_np)
+    log_init_j, log_trans_j = jnp.array(log_init), jnp.array(log_trans)
+    log_dur_pmf_j, log_dur_survival_j = jnp.array(log_dur_pmf), jnp.array(log_dur_survival)
+
+    pi_all = messages.predictive_occupancy(
+        loglik, log_init_j, log_trans_j, log_dur_pmf_j, log_dur_survival_j, mask, d_max
+    )
+    pi_all_np = np.exp(np.asarray(pi_all))
+    np.testing.assert_allclose(pi_all_np.sum(axis=-1), 1.0, atol=1e-8)
+
+    for tick in range(t):
+        loglik_mod = loglik_np[: tick + 1].copy()
+        loglik_mod[tick, :] = 0.0
+        segmentations = _brute_force_segmentations(
+            loglik_mod, log_init, log_trans, log_dur_pmf, log_dur_survival, tick + 1, d_max, k
+        )
+        _, _, _, _, bf_gamma = _brute_force_stats(segmentations, tick + 1, d_max, k)
+        np.testing.assert_allclose(pi_all_np[tick], bf_gamma[tick], atol=1e-8)
+
+
+def test_predictive_occupancy_starved_mode_finite():
+    """A near-empty weak-limit mode must stay finite and inert in pi_all, mirroring
+    test_messages.py's test_starved_mode_no_nan for the ordinary forward pass."""
+    k, vocab_verbs, vocab_nouns, d_max, t = 6, 15, 36, 20, 40
+    starved = 0
+
+    key_i, key_t = jax.random.split(jax.random.PRNGKey(3))
+    init_counts = jax.random.uniform(key_i, (k,), minval=5.0, maxval=50.0).at[starved].set(0.0)
+    trans_counts = jax.random.uniform(key_t, (k, k), minval=5.0, maxval=50.0)
+    trans_counts = trans_counts * (1.0 - jnp.eye(k))
+    trans_counts = trans_counts.at[starved, :].set(0.0).at[:, starved].set(0.0)
+
+    verb_counts = jnp.full((k, vocab_verbs), 0.5).at[jnp.arange(1, k), jnp.arange(1, k) % vocab_verbs].set(200.0)
+    verb_counts = verb_counts.at[starved, :].set(0.0)
+    noun_counts = jnp.full((k, vocab_nouns), 0.5).at[jnp.arange(1, k), jnp.arange(1, k) % vocab_nouns].set(200.0)
+    noun_counts = noun_counts.at[starved, :].set(0.0)
+
+    p = params.HSMMParams(
+        init_counts, trans_counts, verb_counts, noun_counts, jnp.full((k,), 5.0), jnp.full((k,), 0.3)
+    )
+    log_probs = params.to_log_probs(p, d_max)
+
+    active_states = jax.random.randint(jax.random.PRNGKey(11), (t,), 1, k)
+    verb_ids, noun_ids = active_states % vocab_verbs, active_states % vocab_nouns
+    mask = jnp.ones((t,), dtype=bool)
+
+    loglik = emissions.sequence_loglik(verb_ids, noun_ids, log_probs.log_emit_v, log_probs.log_emit_n, mask)
+    pi_all = messages.predictive_occupancy(
+        loglik, log_probs.log_init, log_probs.log_trans,
+        log_probs.log_dur_pmf, log_probs.log_dur_survival, mask, d_max,
+    )
+
+    assert jnp.all(jnp.isfinite(pi_all))
+    assert jnp.max(jnp.exp(pi_all[:, starved])) < 1e-6
+
+
+def test_emission_surprise_isolates_item_substitution():
+    """A tiny hand-built model: state 1 strongly expects verb=0 and noun=0. Observing the
+    expected verb but a wildly unexpected noun should give S_noun >> S_verb and attribute
+    the anomaly to the item, not the action."""
+    pi_all = jnp.log(jnp.array([[0.01, 0.99]]))
+    verb_probs = jnp.array([[1 / 3, 1 / 3, 1 / 3], [0.9, 0.05, 0.05]])
+    noun_probs = jnp.array([[1 / 3, 1 / 3, 1 / 3], [0.9, 0.05, 0.05]])
+    log_emit_v, log_emit_n = jnp.log(verb_probs), jnp.log(noun_probs)
+
+    verb_ids = jnp.array([0])   # matches state 1's expectation
+    noun_ids = jnp.array([2])   # far from state 1's expectation
+
+    s_emit, s_verb, s_noun = surprise.emission_surprise(pi_all, log_emit_v, log_emit_n, verb_ids, noun_ids)
+
+    assert float(s_noun[0]) > float(s_verb[0]) + surprise.DEFAULT_ATTRIBUTION_MARGIN
+    labels = surprise.attribute(s_verb, s_noun)
+    assert labels[0] == "item"
+
+
+def test_transition_surprise_flags_unexpected_boundary():
+    trans = np.array([
+        [0.0, 0.9, 0.1],
+        [0.85, 0.0, 0.15],
+        [0.3, 0.3, 0.4],
+    ])
+    log_trans = jnp.log(jnp.array(trans))
+    segments = [(0, 3), (1, 2), (2, 4)]
+
+    s_trans, expected_next = surprise.transition_surprise(segments, log_trans)
+
+    assert expected_next[0] == -1
+    assert s_trans[0] == 0.0
+
+    assert expected_next[3] == 1   # argmax of state 0's row matches the actual next state
+    assert s_trans[5] > s_trans[3]  # 1->2 (prob 0.15) is more surprising than 0->1 (prob 0.9)
+    assert expected_next[5] == 0    # state 1 "normally" goes to 0, not the observed 2
+
+
+def test_live_stall_surprise_spikes_past_expected_duration():
+    dur_r = jnp.array([4.0])
+    dur_p = jnp.array([0.3])  # mean(d') ~= 9.3 ticks
+    segments = [(0, 30)]
+
+    s_temporal = temporal.live_stall_surprise(segments, dur_r, dur_p, d_max=150)
+
+    assert np.all(np.isfinite(s_temporal))
+    assert np.all(np.diff(s_temporal) >= -1e-9)  # monotonically rising as the stall continues
+    assert s_temporal[-1] > 5.0 * s_temporal[2]
+
+
+def test_live_stall_surprise_handles_duration_past_d_max():
+    dur_r = jnp.array([4.0])
+    dur_p = jnp.array([0.3])
+    segments = [(0, 10)]
+
+    s_temporal = temporal.live_stall_surprise(segments, dur_r, dur_p, d_max=5)
+
+    assert s_temporal.shape[0] == 10
+    assert np.all(np.isfinite(s_temporal))
+    np.testing.assert_allclose(s_temporal[4:], s_temporal[4])
