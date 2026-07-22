@@ -153,39 +153,27 @@ def flag(trace, alpha=DEFAULT_ALPHA, thresholds=None):
     return {name: np.asarray(getattr(trace, name)) > resolved[name] for name in resolved}
 
 
-def compute_trace(hsmm_params, recipe_params, verb_ids, noun_ids, d_max):
-    """Driver: single trial (v,n) stream -> a full SurpriseTrace. verb_ids/noun_ids: (T,) int
-    arrays, no padding (mask is all-True; this is a per-trial analysis tool, not a batched
-    training path)."""
-    verb_ids = jnp.asarray(verb_ids)
-    noun_ids = jnp.asarray(noun_ids)
-    t = verb_ids.shape[0]
-    mask = jnp.ones((t,), dtype=bool)
-
-    log_probs = params.to_log_probs(hsmm_params, d_max)
-    loglik = emissions.sequence_loglik(
-        verb_ids, noun_ids, log_probs.log_emit_v, log_probs.log_emit_n, mask
-    )
-    pi_all = messages.predictive_occupancy(
-        loglik, log_probs.log_init, log_probs.log_trans,
-        log_probs.log_dur_pmf, log_probs.log_dur_survival, mask, d_max,
-    )
-    s_emit, s_verb, s_noun = emission_surprise(
-        pi_all, log_probs.log_emit_v, log_probs.log_emit_n, verb_ids, noun_ids
-    )
-
-    seg_result = segmentize.segment_all(
-        hsmm_params, verb_ids[None, :], noun_ids[None, :], mask[None, :], d_max
-    )[0]
+def assemble_trace(hsmm_params, log_probs, recipe_log_trans, pi_all, verb_ids, noun_ids,
+                   seg_result, seg_recipe_ids):
+    """Pure per-trial assembly of a SurpriseTrace from already-computed jax quantities
+    (pi_all, the Viterbi seg_result, and the per-segment recipe ids). Everything here is cheap
+    numpy over one trial's true length -- factored out so both the single-trial `compute_trace`
+    and the batched `eval.batch.compute_traces` reuse the exact same channel logic. pi_all/
+    verb_ids/noun_ids are the trial's true-length (T,) / (T,K) arrays."""
     segments = seg_result["segments"]
     z_star = seg_result["subtask_per_tick"]
+
+    s_emit, s_verb, s_noun = emission_surprise(
+        jnp.asarray(pi_all), log_probs.log_emit_v, log_probs.log_emit_n,
+        jnp.asarray(verb_ids), jnp.asarray(noun_ids),
+    )
 
     log_emit_v_np = np.asarray(log_probs.log_emit_v)
     log_emit_n_np = np.asarray(log_probs.log_emit_n)
     expected_verb = np.argmax(log_emit_v_np[z_star], axis=-1)
     expected_noun = np.argmax(log_emit_n_np[z_star], axis=-1)
 
-    s_temporal = temporal.live_stall_surprise(segments, log_probs.log_dur_survival, d_max)
+    s_temporal = temporal.live_stall_surprise(segments, log_probs.log_dur_survival, log_probs.log_dur_survival.shape[1])
     s_transition, expected_next_state = transition_surprise(segments, log_probs.log_trans)
 
     s_long, s_short, s_two, temporal_attr = temporal.completed_segment_surprise(
@@ -196,18 +184,11 @@ def compute_trace(hsmm_params, recipe_params, verb_ids, noun_ids, d_max):
     s_dur_short = _scatter_segment_end(segments, s_short)
     s_dur_two = _scatter_segment_end(segments, s_two)
     pit = _scatter_segment_end(segments, pit_per_seg, fill=np.nan)
-    temporal_attribution = _scatter_segment_end(
-        segments, temporal_attr, fill="none", dtype=object
-    )
+    temporal_attribution = _scatter_segment_end(segments, temporal_attr, fill="none", dtype=object)
 
-    subtask_symbols = [state for state, _ in segments]
-    seg_recipe_ids = _segment_recipe_path(recipe_params, subtask_symbols)
-    _, recipe_log_trans, _ = recipe_hmm.to_log_probs(recipe_params)
     s_recipe_transition, expected_next_recipe = recipe_transition_surprise(
         segments, seg_recipe_ids, recipe_log_trans
     )
-
-    labels = attribute(s_verb, s_noun)
 
     return SurpriseTrace(
         s_emit=np.asarray(s_emit),
@@ -225,6 +206,33 @@ def compute_trace(hsmm_params, recipe_params, verb_ids, noun_ids, d_max):
         expected_noun=expected_noun,
         expected_next_state=expected_next_state,
         expected_next_recipe=expected_next_recipe,
-        attribution=labels,
+        attribution=attribute(s_verb, s_noun),
         temporal_attribution=temporal_attribution,
     )
+
+
+def compute_trace(hsmm_params, recipe_params, verb_ids, noun_ids, d_max):
+    """Driver: single trial (v,n) stream -> a full SurpriseTrace. verb_ids/noun_ids: (T,) int
+    arrays, no padding (mask is all-True; this is a per-trial analysis tool). For many trials
+    use eval.batch.compute_traces, which batches the jax-heavy ops to avoid per-trial recompiles."""
+    verb_ids = jnp.asarray(verb_ids)
+    noun_ids = jnp.asarray(noun_ids)
+    t = verb_ids.shape[0]
+    mask = jnp.ones((t,), dtype=bool)
+
+    log_probs = params.to_log_probs(hsmm_params, d_max)
+    loglik = emissions.sequence_loglik(
+        verb_ids, noun_ids, log_probs.log_emit_v, log_probs.log_emit_n, mask
+    )
+    pi_all = messages.predictive_occupancy(
+        loglik, log_probs.log_init, log_probs.log_trans,
+        log_probs.log_dur_pmf, log_probs.log_dur_survival, mask, d_max,
+    )
+    seg_result = segmentize.segment_all(
+        hsmm_params, verb_ids[None, :], noun_ids[None, :], mask[None, :], d_max
+    )[0]
+    seg_recipe_ids = _segment_recipe_path(recipe_params, [s for s, _ in seg_result["segments"]])
+    _, recipe_log_trans, _ = recipe_hmm.to_log_probs(recipe_params)
+
+    return assemble_trace(hsmm_params, log_probs, recipe_log_trans, pi_all, verb_ids, noun_ids,
+                          seg_result, seg_recipe_ids)
