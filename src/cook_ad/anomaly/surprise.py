@@ -35,6 +35,27 @@ CHANNELS = (
     "s_emit", "s_verb", "s_noun", "s_temporal", "s_dur_two", "s_transition", "s_recipe_transition",
 )
 
+# s_emit/s_verb/s_noun are computed against the pi_all MIXTURE but compared against a
+# threshold table calibrated for z_star's own SINGLE-state distribution -- an approximation
+# that is only valid when the filtered belief is concentrated on z_star (see belief_diagnostic
+# below). Measured directly on the mini checkpoint: many weak-limit states are near-
+# deterministic (entropy ~= 0), giving them razor-thin per-state thresholds (as low as
+# ~0.002 nats). Gating on belief_concentration does NOT fix this -- confirmed directly: a tick
+# at 99.94% concentration (about as confident as this model ever gets) still produced
+# s_emit=0.0031, comfortably above a 0.002-nat threshold. Any nonzero mixture weight on other
+# states dilutes s_emit past a threshold that tight, regardless of how concentrated pi_all is.
+# EMIT_THRESHOLD_FLOOR clamps each state's per-state quantile threshold up to AT LEAST the
+# ORIGINAL fixed nat value this module replaced (threshold = max(quantile_threshold, floor)).
+# This is deliberately asymmetric: it discards the TIGHTENING half of the calibration fix for
+# peaked/near-deterministic states (exactly the direction that exposed the mixture-mismatch
+# above -- a lower threshold there is what let mixture dilution blow past it), while keeping
+# the LOOSENING half for diffuse states (raising a threshold can only ever reduce flagging, so
+# it carries none of the mixture-mismatch risk regardless of belief concentration). Net effect:
+# peaked states revert to their old, safe fixed-nat behavior; diffuse states still get the
+# intended false-positive reduction the calibration was built for. Not exposed via the public
+# `thresholds` override -- this is an internal robustness floor, not a tunable.
+EMIT_THRESHOLD_FLOOR = {"s_emit": 6.0, "s_verb": 4.0, "s_noun": 4.0}
+
 DEFAULT_ATTRIBUTION_MARGIN = 2.0
 
 
@@ -189,21 +210,26 @@ def _duration_thresholds(alpha, thresholds):
 
 
 def _base_flags(trace, tables, alpha, thresholds):
-    """s_emit/s_verb/s_noun (z_star-indexed), s_temporal/s_dur_two (duration-channel scalars),
-    and s_transition (from_state-indexed, masked to segment-start ticks). Shared by
-    flag()/flag_joint(); each caller adds its own s_recipe_transition, since the cascade
-    indexes it by from_recipe and the joint model repurposes it as a from_state-indexed signed
-    excess (see assemble_trace_joint)."""
+    """s_emit/s_verb/s_noun (z_star-indexed, floored at the original fixed-nat thresholds --
+    see EMIT_THRESHOLD_FLOOR), s_temporal/s_dur_two (duration-channel scalars), and
+    s_transition (from_state-indexed, masked to segment-start ticks). Shared by
+    flag()/flag_joint(); each caller adds its own s_recipe_transition, since the cascade indexes
+    it by from_recipe and the joint model repurposes it as a from_state-indexed signed excess
+    (see assemble_trace_joint)."""
     resolved = _duration_thresholds(alpha, thresholds)
     z = trace.z_star
+
+    emit_thresh = np.maximum(tables.emit[z], EMIT_THRESHOLD_FLOOR["s_emit"])
+    verb_thresh = np.maximum(tables.verb[z], EMIT_THRESHOLD_FLOOR["s_verb"])
+    noun_thresh = np.maximum(tables.noun[z], EMIT_THRESHOLD_FLOOR["s_noun"])
 
     from_state_valid = trace.from_state != -1
     from_state_safe = np.where(from_state_valid, trace.from_state, 0)
 
     return {
-        "s_emit": trace.s_emit > tables.emit[z],
-        "s_verb": trace.s_verb > tables.verb[z],
-        "s_noun": trace.s_noun > tables.noun[z],
+        "s_emit": trace.s_emit > emit_thresh,
+        "s_verb": trace.s_verb > verb_thresh,
+        "s_noun": trace.s_noun > noun_thresh,
         "s_temporal": np.asarray(trace.s_temporal) > resolved["s_temporal"],
         "s_dur_two": np.asarray(trace.s_dur_two) > resolved["s_dur_two"],
         # Boundary mask is load-bearing, not cosmetic: quantile thresholds are not guaranteed
