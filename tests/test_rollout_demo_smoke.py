@@ -1,5 +1,4 @@
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -13,8 +12,11 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_rollout_demo_healthy_scenario_exits_zero():
+    # Invoke via `uv run`, matching this repo's own convention (coding_spec.md), rather than
+    # sys.executable directly -- uv run resolves the project's editable install itself instead
+    # of relying on whatever happens to be cached in site-packages at call time.
     result = subprocess.run(
-        [sys.executable, "run_rollout_demo.py", "--scenario", "healthy", "--no-calibrate"],
+        ["uv", "run", "python", "run_rollout_demo.py", "--scenario", "healthy", "--no-calibrate"],
         cwd=REPO_ROOT, capture_output=True, text=True, timeout=300,
     )
     assert result.returncode == 0, result.stdout + result.stderr
