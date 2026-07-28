@@ -15,8 +15,9 @@ jax.config.update("jax_enable_x64", True)
 
 
 def _flags_for_all(sequences, hsmm_params, recipe_params, d_max):
-    traces = batch.compute_traces(hsmm_params, recipe_params, sequences, d_max)
-    return [surprise.flag(t) for t in traces]
+    traces, log_probs, recipe_log_trans = batch.compute_traces(hsmm_params, recipe_params, sequences, d_max)
+    flags = [surprise.flag(t, log_probs, recipe_log_trans) for t in traces]
+    return flags, traces
 
 
 def _usable(trajectories):
@@ -29,25 +30,33 @@ def evaluate_source(trajectories, hsmm_params, recipe_params, d_max, rng, tag, n
     print(f"\n[{tag}] {len(trajectories)} usable trajectories (>= {error_injection.MIN_SEGMENTS} segments)",
           flush=True)
 
-    healthy_flags = _flags_for_all(trajectories, hsmm_params, recipe_params, d_max)
+    healthy_flags, healthy_traces = _flags_for_all(trajectories, hsmm_params, recipe_params, d_max)
+    all_traces = list(healthy_traces)
 
     degraded_by_type = {}
     degraded_traj_pool = []
     for error_type in error_injection.ERROR_TYPES:
         degraded = [error_injection.inject(error_type, t, rng, hsmm_params) for t in trajectories]
-        flags = _flags_for_all(degraded, hsmm_params, recipe_params, d_max)
+        flags, traces = _flags_for_all(degraded, hsmm_params, recipe_params, d_max)
+        all_traces.extend(traces)
         degraded_by_type[error_type] = list(zip(flags, (d["window"] for d in degraded)))
         degraded_traj_pool.extend(degraded)
         print(f"  [{tag}] {error_type}: evaluated {len(degraded)} degraded trials", flush=True)
 
     report = metrics.evaluate(healthy_flags, degraded_by_type)
     report["kl_sanity"] = metrics.kl_sanity(trajectories, degraded_traj_pool, n_nouns)
+    pooled, per_trial = surprise.belief_diagnostic(all_traces)
+    report["belief_diagnostic"] = {"pooled_frac_below_0.8": pooled, "mean_per_trial_frac_below_0.8": per_trial}
     return report
 
 
 def _flags_for_all_joint(sequences, joint_hsmm_params, d_max):
-    traces = batch.compute_traces_joint(joint_hsmm_params, sequences, d_max)
-    return [surprise.flag(t) for t in traces]
+    traces, log_probs, r_hat, log_trans_marginal = batch.compute_traces_joint(joint_hsmm_params, sequences, d_max)
+    flags = [
+        surprise.flag_joint(t, log_probs, int(r_hat[i]), log_trans_marginal)
+        for i, t in enumerate(traces)
+    ]
+    return flags, traces
 
 
 def evaluate_source_joint(trajectories, joint_hsmm_params, marginal_hsmm_params, d_max, rng, tag, n_nouns):
@@ -61,19 +70,23 @@ def evaluate_source_joint(trajectories, joint_hsmm_params, marginal_hsmm_params,
     print(f"\n[{tag}] {len(trajectories)} usable trajectories (>= {error_injection.MIN_SEGMENTS} segments)",
           flush=True)
 
-    healthy_flags = _flags_for_all_joint(trajectories, joint_hsmm_params, d_max)
+    healthy_flags, healthy_traces = _flags_for_all_joint(trajectories, joint_hsmm_params, d_max)
+    all_traces = list(healthy_traces)
 
     degraded_by_type = {}
     degraded_traj_pool = []
     for error_type in error_injection.ERROR_TYPES:
         degraded = [error_injection.inject(error_type, t, rng, marginal_hsmm_params) for t in trajectories]
-        flags = _flags_for_all_joint(degraded, joint_hsmm_params, d_max)
+        flags, traces = _flags_for_all_joint(degraded, joint_hsmm_params, d_max)
+        all_traces.extend(traces)
         degraded_by_type[error_type] = list(zip(flags, (d["window"] for d in degraded)))
         degraded_traj_pool.extend(degraded)
         print(f"  [{tag}] {error_type}: evaluated {len(degraded)} degraded trials", flush=True)
 
     report = metrics.evaluate(healthy_flags, degraded_by_type)
     report["kl_sanity"] = metrics.kl_sanity(trajectories, degraded_traj_pool, n_nouns)
+    pooled, per_trial = surprise.belief_diagnostic(all_traces)
+    report["belief_diagnostic"] = {"pooled_frac_below_0.8": pooled, "mean_per_trial_frac_below_0.8": per_trial}
     return report
 
 
@@ -81,14 +94,18 @@ def _print_report(report, tag):
     print(f"\n===== {tag} =====")
     print(f"healthy false-positive rate: {report['healthy']['false_positive_rate']:.3f} "
           f"({report['healthy']['false_positive_trials']}/{report['healthy']['n']} control trials flagged)")
-    print(f"KL(healthy||degraded) sanity (nonzero expected): {report['kl_sanity']:.4f}\n")
-    print(f"{'error type':>14}  {'n':>4}  {'recall':>7}  {'precision':>9}  {'latency':>8}  {'top channel':>16}")
+    print(f"KL(healthy||degraded) sanity (nonzero expected): {report['kl_sanity']:.4f}")
+    bd = report["belief_diagnostic"]
+    print(f"belief_concentration < 0.8 (z_star-threshold approximation error): "
+          f"{bd['pooled_frac_below_0.8']:.3f} pooled, {bd['mean_per_trial_frac_below_0.8']:.3f} mean per-trial\n")
+    print(f"{'error type':>14}  {'n':>4}  {'recall':>7}  {'precision':>9}  {'prec_excl_hlt':>13}  "
+          f"{'latency':>8}  {'top channel':>16}")
     for error_type, m in report["per_type"].items():
         attr = report["attribution"][error_type]
         top_ch = max(attr, key=attr.get) if any(attr.values()) else "-"
         lat = "n/a" if np.isnan(m["mean_latency"]) else f"{m['mean_latency']:.1f}"
         print(f"{error_type:>14}  {m['n']:>4}  {m['recall']:>7.3f}  {m['precision']:>9.3f}  "
-              f"{lat:>8}  {top_ch:>16}")
+              f"{m['precision_excl_healthy']:>13.3f}  {lat:>8}  {top_ch:>16}")
 
 
 def _run_cascade(args, config, d_max, n_nouns):

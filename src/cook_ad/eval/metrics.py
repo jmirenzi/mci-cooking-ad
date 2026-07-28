@@ -4,7 +4,7 @@ import numpy as np
 from cook_ad.anomaly import surprise
 from cook_ad.lifecycle import divergence
 
-ALL_CHANNELS = tuple(surprise.DEFAULT_THRESHOLDS.keys())
+ALL_CHANNELS = surprise.CHANNELS
 DEFAULT_LATENCY_TOL = 5
 
 
@@ -76,6 +76,11 @@ def evaluate(healthy_flags, degraded_by_type, channels=ALL_CHANNELS, latency_tol
             "n": n,
             "recall": tp / n if n else 0.0,
             "precision": tp / (tp + fp) if (tp + fp) else 0.0,
+            # Precision with the shared healthy-trial pool excluded from the denominator: this
+            # isolates the type-specific false-alarm component from fp_healthy, which is the
+            # SAME constant pooled into every error type's `precision` above and therefore
+            # partly guarantees the "constant floor across error types" pattern by construction.
+            "precision_excl_healthy": tp / (tp + fp_out) if (tp + fp_out) else 0.0,
             "mean_latency": float(np.mean(latencies)) if latencies else float("nan"),
             "tp": tp,
             "fp_out_of_window": fp_out,

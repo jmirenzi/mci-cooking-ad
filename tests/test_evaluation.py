@@ -150,13 +150,16 @@ def test_end_to_end_channel_isolation_on_generated_trials():
         trials += 1
 
         sub = error_injection.inject("substitution", traj, rng, p)
-        f = surprise.flag(surprise.compute_trace(p, recipe_params, sub["verb_ids"], sub["noun_ids"], D_MAX))
+        sub_trace, sub_log_probs, sub_recipe_log_trans = surprise.compute_trace(
+            p, recipe_params, sub["verb_ids"], sub["noun_ids"], D_MAX
+        )
+        f = surprise.flag(sub_trace, sub_log_probs, sub_recipe_log_trans)
         _, _, _, hits = metrics.score_trial(f, sub["window"])
         sub_hits += "s_noun" in hits
 
         ab = error_injection.inject("abandonment", traj, rng, p)
-        trace = surprise.compute_trace(p, recipe_params, ab["verb_ids"], ab["noun_ids"], D_MAX)
-        _, _, _, hits = metrics.score_trial(surprise.flag(trace), ab["window"], latency_tol=8)
+        trace, log_probs, recipe_log_trans = surprise.compute_trace(p, recipe_params, ab["verb_ids"], ab["noun_ids"], D_MAX)
+        _, _, _, hits = metrics.score_trial(surprise.flag(trace, log_probs, recipe_log_trans), ab["window"], latency_tol=8)
         aband_hits += "s_dur_two" in hits  # the calibrated duration channel actually flagged
         t0, t1 = ab["window"]
         left_early_hits += "left_early" in set(trace.temporal_attribution[t0 : t1 + 9])

@@ -5,26 +5,35 @@ import jax.numpy as jnp
 import numpy as np
 from jax.scipy.special import logsumexp
 
-from cook_ad.anomaly import temporal
+from cook_ad.anomaly import quantile, temporal
 from cook_ad.hsmm import emissions, messages, params
 from cook_ad.recipe import recipe_hmm, segmentize
 
-# Emission/transition channels are raw neg-log-probs; their thresholds are plain nats.
-# The temporal channels (s_temporal / s_dur_two) are -log(tail probability), so a single
-# global threshold -log(alpha) is automatically per-state calibrated (see temporal.py) -- it
-# fires exactly when the duration reaches that state's alpha tail quantile. Not hand-tuned per
-# state; that per-state calibration is precisely the point of the tail-probability framing.
+# The temporal channels (s_temporal / s_dur_two) are -log(tail probability) against a
+# parametric survival function, so a single global threshold -log(alpha) is automatically
+# per-state calibrated (see temporal.py) -- it fires exactly when the duration reaches that
+# state's alpha tail quantile. The five categorical/transition channels (s_emit, s_verb,
+# s_noun, s_transition, s_recipe_transition) get the SAME per-state alpha-quantile treatment,
+# but computed exactly (quantile.py) rather than parametrically, since their support is a
+# finite, known vocab. Neither family is hand-tuned per state; that per-state calibration is
+# precisely the point of the tail-probability framing.
 DEFAULT_ALPHA = 0.05
 
+# Only the two duration channels keep a fixed-scalar threshold (already a tail-probability
+# cutoff, not a raw nat value). The five categorical/transition channels are recomputed as
+# (K,)/(K_R,) tables per flag()/flag_joint() call -- see quantile.py -- and are NOT in this
+# dict; a scalar override on a per-state channel would reintroduce exactly the miscalibration
+# this module fixes.
 DEFAULT_THRESHOLDS = {
-    "s_emit": 6.0,
-    "s_verb": 4.0,
-    "s_noun": 4.0,
     "s_temporal": -float(np.log(DEFAULT_ALPHA)),
     "s_dur_two": -float(np.log(DEFAULT_ALPHA)),
-    "s_transition": 4.0,
-    "s_recipe_transition": 4.0,
 }
+
+# Canonical ordered channel list -- callers that previously derived this from
+# DEFAULT_THRESHOLDS.keys() (when it held all seven channels) should use this instead.
+CHANNELS = (
+    "s_emit", "s_verb", "s_noun", "s_temporal", "s_dur_two", "s_transition", "s_recipe_transition",
+)
 
 DEFAULT_ATTRIBUTION_MARGIN = 2.0
 
@@ -47,6 +56,9 @@ class SurpriseTrace(NamedTuple):
     expected_next_recipe: np.ndarray   # (T,) argmax next recipe at segment starts, -1 elsewhere
     attribution: np.ndarray            # (T,) "item"/"action"/"none" per tick (emission attribution)
     temporal_attribution: np.ndarray   # (T,) "stuck"/"left_early"/"none" at segment-end ticks
+    from_state: np.ndarray             # (T,) previous segment's subtask id at segment-start ticks, -1 elsewhere
+    from_recipe: np.ndarray            # (T,) previous segment's recipe id at segment-start ticks (cascade only), -1 elsewhere
+    belief_concentration: np.ndarray   # (T,) max_k P(Z_t=k|o_{<t}), diagnostic for the z_star-indexed threshold approximation
 
 
 def emission_surprise(pi_all, log_emit_v, log_emit_n, verb_ids, noun_ids):
@@ -84,6 +96,22 @@ def _scatter_segment_end(segments, per_segment_values, fill=0.0, dtype=np.float6
     pos = 0
     for (state, d), value in zip(segments, per_segment_values):
         out[pos + d - 1] = value
+        pos += d
+    return out
+
+
+def _scatter_from_previous(segments, per_segment_ids, fill=-1, dtype=np.int64):
+    """At each segment's FIRST tick, place the id of the PREVIOUS segment (per_segment_ids[i-1]);
+    `fill` at the very first segment's first tick (no predecessor) and at all non-boundary
+    ticks. Mirrors _scatter_segment_end's placement convention but at segment starts -- used to
+    index the per-state/per-recipe quantile threshold tables by the FROM side of a transition
+    (surprise.flag / flag_joint), not the TO side z_star already indexes."""
+    t_true = sum(d for _, d in segments)
+    out = np.full(t_true, fill, dtype=dtype)
+    pos = 0
+    for i, (_, d) in enumerate(segments):
+        if i > 0:
+            out[pos] = per_segment_ids[i - 1]
         pos += d
     return out
 
@@ -141,16 +169,114 @@ def recipe_transition_surprise(segments, seg_recipe_ids, recipe_log_trans):
     return s_trans, expected_next
 
 
-def flag(trace, alpha=DEFAULT_ALPHA, thresholds=None):
-    """Per-channel boolean flags. Temporal channels default to the tail-probability threshold
-    -log(alpha) (per-state calibrated); emission/transition channels use raw-nat thresholds.
-    Rigorous precision/recall tuning against injected error types is Phase 6."""
+def _duration_thresholds(alpha, thresholds):
+    """Resolve the two duration-channel scalar thresholds, honoring an alpha override and a
+    `thresholds` override restricted to {s_temporal, s_dur_two} (see DEFAULT_THRESHOLDS)."""
     resolved = {**DEFAULT_THRESHOLDS}
     if alpha != DEFAULT_ALPHA:
         resolved["s_temporal"] = -float(np.log(alpha))
         resolved["s_dur_two"] = -float(np.log(alpha))
-    resolved.update(thresholds or {})
-    return {name: np.asarray(getattr(trace, name)) > resolved[name] for name in resolved}
+    if thresholds:
+        unknown = set(thresholds) - set(DEFAULT_THRESHOLDS)
+        if unknown:
+            raise KeyError(
+                f"thresholds override only accepts {sorted(DEFAULT_THRESHOLDS)}; got "
+                f"{sorted(unknown)}. The categorical/transition channels are now per-state "
+                "quantile tables (quantile.py), not scalar overrides -- pass alpha instead."
+            )
+        resolved.update(thresholds)
+    return resolved
+
+
+def _base_flags(trace, tables, alpha, thresholds):
+    """s_emit/s_verb/s_noun (z_star-indexed), s_temporal/s_dur_two (duration-channel scalars),
+    and s_transition (from_state-indexed, masked to segment-start ticks). Shared by
+    flag()/flag_joint(); each caller adds its own s_recipe_transition, since the cascade
+    indexes it by from_recipe and the joint model repurposes it as a from_state-indexed signed
+    excess (see assemble_trace_joint)."""
+    resolved = _duration_thresholds(alpha, thresholds)
+    z = trace.z_star
+
+    from_state_valid = trace.from_state != -1
+    from_state_safe = np.where(from_state_valid, trace.from_state, 0)
+
+    return {
+        "s_emit": trace.s_emit > tables.emit[z],
+        "s_verb": trace.s_verb > tables.verb[z],
+        "s_noun": trace.s_noun > tables.noun[z],
+        "s_temporal": np.asarray(trace.s_temporal) > resolved["s_temporal"],
+        "s_dur_two": np.asarray(trace.s_dur_two) > resolved["s_dur_two"],
+        # Boundary mask is load-bearing, not cosmetic: quantile thresholds are not guaranteed
+        # positive (excess_quantile_threshold in particular), so `0 > t` off-boundary is no
+        # longer trivially False the way it was under the old fixed-positive-nat thresholds.
+        "s_transition": from_state_valid & (trace.s_transition > tables.transition[from_state_safe]),
+    }
+
+
+def flag(trace, log_probs, recipe_log_trans, alpha=DEFAULT_ALPHA, thresholds=None):
+    """Per-channel boolean flags for the cascade model. s_emit/s_verb/s_noun/s_transition/
+    s_recipe_transition use exact per-state alpha-quantile thresholds (quantile.py), indexed
+    by trace.z_star (emission channels) or the FROM side of a transition -- trace.from_state
+    for s_transition, trace.from_recipe for s_recipe_transition -- at segment-start ticks
+    only. s_temporal/s_dur_two keep the parametric tail-probability threshold -log(alpha).
+
+    `log_probs`/`recipe_log_trans`: the HSMMLogProbs and recipe transition matrix already
+    built for this checkpoint (params.to_log_probs / recipe_hmm.to_log_probs); pass the same
+    objects used to build `trace` (compute_trace / eval.batch.compute_traces return them).
+
+    `thresholds` overrides ONLY {s_temporal, s_dur_two} -- see DEFAULT_THRESHOLDS; a scalar
+    override on any of the five per-state channels would reintroduce the miscalibration this
+    module fixes and raises KeyError.
+    """
+    tables = quantile.threshold_tables(log_probs, recipe_log_trans, alpha)
+    flags = _base_flags(trace, tables, alpha, thresholds)
+
+    from_recipe_valid = trace.from_recipe != -1
+    from_recipe_safe = np.where(from_recipe_valid, trace.from_recipe, 0)
+    flags["s_recipe_transition"] = from_recipe_valid & (
+        trace.s_recipe_transition > tables.recipe[from_recipe_safe]
+    )
+    return flags
+
+
+def flag_joint(trace, joint_log_probs, r_hat, log_trans_marginal, alpha=DEFAULT_ALPHA, thresholds=None):
+    """Joint-model analogue of flag(). s_recipe_transition is the repurposed signed-excess
+    channel (see assemble_trace_joint: log P_marginal - log P_r for the observed transition)
+    and is indexed by trace.from_state under the trial's own MAP recipe r_hat via
+    quantile.excess_quantile_threshold -- NOT trace.from_recipe, which the joint trace leaves
+    at -1 throughout (one recipe per trial, not a per-segment path). That table's threshold
+    can be negative, so the boundary mask (from_state != -1) is load-bearing here.
+    """
+    tables = quantile.threshold_tables_joint(joint_log_probs, r_hat, log_trans_marginal, alpha)
+    flags = _base_flags(trace, tables, alpha, thresholds)
+
+    from_state_valid = trace.from_state != -1
+    from_state_safe = np.where(from_state_valid, trace.from_state, 0)
+    flags["s_recipe_transition"] = from_state_valid & (
+        trace.s_recipe_transition > tables.recipe[from_state_safe]
+    )
+    return flags
+
+
+def belief_diagnostic(traces, cutoff=0.8):
+    """Required diagnostic for the z_star-indexed threshold approximation (flag()/flag_joint()
+    index by the hard Viterbi state, which is only exact when the filtered belief is
+    concentrated there). Returns (pooled_fraction_below_cutoff, per_trial_mean_fraction): the
+    fraction of ticks across all `traces` with belief_concentration < cutoff, and the mean of
+    that same fraction computed per trial. A large fraction means the z_star approximation is
+    frequently invoked when the mixture is diffuse -- a known limitation, not silently
+    absorbed; per-tick mixture-quantile scoring (out of scope here) is the eventual fix."""
+    per_trial = []
+    total_below = 0
+    total_ticks = 0
+    for trace in traces:
+        bc = np.asarray(trace.belief_concentration)
+        below = bc < cutoff
+        per_trial.append(float(below.mean()) if bc.size else 0.0)
+        total_below += int(below.sum())
+        total_ticks += bc.size
+    pooled = total_below / total_ticks if total_ticks else 0.0
+    return pooled, float(np.mean(per_trial)) if per_trial else 0.0
 
 
 def assemble_trace(hsmm_params, log_probs, recipe_log_trans, pi_all, verb_ids, noun_ids,
@@ -190,6 +316,10 @@ def assemble_trace(hsmm_params, log_probs, recipe_log_trans, pi_all, verb_ids, n
         segments, seg_recipe_ids, recipe_log_trans
     )
 
+    from_state = _scatter_from_previous(segments, [s for s, _ in segments])
+    from_recipe = _scatter_from_previous(segments, list(seg_recipe_ids))
+    belief_concentration = np.max(np.exp(np.asarray(pi_all)), axis=-1)
+
     return SurpriseTrace(
         s_emit=np.asarray(s_emit),
         s_verb=np.asarray(s_verb),
@@ -208,6 +338,9 @@ def assemble_trace(hsmm_params, log_probs, recipe_log_trans, pi_all, verb_ids, n
         expected_next_recipe=expected_next_recipe,
         attribution=attribute(s_verb, s_noun),
         temporal_attribution=temporal_attribution,
+        from_state=from_state,
+        from_recipe=from_recipe,
+        belief_concentration=belief_concentration,
     )
 
 
@@ -262,6 +395,10 @@ def assemble_trace_joint(joint_hsmm_params, joint_log_probs, r_hat, log_trans_ma
     pit = _scatter_segment_end(segments, pit_per_seg, fill=np.nan)
     temporal_attribution = _scatter_segment_end(segments, temporal_attr, fill="none", dtype=object)
 
+    from_state = _scatter_from_previous(segments, [s for s, _ in segments])
+    from_recipe = np.full_like(from_state, -1)  # recipe channel is indexed by from_state under r_hat, not from_recipe
+    belief_concentration = np.max(np.exp(np.asarray(pi_all)), axis=-1)
+
     return SurpriseTrace(
         s_emit=np.asarray(s_emit),
         s_verb=np.asarray(s_verb),
@@ -280,13 +417,21 @@ def assemble_trace_joint(joint_hsmm_params, joint_log_probs, r_hat, log_trans_ma
         expected_next_recipe=expected_next_recipe,
         attribution=attribute(s_verb, s_noun),
         temporal_attribution=temporal_attribution,
+        from_state=from_state,
+        from_recipe=from_recipe,
+        belief_concentration=belief_concentration,
     )
 
 
 def compute_trace(hsmm_params, recipe_params, verb_ids, noun_ids, d_max):
     """Driver: single trial (v,n) stream -> a full SurpriseTrace. verb_ids/noun_ids: (T,) int
     arrays, no padding (mask is all-True; this is a per-trial analysis tool). For many trials
-    use eval.batch.compute_traces, which batches the jax-heavy ops to avoid per-trial recompiles."""
+    use eval.batch.compute_traces, which batches the jax-heavy ops to avoid per-trial recompiles.
+
+    Returns (trace, log_probs, recipe_log_trans): the latter two are exactly what flag() needs
+    and are otherwise built internally and discarded, so callers that also need to call flag()
+    get them for free instead of re-deriving via a second params.to_log_probs/
+    recipe_hmm.to_log_probs call."""
     verb_ids = jnp.asarray(verb_ids)
     noun_ids = jnp.asarray(noun_ids)
     t = verb_ids.shape[0]
@@ -306,5 +451,6 @@ def compute_trace(hsmm_params, recipe_params, verb_ids, noun_ids, d_max):
     seg_recipe_ids = _segment_recipe_path(recipe_params, [s for s, _ in seg_result["segments"]])
     _, recipe_log_trans, _ = recipe_hmm.to_log_probs(recipe_params)
 
-    return assemble_trace(hsmm_params, log_probs, recipe_log_trans, pi_all, verb_ids, noun_ids,
-                          seg_result, seg_recipe_ids)
+    trace = assemble_trace(hsmm_params, log_probs, recipe_log_trans, pi_all, verb_ids, noun_ids,
+                            seg_result, seg_recipe_ids)
+    return trace, log_probs, recipe_log_trans

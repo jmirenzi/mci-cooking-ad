@@ -60,8 +60,10 @@ def compute_traces(hsmm_params, recipe_params, sequences, d_max, chunk_size=16):
     predictive_occupancy, Viterbi segmentation, and the recipe forward-backward -- are run
     vmapped over a padded batch (padded to a single global T_max so the big ops compile ONCE,
     not per distinct sequence length as the single-trial path would). The cheap per-trial numpy
-    assembly is then done via surprise.assemble_trace. Chunked to bound peak memory. Returns a
-    list of SurpriseTrace aligned with `sequences`.
+    assembly is then done via surprise.assemble_trace. Chunked to bound peak memory. Returns
+    (traces, log_probs, rlog_trans): a list of SurpriseTrace aligned with `sequences`, plus the
+    HSMMLogProbs and recipe transition matrix built here -- otherwise discarded -- which
+    surprise.flag() needs and would have to rebuild.
 
     sequences: list of dicts with `verb_ids`/`noun_ids` (numpy int arrays, per-trial true length).
     """
@@ -96,7 +98,7 @@ def compute_traces(hsmm_params, recipe_params, sequences, d_max, chunk_size=16):
                     s["verb_ids"], s["noun_ids"], seg_results[i], seg_recipe_ids,
                 )
             )
-    return traces
+    return traces, log_probs, rlog_trans
 
 
 def compute_traces_joint(joint_hsmm_params, sequences, d_max, chunk_size=16):
@@ -107,7 +109,10 @@ def compute_traces_joint(joint_hsmm_params, sequences, d_max, chunk_size=16):
     recipe-conditioned segmentation/occupancy can run. Segmentation and the predictive-
     occupancy prior are both now recipe-conditioned: each trial is decoded under its own
     r_hat's tables (segment_all_conditioned / _batched_pi_conditioned) rather than one shared
-    set. Returns a list of SurpriseTrace aligned with `sequences`, same as compute_traces.
+    set. Returns (traces, log_probs, r_hat, log_trans_marginal): a list of SurpriseTrace aligned
+    with `sequences`, the JointHSMMLogProbs, the whole-dataset r_hat array (index per trial),
+    and the pi-weighted marginal transition matrix -- all four are what surprise.flag_joint()
+    needs per trial and would otherwise have to be rebuilt.
     """
     log_probs = joint_params.to_log_probs_joint(joint_hsmm_params, d_max)
     t_max = max(len(s["verb_ids"]) for s in sequences)
@@ -142,4 +147,4 @@ def compute_traces_joint(joint_hsmm_params, sequences, d_max, chunk_size=16):
                     pi[i][:length], s["verb_ids"], s["noun_ids"], seg_results[i],
                 )
             )
-    return traces
+    return traces, log_probs, r_hat, log_trans_marginal

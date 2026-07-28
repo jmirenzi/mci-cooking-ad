@@ -108,7 +108,7 @@ def _print_channel_summary(name, values, flags):
 
 def _report(trace, flags, tag):
     print(f"\n--- {tag} ---")
-    for name in surprise.DEFAULT_THRESHOLDS:
+    for name in surprise.CHANNELS:
         _print_channel_summary(name, getattr(trace, name), flags[name])
     attribution_counts = {label: int(np.sum(trace.attribution == label)) for label in ("item", "action", "none")}
     dur_flagged = flags["s_dur_two"]
@@ -150,14 +150,14 @@ def main():
     verb_ids, noun_ids = entry["verb_ids"], entry["noun_ids"]
     print(f"trial: {entry['trial_id']}  ticks: {len(verb_ids)}")
 
-    trace = surprise.compute_trace(hsmm_params, recipe_params, verb_ids, noun_ids, d_max)
-    flags = surprise.flag(trace)
+    trace, log_probs, recipe_log_trans = surprise.compute_trace(hsmm_params, recipe_params, verb_ids, noun_ids, d_max)
+    flags = surprise.flag(trace, log_probs, recipe_log_trans)
     _report(trace, flags, "healthy")
 
     if args.inject_noun:
         new_noun_ids, tick, old_noun, new_noun, state = inject_noun(verb_ids, noun_ids, hsmm_params, d_max)
-        trace_n = surprise.compute_trace(hsmm_params, recipe_params, verb_ids, new_noun_ids, d_max)
-        flags_n = surprise.flag(trace_n)
+        trace_n, log_probs_n, recipe_log_trans_n = surprise.compute_trace(hsmm_params, recipe_params, verb_ids, new_noun_ids, d_max)
+        flags_n = surprise.flag(trace_n, log_probs_n, recipe_log_trans_n)
         _report(trace_n, flags_n, "noun-injected")
         print(
             f"  injected at tick {tick} (believed subtask {state}): "
@@ -169,8 +169,8 @@ def main():
 
     if args.inject_stall:
         new_verb_ids, new_noun_ids, start, state, extra = inject_stall(verb_ids, noun_ids, hsmm_params, d_max)
-        trace_s = surprise.compute_trace(hsmm_params, recipe_params, new_verb_ids, new_noun_ids, d_max)
-        flags_s = surprise.flag(trace_s)
+        trace_s, log_probs_s, recipe_log_trans_s = surprise.compute_trace(hsmm_params, recipe_params, new_verb_ids, new_noun_ids, d_max)
+        flags_s = surprise.flag(trace_s, log_probs_s, recipe_log_trans_s)
         _report(trace_s, flags_s, "stall-injected")
         thresh = -np.log(surprise.DEFAULT_ALPHA)
         crossing = start + int(np.argmax(trace_s.s_temporal[start:] > thresh)) if np.any(trace_s.s_temporal[start:] > thresh) else None
@@ -181,8 +181,8 @@ def main():
 
     if args.inject_abandon:
         new_verb_ids, new_noun_ids, start, state, orig_d, kept, dropped = inject_abandon(verb_ids, noun_ids, hsmm_params, d_max)
-        trace_a = surprise.compute_trace(hsmm_params, recipe_params, new_verb_ids, new_noun_ids, d_max)
-        flags_a = surprise.flag(trace_a)
+        trace_a, log_probs_a, recipe_log_trans_a = surprise.compute_trace(hsmm_params, recipe_params, new_verb_ids, new_noun_ids, d_max)
+        flags_a = surprise.flag(trace_a, log_probs_a, recipe_log_trans_a)
         _report(trace_a, flags_a, "abandon-injected")
         # the truncated segment now ends at tick start+kept-1; find its retrospective flag
         end_tick = start + kept - 1
@@ -199,8 +199,8 @@ def main():
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        fig, axes = plt.subplots(len(surprise.DEFAULT_THRESHOLDS), 1, figsize=(10, 10), sharex=True)
-        for ax, name in zip(axes, surprise.DEFAULT_THRESHOLDS):
+        fig, axes = plt.subplots(len(surprise.CHANNELS), 1, figsize=(10, 10), sharex=True)
+        for ax, name in zip(axes, surprise.CHANNELS):
             ax.plot(getattr(trace, name))
             ax.set_ylabel(name)
         axes[-1].set_xlabel("tick")
