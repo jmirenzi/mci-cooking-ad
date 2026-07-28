@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax.scipy.special import logsumexp
 from test_messages import _brute_force_segmentations, _brute_force_stats, _random_log_probs
 
 from cook_ad.anomaly import surprise, temporal
@@ -105,6 +106,57 @@ def test_emission_surprise_isolates_item_substitution():
     assert float(s_noun[0]) > float(s_verb[0]) + surprise.DEFAULT_ATTRIBUTION_MARGIN
     labels = surprise.attribute(s_verb, s_noun)
     assert labels[0] == "item"
+
+
+def test_conditional_expected_avoids_incoherent_pairing():
+    """A tiny hand-built model with three states: state 0 is 'idle'-like (dominates pi_all at
+    85%), state 1 and state 2 each have their own coherent (verb, noun) pair. The observed verb
+    matches state 1's, which state 0 barely supports. A naive unconditional pick (marginalizing
+    pi_all over just the noun, ignoring the verb) follows the raw pi_all mass to state 0's own
+    noun -- producing an incoherent pairing with the held verb (narrate.py's 'pour kitchen'
+    bug). conditional_expected must instead reweight by the held verb's compatibility, landing
+    on state 1's noun -- the one actually coherent with what was observed."""
+    log_emit_v = jnp.log(jnp.array([
+        [0.98, 0.01, 0.01],
+        [0.05, 0.90, 0.05],
+        [0.05, 0.05, 0.90],
+    ]))
+    log_emit_n = jnp.log(jnp.array([
+        [0.98, 0.01, 0.01],
+        [0.05, 0.90, 0.05],
+        [0.05, 0.05, 0.90],
+    ]))
+    pi_all_t = jnp.log(jnp.array([0.85, 0.10, 0.05]))
+    observed_verb = 1
+
+    naive_mixture = logsumexp(pi_all_t[:, None] + log_emit_n, axis=0)
+    naive_pick = int(jnp.argmax(naive_mixture))
+    assert naive_pick == 0  # ignoring the verb, raw pi_all mass follows idle's own noun
+
+    conditional_pick = surprise.conditional_expected(pi_all_t, log_emit_v[:, observed_verb], log_emit_n)
+    assert conditional_pick == 1  # conditioning on the held verb shifts to ITS coherent noun
+    assert conditional_pick != naive_pick
+
+
+def test_joint_expected_finds_best_joint_pair():
+    """Same three-state model. joint_expected optimizes verb and noun together rather than
+    holding either fixed, so with pi_all dominated by state 0 it should recover state 0's own
+    coherent (verb, noun) pair -- not an independently-argmaxed splice of two different
+    states' halves."""
+    log_emit_v = jnp.log(jnp.array([
+        [0.98, 0.01, 0.01],
+        [0.05, 0.90, 0.05],
+        [0.05, 0.05, 0.90],
+    ]))
+    log_emit_n = jnp.log(jnp.array([
+        [0.98, 0.01, 0.01],
+        [0.05, 0.90, 0.05],
+        [0.05, 0.05, 0.90],
+    ]))
+    pi_all_t = jnp.log(jnp.array([0.85, 0.10, 0.05]))
+
+    v, n = surprise.joint_expected(pi_all_t, log_emit_v, log_emit_n)
+    assert (v, n) == (0, 0)
 
 
 def test_transition_surprise_flags_unexpected_boundary():

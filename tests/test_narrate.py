@@ -1,3 +1,5 @@
+import types
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -99,8 +101,9 @@ def test_narrate_emits_one_query_per_segment_not_per_tick():
     )
     assert int(np.sum(flags["s_temporal"][start:end])) > 5  # many ticks flagged, one segment
 
+    pi_all = surprise.compute_pi_all(log_probs, verb_ids, noun_ids, D_MAX)
     queries = narrate.narrate(
-        trace, flags, _toy_vocab(), p, verb_ids, noun_ids, log_probs, recipe_log_trans
+        trace, flags, _toy_vocab(), p, verb_ids, noun_ids, log_probs, recipe_log_trans, pi_all
     )
     matching = [q for q in queries if q.channel == "s_temporal" and q.segment_index == seg_idx]
     assert len(matching) == 1
@@ -120,8 +123,9 @@ def test_narrate_query_event_routes_to_state_manager():
             p, recipe_params, sub["verb_ids"], sub["noun_ids"], D_MAX
         )
         flags = surprise.flag(trace, log_probs, recipe_log_trans)
+        pi_all = surprise.compute_pi_all(log_probs, sub["verb_ids"], sub["noun_ids"], D_MAX)
         queries = narrate.narrate(
-            trace, flags, vocab, p, sub["verb_ids"], sub["noun_ids"], log_probs, recipe_log_trans
+            trace, flags, vocab, p, sub["verb_ids"], sub["noun_ids"], log_probs, recipe_log_trans, pi_all
         )
         noun_queries = [q for q in queries if q.channel == "s_noun"]
         if len(noun_queries) == 1:
@@ -145,3 +149,94 @@ def test_narrate_query_event_routes_to_state_manager():
             assert tuple(changed[0]) == (event.state, event.token)
         else:
             assert np.array_equal(new, old)
+
+
+_TOY_LOG_EMIT_3STATE = np.log(np.array([
+    [0.98, 0.01, 0.01],  # state 0: 'idle'-like
+    [0.05, 0.90, 0.05],  # state 1
+    [0.05, 0.05, 0.90],  # state 2
+]))
+_TOY_PI_ALL_3STATE = np.log(np.array([[0.85, 0.10, 0.05]]))  # (T=1, K=3), mostly state 0
+
+
+class _FakeTables:
+    noun = np.array([1.0])
+    verb = np.array([1.0])
+
+
+def test_emission_query_uses_conditional_expected_when_only_one_channel_flagged():
+    """Regression for the 'pour kitchen' bug: when only the noun channel is flagged (verb is
+    presumably fine), the expected noun must be picked CONDITIONED on the held-constant
+    observed verb (surprise.conditional_expected), not by marginalizing over all states
+    regardless of whether they're even compatible with that verb."""
+    p = _peaked_params()
+    lexicon = narrate.Lexicon(_toy_vocab(), p)
+    log_emit_v = log_emit_n = _TOY_LOG_EMIT_3STATE
+    pi_all = _TOY_PI_ALL_3STATE
+
+    observed_verb, observed_noun = 1, 2
+    trace = types.SimpleNamespace(
+        s_noun=np.array([10.0]),
+        s_verb=np.array([0.0]),
+        attribution=np.array(["item"], dtype=object),
+    )
+    flags = {"s_noun": np.array([True]), "s_verb": np.array([False])}
+    segments = [(0, 0, 1)]
+    verb_ids = np.array([observed_verb])
+    noun_ids = np.array([observed_noun])
+
+    queries = narrate._emission_queries(
+        trace, flags, segments, verb_ids, noun_ids, lexicon, _FakeTables(),
+        pi_all, log_emit_v, log_emit_n,
+    )
+    assert len(queries) == 1
+    q = queries[0]
+
+    expected_noun = surprise.conditional_expected(pi_all[0], log_emit_v[:, observed_verb], log_emit_n)
+    assert expected_noun == 1  # sanity: conditioning shifts away from the naive (idle) pick
+
+    observed_phrase = lexicon.phrase(observed_verb, observed_noun)
+    expected_phrase = lexicon.phrase(observed_verb, expected_noun)  # verb held constant
+    assert q.text == (
+        f"Wait --, that's {observed_phrase} -- based on what I'd seen up to then, "
+        f"I expected {expected_phrase}."
+    )
+
+
+def test_emission_query_uses_joint_expected_when_both_channels_flagged():
+    """When BOTH channels are independently flagged at the same tick, neither observed token
+    is a trustworthy anchor for the other -- _emission_queries must fall back to
+    surprise.joint_expected (letting both verb and noun vary), not conditional_expected's
+    held-constant-verb assumption."""
+    p = _peaked_params()
+    lexicon = narrate.Lexicon(_toy_vocab(), p)
+    log_emit_v = log_emit_n = _TOY_LOG_EMIT_3STATE
+    pi_all = _TOY_PI_ALL_3STATE
+
+    observed_verb, observed_noun = 1, 2
+    trace = types.SimpleNamespace(
+        s_noun=np.array([10.0]),
+        s_verb=np.array([8.0]),
+        attribution=np.array(["item"], dtype=object),  # noun still dominates by margin
+    )
+    flags = {"s_noun": np.array([True]), "s_verb": np.array([True])}  # both independently flagged
+    segments = [(0, 0, 1)]
+    verb_ids = np.array([observed_verb])
+    noun_ids = np.array([observed_noun])
+
+    queries = narrate._emission_queries(
+        trace, flags, segments, verb_ids, noun_ids, lexicon, _FakeTables(),
+        pi_all, log_emit_v, log_emit_n,
+    )
+    assert len(queries) == 1
+    q = queries[0]
+
+    expected_verb, expected_noun = surprise.joint_expected(pi_all[0], log_emit_v, log_emit_n)
+    assert expected_verb != observed_verb  # proves the joint path ran, not conditional's held verb
+
+    observed_phrase = lexicon.phrase(observed_verb, observed_noun)
+    expected_phrase = lexicon.phrase(expected_verb, expected_noun)
+    assert q.text == (
+        f"Wait --, that's {observed_phrase} -- based on what I'd seen up to then, "
+        f"I expected {expected_phrase}."
+    )

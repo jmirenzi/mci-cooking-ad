@@ -97,6 +97,72 @@ def emission_surprise(pi_all, log_emit_v, log_emit_n, verb_ids, noun_ids):
     return s_emit, s_verb, s_noun
 
 
+def conditional_expected(pi_all_t, log_emit_fixed_col, log_emit_target):
+    """argmax_x logsumexp_k(pi_all_t[k] + log_emit_fixed_col[k] + log_emit_target[k,x]), for
+    one tick: the same pi_all-weighted mixture s_verb/s_noun are scored against
+    (emission_surprise), evaluated over every entry of the channel being explained, but
+    reweighted by ALSO requiring compatibility with a second, held-fixed observed token
+    (log_emit_fixed_col = the OTHER channel's emission column at ITS observed value).
+
+    Marginalizing over pi_all with no such conditioning can pick a value that is individually
+    plausible in isolation but incoherent paired with the token actually being held constant --
+    e.g. the noun a mostly-idle belief would expect, paired with a verb that idle state barely
+    supports at all ("pour kitchen"). Conditioning down-weights states incompatible with the
+    fixed token before taking the argmax, so the result is compatible with it by construction.
+
+    pi_all_t: (K,) log P(Z_t=k|o_{<t}) at one tick. log_emit_fixed_col: (K,), the other
+    channel's emission column at its observed token. log_emit_target: (K, X), the channel
+    being explained. Returns a single int index into X.
+    """
+    pi_all_t = jnp.asarray(pi_all_t)
+    log_emit_fixed_col = jnp.asarray(log_emit_fixed_col)
+    log_emit_target = jnp.asarray(log_emit_target)
+    mixture_log = logsumexp(
+        pi_all_t[:, None] + log_emit_fixed_col[:, None] + log_emit_target, axis=0
+    )  # (X,)
+    return int(jnp.argmax(mixture_log))
+
+
+def joint_expected(pi_all_t, log_emit_v, log_emit_n):
+    """argmax_{v,n} logsumexp_k(pi_all_t[k] + log_emit_v[k,v] + log_emit_n[k,n]), for one tick:
+    the fully joint expectation under the live belief, letting BOTH verb and noun vary.
+
+    Used when both channels are independently flagged at the same tick: treating either
+    observed token as a trustworthy anchor for the other (conditional_expected's premise) is
+    then unjustified, since both are themselves in question. Returns the single best (v, n)
+    pair, not two independently-argmaxed halves, so it can never invent a combination the
+    model's own joint mixture doesn't actually support.
+
+    pi_all_t: (K,). log_emit_v: (K,V). log_emit_n: (K,N). Returns (expected_verb, expected_noun).
+    """
+    pi_all_t = jnp.asarray(pi_all_t)
+    log_emit_v = jnp.asarray(log_emit_v)
+    log_emit_n = jnp.asarray(log_emit_n)
+    joint = logsumexp(
+        pi_all_t[:, None, None] + log_emit_v[:, :, None] + log_emit_n[:, None, :], axis=0
+    )  # (V, N)
+    v, n = np.unravel_index(int(jnp.argmax(joint)), joint.shape)
+    return int(v), int(n)
+
+
+def compute_pi_all(log_probs, verb_ids, noun_ids, d_max):
+    """Standalone predictive-occupancy computation -- the same pi_all compute_trace builds
+    internally, factored out so callers that need it directly (conditional_expected/
+    joint_expected need a specific tick's pi_all, which compute_trace does not expose) don't
+    have to duplicate or re-derive it."""
+    verb_ids = jnp.asarray(verb_ids)
+    noun_ids = jnp.asarray(noun_ids)
+    t = verb_ids.shape[0]
+    mask = jnp.ones((t,), dtype=bool)
+    loglik = emissions.sequence_loglik(
+        verb_ids, noun_ids, log_probs.log_emit_v, log_probs.log_emit_n, mask
+    )
+    return messages.predictive_occupancy(
+        loglik, log_probs.log_init, log_probs.log_trans,
+        log_probs.log_dur_pmf, log_probs.log_dur_survival, mask, d_max,
+    )
+
+
 def attribute(s_verb, s_noun, margin=DEFAULT_ATTRIBUTION_MARGIN):
     """S_verb << S_noun => the item is anomalous, not the action (and vice versa), per
     Model_descript.md's decomposition. Ties within `margin` nats are left unattributed."""
@@ -464,13 +530,7 @@ def compute_trace(hsmm_params, recipe_params, verb_ids, noun_ids, d_max):
     mask = jnp.ones((t,), dtype=bool)
 
     log_probs = params.to_log_probs(hsmm_params, d_max)
-    loglik = emissions.sequence_loglik(
-        verb_ids, noun_ids, log_probs.log_emit_v, log_probs.log_emit_n, mask
-    )
-    pi_all = messages.predictive_occupancy(
-        loglik, log_probs.log_init, log_probs.log_trans,
-        log_probs.log_dur_pmf, log_probs.log_dur_survival, mask, d_max,
-    )
+    pi_all = compute_pi_all(log_probs, verb_ids, noun_ids, d_max)
     seg_result = segmentize.segment_all(
         hsmm_params, verb_ids[None, :], noun_ids[None, :], mask[None, :], d_max
     )[0]

@@ -114,6 +114,7 @@ def run_scenario(scenario, traj, rng, hsmm_params, recipe_params, vocab, d_max, 
         hsmm_params, recipe_params, injected["verb_ids"], injected["noun_ids"], d_max
     )
     flags = surprise.flag(trace, log_probs, recipe_log_trans)
+    pi_all = surprise.compute_pi_all(log_probs, injected["verb_ids"], injected["noun_ids"], d_max)
 
     print(f"\n=== scenario: {scenario} ===")
     window = injected["window"]
@@ -132,7 +133,7 @@ def run_scenario(scenario, traj, rng, hsmm_params, recipe_params, vocab, d_max, 
 
     queries = narrate.narrate(
         trace, flags, vocab, hsmm_params, injected["verb_ids"], injected["noun_ids"],
-        log_probs, recipe_log_trans,
+        log_probs, recipe_log_trans, pi_all,
     )
     print(f"  {len(queries)} narrated queries:")
     for q in queries:
