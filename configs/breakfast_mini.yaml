@@ -7,13 +7,25 @@ vocab:
 k_subtask: 20   # weak-limit nominal; covers the 13 distinct subtask labels (incl. SIL/"stall") in cereals+coffee+tea + headroom
 k_recipe: 6     # weak-limit nominal; covers the 3 recipes here + headroom
 
+prior:
+  alpha_pi: 1.0            # recipe Dirichlet concentration (weak-limit: keep small)
+
 duration:
   d_max_ticks: 50   # p99 segment length is 44 ticks, max 65, for cereals+coffee+tea -- comfortably covers the real distribution
+  shrinkage_kappa: 5.0     # global-shape pseudocount for per-(Z,R) NB fitting
 
 em:
   restarts: 10
   annealing: false
   chunk_size: 8
+
+joint_em:
+  warm_start: true         # if false, use random init + restarts (fallback only)
+  cascade_hsmm_params: dataset/processed/breakfast_mini/hsmm_params.npz
+  cascade_recipe_params: dataset/processed/breakfast_mini/recipe_params.npz
+  n_restarts: 1             # warm-start is deterministic; >1 only for random fallback
+  max_iters: 100
+  tol: 1.0e-4
 
 ambient_gaps:
   inject_synthetic_gaps: false

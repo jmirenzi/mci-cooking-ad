@@ -1,3 +1,5 @@
+import functools
+
 import jax
 import jax.numpy as jnp
 from jax.scipy.special import betainc, digamma, gammaln, polygamma, xlog1py
@@ -168,3 +170,49 @@ def newton_update_r(n_hat, N_hat, S_hat, r_old, n_iters=5, r_max=1e4):
 
     r_final, _ = jax.lax.scan(step, r_start, xs=None, length=n_iters)
     return jnp.where(N_hat > EPS, r_final, r_old)
+
+
+def fit_durations_shrunk(xi_dur_acc, cens_acc, dur_r_old, dur_p_old, d_max, kappa):
+    """Per-(recipe,state) duration M-step with shrinkage toward the global per-state NegBin.
+
+    xi_dur_acc, cens_acc: (K_R, K, D_max) responsibility-weighted duration / censoring
+    histograms. dur_r_old, dur_p_old: (K_R, K) previous-iteration NB params, used only to
+    impute each cell's own right-censored mass. kappa: scalar pseudocount budget (expected
+    segments) of the global shape injected into every cell.
+
+    Order is load-bearing: impute per cell with that cell's own old (r,p) -> pool over recipes
+    for one global-per-state fit -> shrink each cell toward the global pmf -> re-fit per cell.
+    Shrinking before imputing would double-count censored mass against the wrong (r,p).
+
+    Splits sparse (recipe,state) cells' duration histograms into the K_R-fold-finer grid this
+    model introduces; many cells have too few expected segments for method-of-moments seeding
+    to land in a stable Newton basin (an under-dispersed sparse histogram is exactly where
+    method_of_moments_r's fallback fires or Newton starts far from any real root). Adding
+    kappa * pmf_global raises a starved cell's effective histogram into the well-behaved
+    regime while leaving well-populated cells (N_hat >> kappa) essentially unperturbed.
+
+    Returns dur_r, dur_p: (K_R, K).
+    """
+    impute_over_r = jax.vmap(impute_censored_histogram, in_axes=(0, 0, 0, 0, None))
+    n_hat = impute_over_r(xi_dur_acc, cens_acc, dur_r_old, dur_p_old, d_max)  # (K_R,K,D)
+
+    n_hat_global = jnp.sum(n_hat, axis=0)  # (K,D): pooled over recipes
+    n_hat_global_total, s_hat_global = duration_stats_from_histogram(n_hat_global, d_max)
+    r_fallback_global = jnp.mean(dur_r_old, axis=0)  # (K,): starved-state fallback for the global fit
+    r_global = newton_update_r(n_hat_global, n_hat_global_total, s_hat_global, r_fallback_global, n_iters=5)
+    p_global = update_p_given_r(n_hat_global_total, s_hat_global, r_global)
+    log_pmf_global, _ = duration_tables(r_global, p_global, d_max)
+    pmf_global = jnp.exp(log_pmf_global)  # (K,D)
+
+    n_hat_shrunk = n_hat + kappa * pmf_global[None, :, :]  # (K_R,K,D)
+
+    stats_over_r = jax.vmap(duration_stats_from_histogram, in_axes=(0, None))
+    n_hat_total, s_hat = stats_over_r(n_hat_shrunk, d_max)  # (K_R,K) each
+
+    newton_over_r = jax.vmap(functools.partial(newton_update_r, n_iters=5), in_axes=(0, 0, 0, 0))
+    dur_r = newton_over_r(n_hat_shrunk, n_hat_total, s_hat, dur_r_old)
+
+    p_over_r = jax.vmap(update_p_given_r, in_axes=(0, 0, 0))
+    dur_p = p_over_r(n_hat_total, s_hat, dur_r)
+
+    return dur_r, dur_p

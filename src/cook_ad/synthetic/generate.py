@@ -2,7 +2,7 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.stats import nbinom
 
-from cook_ad.hsmm import params
+from cook_ad.hsmm import joint_em, joint_params, params
 from cook_ad.recipe import segmentize
 
 
@@ -85,4 +85,87 @@ def trajectory_from_real(hsmm_params, verb_ids, noun_ids, d_max):
         "noun_ids": noun_ids,
         "segments": result["segments"],
         "subtask_per_tick": result["subtask_per_tick"],
+    }
+
+
+def _prob_tables_joint(joint_hsmm_params, d_max):
+    """Categorical prob tables for every recipe, reusing joint_params.to_log_probs_joint
+    (its duration tables are unused here -- sampling draws from dur_r/dur_p directly via
+    scipy, the same convention _prob_tables/sample_trajectory already use)."""
+    log_probs = joint_params.to_log_probs_joint(joint_hsmm_params, d_max)
+    return (
+        np.asarray(jnp.exp(log_probs.log_pi)),
+        np.asarray(jnp.exp(log_probs.log_init)),
+        np.asarray(jnp.exp(log_probs.log_trans)),
+        np.asarray(jnp.exp(log_probs.log_emit_v)),
+        np.asarray(jnp.exp(log_probs.log_emit_n)),
+    )
+
+
+def sample_trajectory_joint(joint_hsmm_params, rng, max_ticks, d_max):
+    """Joint-model analogue of sample_trajectory: draws R ~ pi once per trial, then samples
+    from that recipe's own init/trans/duration and the shared emissions -- so synthetic
+    healthy trials are genuinely recipe-structured, with the sampled recipe id returned as
+    ground truth (trajectory dicts gain a "recipe_id" key; existing consumers that only read
+    verb_ids/noun_ids/segments, e.g. synthetic.error_injection, are unaffected).
+    """
+    pi_p, init_p, trans_p, verb_p, noun_p = _prob_tables_joint(joint_hsmm_params, d_max)
+    dur_r = np.asarray(joint_hsmm_params.dur_r)
+    dur_p = np.asarray(joint_hsmm_params.dur_p)
+    k_recipe, k = init_p.shape
+
+    recipe = int(rng.choice(k_recipe, p=pi_p))
+
+    segments = []
+    verb_by_seg = []
+    noun_by_seg = []
+    total = 0
+    state = int(rng.choice(k, p=init_p[recipe]))
+
+    while total < max_ticks:
+        d = int(nbinom.rvs(dur_r[recipe, state], dur_p[recipe, state], random_state=rng)) + 1
+        d = min(max(d, 1), d_max, max_ticks - total)
+        verbs = rng.choice(verb_p.shape[1], size=d, p=verb_p[state])
+        nouns = rng.choice(noun_p.shape[1], size=d, p=noun_p[state])
+
+        segments.append((state, d))
+        verb_by_seg.append(verbs)
+        noun_by_seg.append(nouns)
+        total += d
+        state = int(rng.choice(k, p=trans_p[recipe, state]))
+
+    verb_ids, noun_ids, subtask_per_tick = _segments_to_arrays(segments, verb_by_seg, noun_by_seg)
+    return {
+        "verb_ids": verb_ids,
+        "noun_ids": noun_ids,
+        "segments": segments,
+        "subtask_per_tick": subtask_per_tick,
+        "recipe_id": recipe,
+    }
+
+
+def generate_healthy_joint(joint_hsmm_params, n, rng, max_ticks, d_max):
+    return [sample_trajectory_joint(joint_hsmm_params, rng, max_ticks, d_max) for _ in range(n)]
+
+
+def trajectory_from_real_joint(joint_hsmm_params, verb_ids, noun_ids, d_max):
+    """Adapter: joint-model analogue of trajectory_from_real. Infers the trial's MAP recipe
+    via joint_em.infer_recipe, then Viterbi-segments under that recipe's own tables
+    (segmentize.segment_all_conditioned) instead of the cascade's single shared table set.
+    """
+    verb_ids = np.asarray(verb_ids, dtype=np.int64)
+    noun_ids = np.asarray(noun_ids, dtype=np.int64)
+    verb_j = jnp.asarray(verb_ids)[None, :]
+    noun_j = jnp.asarray(noun_ids)[None, :]
+    mask = jnp.ones((1, verb_ids.shape[0]), dtype=bool)
+
+    r_hat, _, _ = joint_em.infer_recipe(joint_hsmm_params, verb_j, noun_j, mask, d_max, chunk_size=1)
+    log_probs = joint_params.to_log_probs_joint(joint_hsmm_params, d_max)
+    result = segmentize.segment_all_conditioned(log_probs, r_hat, verb_j, noun_j, mask, d_max)[0]
+    return {
+        "verb_ids": verb_ids,
+        "noun_ids": noun_ids,
+        "segments": result["segments"],
+        "subtask_per_tick": result["subtask_per_tick"],
+        "recipe_id": int(r_hat[0]),
     }

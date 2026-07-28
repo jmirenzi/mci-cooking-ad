@@ -211,6 +211,78 @@ def assemble_trace(hsmm_params, log_probs, recipe_log_trans, pi_all, verb_ids, n
     )
 
 
+def assemble_trace_joint(joint_hsmm_params, joint_log_probs, r_hat, log_trans_marginal, pi_all,
+                          verb_ids, noun_ids, seg_result):
+    """Joint-model analogue of assemble_trace: identical per-channel logic, but every
+    recipe-conditioned table (trans, duration) is sliced from the K_R-indexed
+    joint_log_probs/joint_hsmm_params at this trial's MAP recipe r_hat, while emissions stay
+    shared (unindexed). `pi_all` must already be the trial's predictive occupancy computed
+    under recipe r_hat's own tables (the caller's job -- messages.predictive_occupancy takes
+    one recipe's tables at a time).
+
+    s_transition is now recipe-conditioned (log_trans[r_hat] in place of the cascade's single
+    shared log_trans). s_recipe_transition is repurposed as the recipe-attributable excess:
+    the gap between the recipe-conditioned transition surprise and the same transition scored
+    under the pi-weighted marginal transition matrix (joint_params.marginal_log_trans) -- it
+    fires when a transition is ordinary in general but wrong for this trial's specific recipe.
+    Reuses transition_surprise verbatim for both terms rather than a new function.
+    expected_next_recipe is repurposed to hold r_hat at the same segment-boundary ticks
+    expected_next_state is valid at (there is only one recipe per trial now, not a
+    per-segment path), -1 elsewhere.
+    """
+    segments = seg_result["segments"]
+    z_star = seg_result["subtask_per_tick"]
+
+    log_trans_r = joint_log_probs.log_trans[r_hat]
+    log_dur_survival_r = joint_log_probs.log_dur_survival[r_hat]
+    dur_r_r = joint_hsmm_params.dur_r[r_hat]
+    dur_p_r = joint_hsmm_params.dur_p[r_hat]
+
+    s_emit, s_verb, s_noun = emission_surprise(
+        jnp.asarray(pi_all), joint_log_probs.log_emit_v, joint_log_probs.log_emit_n,
+        jnp.asarray(verb_ids), jnp.asarray(noun_ids),
+    )
+
+    log_emit_v_np = np.asarray(joint_log_probs.log_emit_v)
+    log_emit_n_np = np.asarray(joint_log_probs.log_emit_n)
+    expected_verb = np.argmax(log_emit_v_np[z_star], axis=-1)
+    expected_noun = np.argmax(log_emit_n_np[z_star], axis=-1)
+
+    s_temporal = temporal.live_stall_surprise(segments, log_dur_survival_r, log_dur_survival_r.shape[1])
+    s_transition, expected_next_state = transition_surprise(segments, log_trans_r)
+    s_transition_marginal, _ = transition_surprise(segments, log_trans_marginal)
+    s_recipe_transition = s_transition - s_transition_marginal
+    expected_next_recipe = np.where(expected_next_state != -1, int(r_hat), -1).astype(np.int64)
+
+    s_long, s_short, s_two, temporal_attr = temporal.completed_segment_surprise(segments, dur_r_r, dur_p_r)
+    pit_per_seg = temporal.pit_coordinate(segments, dur_r_r, dur_p_r)
+    s_dur_long = _scatter_segment_end(segments, s_long)
+    s_dur_short = _scatter_segment_end(segments, s_short)
+    s_dur_two = _scatter_segment_end(segments, s_two)
+    pit = _scatter_segment_end(segments, pit_per_seg, fill=np.nan)
+    temporal_attribution = _scatter_segment_end(segments, temporal_attr, fill="none", dtype=object)
+
+    return SurpriseTrace(
+        s_emit=np.asarray(s_emit),
+        s_verb=np.asarray(s_verb),
+        s_noun=np.asarray(s_noun),
+        s_temporal=s_temporal,
+        s_dur_long=s_dur_long,
+        s_dur_short=s_dur_short,
+        s_dur_two=s_dur_two,
+        s_transition=s_transition,
+        s_recipe_transition=s_recipe_transition,
+        pit=pit,
+        z_star=z_star,
+        expected_verb=expected_verb,
+        expected_noun=expected_noun,
+        expected_next_state=expected_next_state,
+        expected_next_recipe=expected_next_recipe,
+        attribution=attribute(s_verb, s_noun),
+        temporal_attribution=temporal_attribution,
+    )
+
+
 def compute_trace(hsmm_params, recipe_params, verb_ids, noun_ids, d_max):
     """Driver: single trial (v,n) stream -> a full SurpriseTrace. verb_ids/noun_ids: (T,) int
     arrays, no padding (mask is all-True; this is a per-trial analysis tool). For many trials
