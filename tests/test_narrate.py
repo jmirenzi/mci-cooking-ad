@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from cook_ad.anomaly import narrate, surprise
+from cook_ad.anomaly import narrate, quantile, surprise
 from cook_ad.hsmm import params
 from cook_ad.lifecycle import state_manager
 from cook_ad.recipe import recipe_hmm
@@ -151,6 +151,55 @@ def test_narrate_query_event_routes_to_state_manager():
             assert np.array_equal(new, old)
 
 
+def test_narrate_severity_uses_dilution_corrected_threshold():
+    """Regression for the original threshold-mismatch bug: narrate() used to recompute
+    quantile.threshold_tables() directly with no correction at all, dividing severity by the
+    raw per-state quantile even though flag() scores s_noun against the pi_all MIXTURE, not
+    the pure per-state distribution. narrate()'s severity ratio must come from the SAME
+    per-tick dilution-corrected threshold flag() used internally (surprise.emission_thresholds:
+    raw quantile - log(pi_at_zstar)), not the raw per-state table."""
+    p = _peaked_params()
+    recipe_params = _recipe_params()
+    vocab = _toy_vocab()
+
+    noun_query = trace = log_probs = recipe_log_trans = None
+    for seed in range(10):
+        traj = _long_trajectory(seed=200 + seed)
+        rng = np.random.default_rng(seed)
+        sub = error_injection.inject("substitution", traj, rng, p)
+        trace, log_probs, recipe_log_trans = surprise.compute_trace(
+            p, recipe_params, sub["verb_ids"], sub["noun_ids"], D_MAX
+        )
+        flags = surprise.flag(trace, log_probs, recipe_log_trans)
+        pi_all = surprise.compute_pi_all(log_probs, sub["verb_ids"], sub["noun_ids"], D_MAX)
+        queries = narrate.narrate(
+            trace, flags, vocab, p, sub["verb_ids"], sub["noun_ids"], log_probs, recipe_log_trans, pi_all
+        )
+        noun_queries = [q for q in queries if q.channel == "s_noun"]
+        if len(noun_queries) == 1:
+            noun_query = noun_queries[0]
+            break
+
+    assert noun_query is not None, "substitution never produced a clean single s_noun query"
+
+    raw_tables = quantile.threshold_tables(log_probs, recipe_log_trans, surprise.DEFAULT_ALPHA)
+    _, _, noun_thresh = surprise.emission_thresholds(trace, raw_tables)
+    corrected_threshold = float(noun_thresh[noun_query.tick])
+
+    state = trace.z_star[noun_query.tick]
+    raw_threshold = float(raw_tables.noun[state])
+    pi_at_tick = float(trace.pi_at_zstar[noun_query.tick])
+    assert pi_at_tick < 1.0, "fixture's belief happened to be exactly one-hot at this tick"
+
+    s_noun_value = float(trace.s_noun[noun_query.tick])
+    expected_ratio = s_noun_value / corrected_threshold
+    uncorrected_ratio = s_noun_value / raw_threshold  # what narrate used to compute, pre-fix
+
+    assert noun_query.ratio == pytest.approx(expected_ratio)
+    assert corrected_threshold == pytest.approx(raw_threshold - np.log(pi_at_tick))
+    assert noun_query.ratio != pytest.approx(uncorrected_ratio)
+
+
 _TOY_LOG_EMIT_3STATE = np.log(np.array([
     [0.98, 0.01, 0.01],  # state 0: 'idle'-like
     [0.05, 0.90, 0.05],  # state 1
@@ -159,9 +208,8 @@ _TOY_LOG_EMIT_3STATE = np.log(np.array([
 _TOY_PI_ALL_3STATE = np.log(np.array([[0.85, 0.10, 0.05]]))  # (T=1, K=3), mostly state 0
 
 
-class _FakeTables:
-    noun = np.array([1.0])
-    verb = np.array([1.0])
+_FAKE_VERB_THRESH = np.array([1.0])  # (T=1,) -- per-tick, post-emission_thresholds
+_FAKE_NOUN_THRESH = np.array([1.0])
 
 
 def test_emission_query_uses_conditional_expected_when_only_one_channel_flagged():
@@ -186,7 +234,7 @@ def test_emission_query_uses_conditional_expected_when_only_one_channel_flagged(
     noun_ids = np.array([observed_noun])
 
     queries = narrate._emission_queries(
-        trace, flags, segments, verb_ids, noun_ids, lexicon, _FakeTables(),
+        trace, flags, segments, verb_ids, noun_ids, lexicon, _FAKE_VERB_THRESH, _FAKE_NOUN_THRESH,
         pi_all, log_emit_v, log_emit_n,
     )
     assert len(queries) == 1
@@ -225,7 +273,7 @@ def test_emission_query_uses_joint_expected_when_both_channels_flagged():
     noun_ids = np.array([observed_noun])
 
     queries = narrate._emission_queries(
-        trace, flags, segments, verb_ids, noun_ids, lexicon, _FakeTables(),
+        trace, flags, segments, verb_ids, noun_ids, lexicon, _FAKE_VERB_THRESH, _FAKE_NOUN_THRESH,
         pi_all, log_emit_v, log_emit_n,
     )
     assert len(queries) == 1

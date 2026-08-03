@@ -35,27 +35,22 @@ CHANNELS = (
     "s_emit", "s_verb", "s_noun", "s_temporal", "s_dur_two", "s_transition", "s_recipe_transition",
 )
 
-# s_emit/s_verb/s_noun are computed against the pi_all MIXTURE but compared against a
-# threshold table calibrated for z_star's own SINGLE-state distribution -- an approximation
-# that is only valid when the filtered belief is concentrated on z_star (see belief_diagnostic
-# below). Measured directly on the mini checkpoint: many weak-limit states are near-
-# deterministic (entropy ~= 0), giving them razor-thin per-state thresholds (as low as
-# ~0.002 nats). Gating on belief_concentration does NOT fix this -- confirmed directly: a tick
-# at 99.94% concentration (about as confident as this model ever gets) still produced
-# s_emit=0.0031, comfortably above a 0.002-nat threshold. Any nonzero mixture weight on other
-# states dilutes s_emit past a threshold that tight, regardless of how concentrated pi_all is.
-# EMIT_THRESHOLD_FLOOR clamps each state's per-state quantile threshold up to AT LEAST the
-# ORIGINAL fixed nat value this module replaced (threshold = max(quantile_threshold, floor)).
-# This is deliberately asymmetric: it discards the TIGHTENING half of the calibration fix for
-# peaked/near-deterministic states (exactly the direction that exposed the mixture-mismatch
-# above -- a lower threshold there is what let mixture dilution blow past it), while keeping
-# the LOOSENING half for diffuse states (raising a threshold can only ever reduce flagging, so
-# it carries none of the mixture-mismatch risk regardless of belief concentration). Net effect:
-# peaked states revert to their old, safe fixed-nat behavior; diffuse states still get the
-# intended false-positive reduction the calibration was built for. Not exposed via the public
-# `thresholds` override -- this is an internal robustness floor, not a tunable.
-EMIT_THRESHOLD_FLOOR = {"s_emit": 6.0, "s_verb": 4.0, "s_noun": 4.0}
-
+# s_emit/s_verb/s_noun are computed against the pi_all MIXTURE (emission_surprise) but
+# calibrated per-state against z_star's own SINGLE-state distribution (quantile.py). Since
+#     mixture = sum_k pi_k P(o|k) >= pi_{z*} P(o|z*)
+#     => s_emit <= -log(pi_{z*}) + s_pure          where s_pure = -log P(o|z*),
+# the mixture can only inflate surprise above z*'s own view by AT MOST -log(pi_{z*}). Adding
+# that same per-tick offset to the per-state quantile threshold (emission_thresholds, below)
+# cancels the dilution exactly: an observation inside z*'s own alpha-quantile can never be
+# flagged by mixture dilution alone -- a one-sided correctness guarantee, not a heuristic.
+#
+# An earlier version of this fix used a flat floor (max(quantile_threshold, 6.0/4.0/4.0) --
+# the original fixed nats) instead of this per-tick correction. Measured directly: the flat
+# floor sat ABOVE the maximum achievable quantile threshold on every state at BOTH the mini
+# (K=20, max 2.60/2.52) and full-scale (K=64, max 3.30/2.87) checkpoints, making the emission
+# calibration entirely dead code -- every tick fell back to the old fixed-nat behavior
+# regardless of entropy. The per-tick dilution correction replaces it: it is tight only by the
+# amount of ACTUAL dilution present at that tick (pi_{z*} < 1), not a blanket safety margin.
 DEFAULT_ATTRIBUTION_MARGIN = 2.0
 
 
@@ -80,6 +75,7 @@ class SurpriseTrace(NamedTuple):
     from_state: np.ndarray             # (T,) previous segment's subtask id at segment-start ticks, -1 elsewhere
     from_recipe: np.ndarray            # (T,) previous segment's recipe id at segment-start ticks (cascade only), -1 elsewhere
     belief_concentration: np.ndarray   # (T,) max_k P(Z_t=k|o_{<t}), diagnostic for the z_star-indexed threshold approximation
+    pi_at_zstar: np.ndarray             # (T,) P(Z_t=z_star_t|o_{<t}) -- the mixture weight ON z_star specifically, used to cancel dilution in emission_thresholds
 
 
 def emission_surprise(pi_all, log_emit_v, log_emit_n, verb_ids, noun_ids):
@@ -275,19 +271,32 @@ def _duration_thresholds(alpha, thresholds):
     return resolved
 
 
-def _base_flags(trace, tables, alpha, thresholds):
-    """s_emit/s_verb/s_noun (z_star-indexed, floored at the original fixed-nat thresholds --
-    see EMIT_THRESHOLD_FLOOR), s_temporal/s_dur_two (duration-channel scalars), and
-    s_transition (from_state-indexed, masked to segment-start ticks). Shared by
-    flag()/flag_joint(); each caller adds its own s_recipe_transition, since the cascade indexes
-    it by from_recipe and the joint model repurposes it as a from_state-indexed signed excess
-    (see assemble_trace_joint)."""
-    resolved = _duration_thresholds(alpha, thresholds)
-    z = trace.z_star
+def emission_thresholds(trace, tables):
+    """Per-tick (T,) thresholds for s_emit/s_verb/s_noun: the z_star-indexed quantile table,
+    corrected for pi_all-mixture dilution by adding -log(pi_at_zstar) at each tick (see the
+    module-level comment above CHANNELS for the one-sided guarantee this provides). Callers
+    that flag ticks (_base_flags) and callers that narrate them (narrate.narrate) must divide
+    by the SAME per-tick threshold -- narrate() previously recomputed threshold_tables()
+    directly with no correction at all, so severity on peaked states (raw quantile as low as
+    ~0.002 nats) divided by a threshold with no dilution allowance, pushing ratio arbitrarily
+    high and rendering nearly every emission query "high" regardless of how surprising the
+    observation actually was relative to what got flagged.
 
-    emit_thresh = np.maximum(tables.emit[z], EMIT_THRESHOLD_FLOOR["s_emit"])
-    verb_thresh = np.maximum(tables.verb[z], EMIT_THRESHOLD_FLOOR["s_verb"])
-    noun_thresh = np.maximum(tables.noun[z], EMIT_THRESHOLD_FLOOR["s_noun"])
+    Returns (emit_thresh, verb_thresh, noun_thresh), each (T,)."""
+    z = trace.z_star
+    offset = -np.log(np.asarray(trace.pi_at_zstar))
+    return tables.emit[z] + offset, tables.verb[z] + offset, tables.noun[z] + offset
+
+
+def _base_flags(trace, tables, alpha, thresholds):
+    """s_emit/s_verb/s_noun (z_star-indexed, dilution-corrected per tick -- see
+    emission_thresholds), s_temporal/s_dur_two (duration-channel scalars), and s_transition
+    (from_state-indexed, masked to segment-start ticks). Shared by flag()/flag_joint(); each
+    caller adds its own s_recipe_transition, since the cascade indexes it by from_recipe and
+    the joint model repurposes it as a from_state-indexed signed excess (see
+    assemble_trace_joint)."""
+    resolved = _duration_thresholds(alpha, thresholds)
+    emit_thresh, verb_thresh, noun_thresh = emission_thresholds(trace, tables)
 
     from_state_valid = trace.from_state != -1
     from_state_safe = np.where(from_state_valid, trace.from_state, 0)
@@ -410,7 +419,9 @@ def assemble_trace(hsmm_params, log_probs, recipe_log_trans, pi_all, verb_ids, n
 
     from_state = _scatter_from_previous(segments, [s for s, _ in segments])
     from_recipe = _scatter_from_previous(segments, list(seg_recipe_ids))
-    belief_concentration = np.max(np.exp(np.asarray(pi_all)), axis=-1)
+    pi_all_np = np.exp(np.asarray(pi_all))
+    belief_concentration = np.max(pi_all_np, axis=-1)
+    pi_at_zstar = pi_all_np[np.arange(z_star.shape[0]), z_star]
 
     return SurpriseTrace(
         s_emit=np.asarray(s_emit),
@@ -433,6 +444,7 @@ def assemble_trace(hsmm_params, log_probs, recipe_log_trans, pi_all, verb_ids, n
         from_state=from_state,
         from_recipe=from_recipe,
         belief_concentration=belief_concentration,
+        pi_at_zstar=pi_at_zstar,
     )
 
 
@@ -489,7 +501,9 @@ def assemble_trace_joint(joint_hsmm_params, joint_log_probs, r_hat, log_trans_ma
 
     from_state = _scatter_from_previous(segments, [s for s, _ in segments])
     from_recipe = np.full_like(from_state, -1)  # recipe channel is indexed by from_state under r_hat, not from_recipe
-    belief_concentration = np.max(np.exp(np.asarray(pi_all)), axis=-1)
+    pi_all_np = np.exp(np.asarray(pi_all))
+    belief_concentration = np.max(pi_all_np, axis=-1)
+    pi_at_zstar = pi_all_np[np.arange(z_star.shape[0]), z_star]
 
     return SurpriseTrace(
         s_emit=np.asarray(s_emit),
@@ -512,6 +526,7 @@ def assemble_trace_joint(joint_hsmm_params, joint_log_probs, r_hat, log_trans_ma
         from_state=from_state,
         from_recipe=from_recipe,
         belief_concentration=belief_concentration,
+        pi_at_zstar=pi_at_zstar,
     )
 
 

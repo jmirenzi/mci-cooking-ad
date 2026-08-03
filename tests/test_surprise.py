@@ -1,3 +1,5 @@
+from typing import NamedTuple
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -5,10 +7,72 @@ import pytest
 from jax.scipy.special import logsumexp
 from test_messages import _brute_force_segmentations, _brute_force_stats, _random_log_probs
 
-from cook_ad.anomaly import surprise, temporal
+from cook_ad.anomaly import quantile, surprise, temporal
 from cook_ad.hsmm import emissions, messages, params
 
 jax.config.update("jax_enable_x64", True)
+
+
+class _FakeZTrace(NamedTuple):
+    """Minimal stand-in for SurpriseTrace: emission_thresholds only reads z_star/pi_at_zstar."""
+    z_star: np.ndarray
+    pi_at_zstar: np.ndarray
+
+
+def test_emission_thresholds_cancel_mixture_dilution():
+    """emission_thresholds must add -log(pi_at_zstar) to the z_star-indexed quantile table
+    (the exact offset that cancels mixture dilution -- see the derivation in surprise.py's
+    module comment above CHANNELS), transition/recipe are untouched (no mixture weighting
+    there), and pi_at_zstar==1.0 (no dilution at all) must reduce EXACTLY to the raw quantile
+    table with zero offset."""
+    tables = quantile.ThresholdTables(
+        emit=np.array([0.002, 9.0]),
+        verb=np.array([0.002, 9.0]),
+        noun=np.array([0.002, 9.0]),
+        transition=np.array([-1.5, 9.0]),
+        recipe=np.array([-1.5, 9.0]),
+    )
+    trace = _FakeZTrace(z_star=np.array([0, 1, 0]), pi_at_zstar=np.array([0.5, 1.0, 0.1]))
+    emit_t, verb_t, noun_t = surprise.emission_thresholds(trace, tables)
+
+    expected_offset = -np.log(trace.pi_at_zstar)
+    assert np.allclose(emit_t, tables.emit[trace.z_star] + expected_offset)
+    assert np.allclose(verb_t, tables.verb[trace.z_star] + expected_offset)
+    assert np.allclose(noun_t, tables.noun[trace.z_star] + expected_offset)
+
+    # pi_at_zstar == 1.0 (tick 1): zero offset, reduces exactly to the pure per-state quantile.
+    assert emit_t[1] == pytest.approx(tables.emit[1])
+    assert verb_t[1] == pytest.approx(tables.verb[1])
+    assert noun_t[1] == pytest.approx(tables.noun[1])
+
+
+def test_emission_thresholds_never_flag_the_dominant_token_under_dilution():
+    """Regression guard for the exact bug the flat EMIT_THRESHOLD_FLOOR was papering over: a
+    genuinely mixture-diluted s_emit for a state's OWN dominant token must never exceed the
+    dilution-corrected threshold, for ANY pi_at_zstar in (0, 1]. This is the property that
+    would have caught the original fix driving healthy false-positive rate to 1.000 -- a tight
+    per-state threshold combined with real mixture dilution used to blow past it every time.
+
+    Constructs a genuine 2-state mixture (weight pi_zstar on the believed state z*, weight
+    1-pi_zstar on a second, unrelated state) and computes s_emit directly from that mixture,
+    not from the algebraic bound -- so this checks the actual arithmetic, not just restates the
+    derivation."""
+    rng = np.random.default_rng(0)
+    v = 6
+    p_star = rng.dirichlet(np.ones(v))          # z*'s own categorical
+    p_other = rng.dirichlet(np.ones(v))         # a different state's categorical
+    dom = int(np.argmax(p_star))                 # z*'s dominant token
+
+    log_p_star = np.log(p_star)[None, :]
+    threshold = quantile.categorical_quantile_threshold(log_p_star, alpha=0.05)[0]
+
+    for pi_zstar in (1.0, 0.99, 0.9, 0.5, 0.1, 0.01, 1e-4):
+        mixture_prob = pi_zstar * p_star[dom] + (1.0 - pi_zstar) * p_other[dom]
+        s_observed = -np.log(mixture_prob)
+        corrected_threshold = threshold - np.log(pi_zstar)
+        assert s_observed <= corrected_threshold + 1e-9, (
+            f"dominant token flagged at pi_zstar={pi_zstar}: {s_observed} > {corrected_threshold}"
+        )
 
 
 @pytest.mark.parametrize(

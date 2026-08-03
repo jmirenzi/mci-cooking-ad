@@ -14,8 +14,10 @@ from cook_ad.synthetic import error_injection, generate
 jax.config.update("jax_enable_x64", True)
 
 
-def _flags_for_all(sequences, hsmm_params, recipe_params, d_max):
-    traces, log_probs, recipe_log_trans = batch.compute_traces(hsmm_params, recipe_params, sequences, d_max)
+def _flags_for_all(sequences, hsmm_params, recipe_params, d_max, chunk_size):
+    traces, log_probs, recipe_log_trans = batch.compute_traces(
+        hsmm_params, recipe_params, sequences, d_max, chunk_size=chunk_size
+    )
     flags = [surprise.flag(t, log_probs, recipe_log_trans) for t in traces]
     return flags, traces
 
@@ -24,20 +26,20 @@ def _usable(trajectories):
     return [t for t in trajectories if len(t["segments"]) >= error_injection.MIN_SEGMENTS]
 
 
-def evaluate_source(trajectories, hsmm_params, recipe_params, d_max, rng, tag, n_nouns):
+def evaluate_source(trajectories, hsmm_params, recipe_params, d_max, rng, tag, n_nouns, chunk_size=16):
     """Run the full 5-error evaluation for one healthy source (synthetic or real)."""
     trajectories = _usable(trajectories)
     print(f"\n[{tag}] {len(trajectories)} usable trajectories (>= {error_injection.MIN_SEGMENTS} segments)",
           flush=True)
 
-    healthy_flags, healthy_traces = _flags_for_all(trajectories, hsmm_params, recipe_params, d_max)
+    healthy_flags, healthy_traces = _flags_for_all(trajectories, hsmm_params, recipe_params, d_max, chunk_size)
     all_traces = list(healthy_traces)
 
     degraded_by_type = {}
     degraded_traj_pool = []
     for error_type in error_injection.ERROR_TYPES:
         degraded = [error_injection.inject(error_type, t, rng, hsmm_params) for t in trajectories]
-        flags, traces = _flags_for_all(degraded, hsmm_params, recipe_params, d_max)
+        flags, traces = _flags_for_all(degraded, hsmm_params, recipe_params, d_max, chunk_size)
         all_traces.extend(traces)
         degraded_by_type[error_type] = list(zip(flags, (d["window"] for d in degraded)))
         degraded_traj_pool.extend(degraded)
@@ -50,8 +52,10 @@ def evaluate_source(trajectories, hsmm_params, recipe_params, d_max, rng, tag, n
     return report
 
 
-def _flags_for_all_joint(sequences, joint_hsmm_params, d_max):
-    traces, log_probs, r_hat, log_trans_marginal = batch.compute_traces_joint(joint_hsmm_params, sequences, d_max)
+def _flags_for_all_joint(sequences, joint_hsmm_params, d_max, chunk_size):
+    traces, log_probs, r_hat, log_trans_marginal = batch.compute_traces_joint(
+        joint_hsmm_params, sequences, d_max, chunk_size=chunk_size
+    )
     flags = [
         surprise.flag_joint(t, log_probs, int(r_hat[i]), log_trans_marginal)
         for i, t in enumerate(traces)
@@ -59,7 +63,8 @@ def _flags_for_all_joint(sequences, joint_hsmm_params, d_max):
     return flags, traces
 
 
-def evaluate_source_joint(trajectories, joint_hsmm_params, marginal_hsmm_params, d_max, rng, tag, n_nouns):
+def evaluate_source_joint(trajectories, joint_hsmm_params, marginal_hsmm_params, d_max, rng, tag, n_nouns,
+                          chunk_size=16):
     """Joint-model analogue of evaluate_source. error_injection is unchanged and recipe-
     agnostic by construction (it only reads emissions), so it's handed the pi-weighted
     marginal collapse of the joint params (joint_params.collapse_to_marginal) rather than a
@@ -70,14 +75,14 @@ def evaluate_source_joint(trajectories, joint_hsmm_params, marginal_hsmm_params,
     print(f"\n[{tag}] {len(trajectories)} usable trajectories (>= {error_injection.MIN_SEGMENTS} segments)",
           flush=True)
 
-    healthy_flags, healthy_traces = _flags_for_all_joint(trajectories, joint_hsmm_params, d_max)
+    healthy_flags, healthy_traces = _flags_for_all_joint(trajectories, joint_hsmm_params, d_max, chunk_size)
     all_traces = list(healthy_traces)
 
     degraded_by_type = {}
     degraded_traj_pool = []
     for error_type in error_injection.ERROR_TYPES:
         degraded = [error_injection.inject(error_type, t, rng, marginal_hsmm_params) for t in trajectories]
-        flags, traces = _flags_for_all_joint(degraded, joint_hsmm_params, d_max)
+        flags, traces = _flags_for_all_joint(degraded, joint_hsmm_params, d_max, chunk_size)
         all_traces.extend(traces)
         degraded_by_type[error_type] = list(zip(flags, (d["window"] for d in degraded)))
         degraded_traj_pool.extend(degraded)
@@ -116,7 +121,8 @@ def _run_cascade(args, config, d_max, n_nouns):
     print(f"\n[cascade] checkpoint: {args.params}")
 
     synthetic = generate.generate_healthy(hsmm_params, args.n, rng, args.max_ticks, d_max)
-    syn_report = evaluate_source(synthetic, hsmm_params, recipe_params, d_max, rng, "cascade/synthetic", n_nouns)
+    syn_report = evaluate_source(synthetic, hsmm_params, recipe_params, d_max, rng, "cascade/synthetic", n_nouns,
+                                  chunk_size=args.chunk_size)
     _print_report(syn_report, "cascade/synthetic")
     plotting.save_figures(syn_report, args.figures_dir, "cascade_synthetic")
 
@@ -126,7 +132,8 @@ def _run_cascade(args, config, d_max, n_nouns):
         generate.trajectory_from_real(hsmm_params, s["verb_ids"], s["noun_ids"], d_max)
         for s in sequences[: args.max_real]
     ]
-    real_report = evaluate_source(real, hsmm_params, recipe_params, d_max, rng, "cascade/real", n_nouns)
+    real_report = evaluate_source(real, hsmm_params, recipe_params, d_max, rng, "cascade/real", n_nouns,
+                                   chunk_size=args.chunk_size)
     _print_report(real_report, "cascade/real")
     plotting.save_figures(real_report, args.figures_dir, "cascade_real")
 
@@ -140,7 +147,8 @@ def _run_joint(args, config, d_max, n_nouns):
 
     synthetic = generate.generate_healthy_joint(joint_hsmm_params, args.n, rng, args.max_ticks, d_max)
     syn_report = evaluate_source_joint(
-        synthetic, joint_hsmm_params, marginal_hsmm_params, d_max, rng, "joint/synthetic", n_nouns
+        synthetic, joint_hsmm_params, marginal_hsmm_params, d_max, rng, "joint/synthetic", n_nouns,
+        chunk_size=args.chunk_size,
     )
     _print_report(syn_report, "joint/synthetic")
     plotting.save_figures(syn_report, args.figures_dir, "joint_synthetic")
@@ -152,7 +160,8 @@ def _run_joint(args, config, d_max, n_nouns):
         for s in sequences[: args.max_real]
     ]
     real_report = evaluate_source_joint(
-        real, joint_hsmm_params, marginal_hsmm_params, d_max, rng, "joint/real", n_nouns
+        real, joint_hsmm_params, marginal_hsmm_params, d_max, rng, "joint/real", n_nouns,
+        chunk_size=args.chunk_size,
     )
     _print_report(real_report, "joint/real")
     plotting.save_figures(real_report, args.figures_dir, "joint_real")
@@ -180,6 +189,9 @@ def main():
     parser.add_argument("--max-ticks", type=int, default=100, help="length of each synthetic trajectory")
     parser.add_argument("--max-real", type=int, default=80, help="cap real trials for runtime")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--chunk-size", type=int, default=16,
+                        help="batch chunk size for eval.batch.compute_traces[_joint]; lower this "
+                             "at full scale (K=64, D_max=200, T_max~650) to bound peak memory")
     args = parser.parse_args()
 
     config = load_config(args.config)

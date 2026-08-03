@@ -14,7 +14,9 @@ from cook_ad.anomaly.quantile import (
     joint_quantile_threshold,
     transition_quantile_threshold,
 )
+from cook_ad.eval import batch
 from cook_ad.hsmm import joint_params, params
+from cook_ad.synthetic import generate
 
 
 def _largest_achievable_mass(scores, probs, alpha):
@@ -166,6 +168,7 @@ def _build_transition_trace(segments, log_trans):
         attribution=np.full(t_true, "none", dtype=object),
         temporal_attribution=np.full(t_true, "none", dtype=object),
         from_state=from_state, from_recipe=from_recipe, belief_concentration=np.ones(t_true),
+        pi_at_zstar=np.ones(t_true),
     )
 
 
@@ -266,6 +269,7 @@ def test_flag_masks_non_boundary_ticks_under_negative_threshold():
         attribution=np.full(t_true, "none", dtype=object),
         temporal_attribution=np.full(t_true, "none", dtype=object),
         from_state=from_state, from_recipe=from_recipe, belief_concentration=np.ones(t_true),
+        pi_at_zstar=np.ones(t_true),
     )
 
     flags = surprise.flag_joint(trace, joint_log_probs, r_hat, jnp.array(log_trans_marginal), alpha=alpha)
@@ -286,3 +290,46 @@ def test_thresholds_override_rejects_recalibrated_channels():
     # the two duration channels are still overridable
     resolved = surprise._duration_thresholds(alpha=surprise.DEFAULT_ALPHA, thresholds={"s_temporal": 1.0})
     assert resolved["s_temporal"] == 1.0
+
+
+def _peaked_joint_params(k_recipe=2, k=4, v=5, n=5, d_max=15):
+    """Sharp per-state verb/noun tables (shared across recipes, like the real joint model) and
+    a distinct per-recipe transition structure -- enough for compute_traces_joint to produce a
+    genuine, non-degenerate segmentation."""
+    per_recipe = [
+        params.init_weak_limit_params(jax.random.PRNGKey(r), k, v, n, d_max) for r in range(k_recipe)
+    ]
+    verb = jnp.full((k, v), 0.2).at[jnp.arange(k), jnp.arange(k) % v].set(200.0)
+    noun = jnp.full((k, n), 0.2).at[jnp.arange(k), jnp.arange(k) % n].set(200.0)
+    return joint_params.JointHSMMParams(
+        init_counts=jnp.stack([p.init_counts for p in per_recipe]),
+        trans_counts=jnp.stack([p.trans_counts for p in per_recipe]),
+        verb_counts=verb,
+        noun_counts=noun,
+        dur_r=jnp.stack([jnp.full((k,), 6.0) for _ in per_recipe]),
+        dur_p=jnp.stack([jnp.full((k,), 0.5) for _ in per_recipe]),
+        pi_counts=jnp.ones(k_recipe),
+    )
+
+
+def test_compute_traces_joint_end_to_end_flag_joint():
+    """Closes a real coverage gap: nothing previously exercised eval.batch.compute_traces_joint
+    together with flag_joint on a genuine assemble_trace_joint output -- the joint model's flag
+    path was covered only by hand-built synthetic traces above. Runs the actual joint driver
+    end to end and checks the dilution-correction machinery (pi_at_zstar, emission_thresholds)
+    behaves sanely on real (non-hand-built) output: pi_at_zstar is a valid probability and is
+    always <= belief_concentration (the mixture weight AT z_star can never exceed the mixture's
+    OWN max weight, by definition)."""
+    jp = _peaked_joint_params()
+    rng = np.random.default_rng(3)
+    trials = generate.generate_healthy_joint(jp, n=4, rng=rng, max_ticks=60, d_max=15)
+
+    traces, log_probs, r_hat, log_trans_marginal = batch.compute_traces_joint(jp, trials, d_max=15)
+    assert len(traces) == 4
+
+    for i, trace in enumerate(traces):
+        flags = surprise.flag_joint(trace, log_probs, int(r_hat[i]), log_trans_marginal)
+        assert set(flags) == set(surprise.CHANNELS)
+        assert np.all((trace.pi_at_zstar > 0) & (trace.pi_at_zstar <= 1.0 + 1e-9))
+        assert np.all(trace.pi_at_zstar <= trace.belief_concentration + 1e-9)
+        assert np.all(trace.from_recipe == -1)  # joint trace never populates from_recipe

@@ -154,7 +154,7 @@ def _severity(value, threshold):
     return label, ratio
 
 
-def _emission_queries(trace, flags, segments, verb_ids, noun_ids, lexicon, tables,
+def _emission_queries(trace, flags, segments, verb_ids, noun_ids, lexicon, verb_thresh, noun_thresh,
                       pi_all, log_emit_v, log_emit_n):
     queries = []
     s_noun_flags = np.asarray(flags["s_noun"])
@@ -168,7 +168,7 @@ def _emission_queries(trace, flags, segments, verb_ids, noun_ids, lexicon, table
             tick = int(n_ticks[np.argmax(np.asarray(trace.s_noun)[n_ticks])])
             observed_verb = int(verb_ids[tick])
             observed_noun = int(noun_ids[tick])
-            severity, ratio = _severity(trace.s_noun[tick], tables.noun[state])
+            severity, ratio = _severity(trace.s_noun[tick], noun_thresh[tick])
             hedge = SEVERITY_HEDGE[severity]
             # attribution="item" means s_noun dominates s_verb by margin -- the verb is the
             # BIGGER culprit's opposite, not necessarily clean. If s_verb is ALSO independently
@@ -198,7 +198,7 @@ def _emission_queries(trace, flags, segments, verb_ids, noun_ids, lexicon, table
             tick = int(v_ticks[np.argmax(np.asarray(trace.s_verb)[v_ticks])])
             observed_verb = int(verb_ids[tick])
             observed_noun = int(noun_ids[tick])
-            severity, ratio = _severity(trace.s_verb[tick], tables.verb[state])
+            severity, ratio = _severity(trace.s_verb[tick], verb_thresh[tick])
             hedge = SEVERITY_HEDGE[severity]
             # Mirrors the noun branch above: don't anchor on the observed noun if s_noun is
             # ALSO independently flagged at this tick.
@@ -330,20 +330,23 @@ def narrate(trace, flags, vocab, hsmm_params, verb_ids, noun_ids, log_probs, rec
     is NOT part of `compute_trace`'s return value; get it via `surprise.compute_pi_all(log_probs,
     verb_ids, noun_ids, d_max)` on the same (verb_ids, noun_ids, d_max) used to build `trace`.
     `alpha` must match the alpha used to build `flags`, since severity is computed against the
-    same per-state quantile tables `flag()` used internally.
+    same per-tick dilution-corrected thresholds `flag()` used internally
+    (surprise.emission_thresholds), so a query's severity is never computed against a
+    threshold that doesn't match the one that actually gated its flag.
     """
     verb_ids = np.asarray(verb_ids)
     noun_ids = np.asarray(noun_ids)
     pi_all = np.asarray(pi_all)
     lexicon = Lexicon(vocab, hsmm_params)
     tables = quantile.threshold_tables(log_probs, recipe_log_trans, alpha)
+    _, verb_thresh, noun_thresh = surprise.emission_thresholds(trace, tables)
     log_trans = np.asarray(log_probs.log_trans)
     dur_threshold = -float(np.log(alpha))
     segments = segments_from_z(trace.z_star)
 
     queries = []
     queries += _emission_queries(
-        trace, flags, segments, verb_ids, noun_ids, lexicon, tables,
+        trace, flags, segments, verb_ids, noun_ids, lexicon, verb_thresh, noun_thresh,
         pi_all, log_probs.log_emit_v, log_probs.log_emit_n,
     )
     queries += _stall_queries(trace, flags, segments, lexicon, dur_threshold)
