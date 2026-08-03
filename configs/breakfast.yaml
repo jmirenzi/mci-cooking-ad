@@ -7,13 +7,30 @@ vocab:
 k_subtask: 64   # weak-limit nominal; covers 48 actions + 1 SIL/"stall" state + headroom
 k_recipe: 16    # weak-limit nominal; covers 10 known recipes + headroom
 
+prior:
+  alpha_pi: 1.0            # recipe Dirichlet concentration (weak-limit: keep small) -- mirrors breakfast_mini.yaml
+
 duration:
   d_max_ticks: 200   # ~p99 of segment lengths at 1s ticks; longer segments right-censor into the last bin
+  shrinkage_kappa: 5.0     # global-shape pseudocount for per-(Z,R) NB fitting -- mirrors breakfast_mini.yaml
 
 em:
   restarts: 10
   annealing: false   # deterministic annealing toggle, off by default; flip on if restarts alone don't escape the non-log-concave prior
   chunk_size: 8
+
+joint_em:
+  warm_start: true         # if false, use random init + restarts (fallback only)
+  cascade_hsmm_params: dataset/processed/breakfast/hsmm_params.npz
+  cascade_recipe_params: dataset/processed/breakfast/recipe_params.npz
+  n_restarts: 1             # warm-start is deterministic; >1 only for random fallback
+  max_iters: 100
+  tol: 1.0e-4
+  # NOT overriding em.chunk_size's derived joint chunk_size (max(1, em.chunk_size // k_recipe)
+  # = max(1, 8 // 16) = 1) here on purpose: at K=64/D_max=200/T_max~650 on a 6GB GPU, raising
+  # it is unverified and risks an OOM mid-run, which checkpointing can't recover gracefully
+  # from mid-iteration. Safe to raise once a checkpointed run has shown real memory headroom.
+  checkpoint_every: 5       # iterations between resumable checkpoints -- see run_joint.py --resume
 
 ambient_gaps:
   inject_synthetic_gaps: false   # SIL is 7.3% of frames (near-dense) -> skip per spec's audit rule

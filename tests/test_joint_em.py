@@ -167,7 +167,7 @@ def test_objective_approximately_non_decreasing():
         pi_counts=jnp.ones(k_r),
     )
 
-    best, obj, history = joint_em.run_joint_em(
+    best, obj, history, converged = joint_em.run_joint_em(
         jp0, sequences, D_MAX, alpha_pi=1.0, kappa=1.0, max_iters=20, tol=1e-4, chunk_size=4,
     )
 
@@ -208,7 +208,7 @@ def test_recipe_recovery_from_well_separated_dynamics():
         pi_counts=jnp.array([1.0, 1.0]),
     )
 
-    best, obj, history = joint_em.run_joint_em(
+    best, obj, history, converged = joint_em.run_joint_em(
         jp0, sequences, D_MAX, alpha_pi=1.0, kappa=1.0, max_iters=25, tol=1e-4, chunk_size=4,
     )
 

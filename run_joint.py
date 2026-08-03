@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import time
 
 import jax
@@ -11,6 +12,49 @@ from cook_ad.hsmm import joint_em, joint_params, params
 from cook_ad.recipe import recipe_hmm, segmentize, warm_start
 
 jax.config.update("jax_enable_x64", True)
+
+
+def _checkpoint_meta_path(out_path):
+    return out_path + ".meta.json"
+
+
+def _save_checkpoint(out_path, joint_hsmm_params, iteration, history, complete=False):
+    """Write params + a small JSON sidecar (iteration count, objective history, whether EM had
+    genuinely CONVERGED -- tol-based stopping, not merely reaching max_iters -- as of this
+    save) atomically: write to a temp path then os.replace, so a process killed mid-write
+    (closed laptop, Ctrl+C) never leaves a half-written checkpoint that a later --resume would
+    load as valid. Both files are replaced only after both temp writes succeed. `complete` is
+    named for the JSON field, which callers read as "was this run fully converged"."""
+    meta_path = _checkpoint_meta_path(out_path)
+    # np.savez (inside joint_params.save_params) silently APPENDS .npz to any path that
+    # doesn't already end in it -- a plain "out_path + '.tmp'" tmp name would actually get
+    # written to "out_path + '.tmp.npz'", and the os.replace below would then fail to find
+    # the file it just wrote. Keep the tmp name ending in .npz so save_params writes exactly
+    # where we tell it to.
+    tmp_out = out_path + ".tmp.npz"
+    tmp_meta = meta_path + ".tmp"
+    joint_params.save_params(joint_hsmm_params, tmp_out)
+    with open(tmp_meta, "w") as f:
+        json.dump({"iteration": iteration, "history": history, "converged": complete}, f)
+    os.replace(tmp_out, out_path)
+    os.replace(tmp_meta, meta_path)
+    print(f"  [checkpoint] saved at iteration {iteration}, obj={history[-1]:.1f}", flush=True)
+
+
+def _load_checkpoint(out_path):
+    """Returns (params, iteration, history, converged) if a valid checkpoint exists at
+    out_path, else None. Requires BOTH the params file and its meta sidecar -- a params file
+    with no meta (e.g. from a run predating --resume support, or a manually-placed file) is
+    not treated as a resumable checkpoint. `converged=True` means EM's tol-based stopping
+    criterion had genuinely fired as of this checkpoint, not merely that it hit max_iters --
+    see run_joint_em's docstring for why that distinction matters on resume."""
+    meta_path = _checkpoint_meta_path(out_path)
+    if not (os.path.exists(out_path) and os.path.exists(meta_path)):
+        return None
+    with open(meta_path) as f:
+        meta = json.load(f)
+    loaded_params = joint_params.load_params(out_path)
+    return loaded_params, meta["iteration"], meta["history"], meta.get("converged", False)
 
 
 def _load_and_join(sequences_path, labels_path):
@@ -74,6 +118,15 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-iters", type=int, default=None)
     parser.add_argument("--tol", type=float, default=None)
+    parser.add_argument("--checkpoint-every", type=int, default=None,
+                        help="iterations between resumable checkpoints at --out; falls back to "
+                             "joint_em.checkpoint_every in the config, or 5 if that's absent too")
+    parser.add_argument("--restart", action="store_true",
+                        help="ignore any existing checkpoint at --out and start over from the "
+                             "cascade warm start (default: auto-resume if --out has a valid "
+                             "checkpoint from a previous run). Only applies to the warm_start "
+                             "path -- the random-init fallback (joint_em.warm_start: false) is "
+                             "never resumable.")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -87,6 +140,7 @@ def main():
     max_iters = args.max_iters if args.max_iters is not None else jcfg["max_iters"]
     tol = args.tol if args.tol is not None else jcfg["tol"]
     chunk_size = max(1, config["em"]["chunk_size"] // k_recipe)
+    checkpoint_every = args.checkpoint_every if args.checkpoint_every is not None else jcfg.get("checkpoint_every", 5)
 
     sequences, joined_labels = _load_and_join(args.sequences, args.labels)
     print(f"trials: {len(sequences)}")
@@ -94,27 +148,59 @@ def main():
 
     key = jax.random.PRNGKey(args.seed)
 
+    checkpoint = None if (args.restart or not jcfg["warm_start"]) else _load_checkpoint(args.out)
+
+    already_saved = False  # random-restart fallback (only path with no checkpointing) still needs the final save below
+
     if jcfg["warm_start"]:
-        hsmm_params = params.load_params(jcfg["cascade_hsmm_params"])
-        recipe_params = recipe_hmm.load_params(jcfg["cascade_recipe_params"])
+        on_checkpoint = lambda it, p, hist: _save_checkpoint(args.out, p, it, hist)  # noqa: E731
+        skip_em = False
 
-        start = time.time()
-        init_params = warm_start.cascade_to_joint(
-            hsmm_params, recipe_params, sequences, d_max, k_recipe, kappa, seed=args.seed
-        )
-        print(f"cascade warm start: {time.time() - start:.1f}s")
-        print(f"warm-start pi_counts (empirical recipe fractions): {np.asarray(init_params.pi_counts)}")
-        _print_warm_start_sanity(init_params, d_max, k_recipe)
+        if checkpoint is not None:
+            init_params, start_iteration, init_history, was_converged = checkpoint
+            if was_converged and start_iteration >= max_iters:
+                # NOT just "let run_joint_em no-op": its empty-range return always reports
+                # converged=False (it never re-ran the tol check), so re-saving through it
+                # here would silently downgrade an already-converged checkpoint's flag back
+                # to False on every subsequent low-max-iters invocation. Reuse the loaded
+                # state directly instead, preserving the real converged=True faithfully.
+                print(f"[checkpoint] {args.out} already converged at iteration {start_iteration} "
+                      f"-- nothing to do at max_iters={max_iters}. Pass --restart to refit, or "
+                      f"raise --max-iters if you want it to keep going past where it converged.")
+                best_params, best_obj, history, converged = init_params, init_history[-1], init_history, True
+                skip_em = True
+            else:
+                status = "was already converged, but --max-iters was raised" if was_converged else "not yet converged"
+                print(f"[checkpoint] resuming {args.out} from iteration {start_iteration} "
+                      f"({status}, last objective={init_history[-1]:.1f}) -- skipping cascade warm start.")
+        else:
+            hsmm_params = params.load_params(jcfg["cascade_hsmm_params"])
+            recipe_params = recipe_hmm.load_params(jcfg["cascade_recipe_params"])
 
-        start = time.time()
-        best_params, best_obj, history = joint_em.run_joint_em(
-            init_params, sequences, d_max, alpha_pi=alpha_pi, kappa=kappa,
-            max_iters=max_iters, tol=tol, chunk_size=chunk_size, progress=True,
-        )
-        print(
-            f"joint EM (warm start): best objective={float(best_obj):.1f}, "
-            f"iters={len(history)}, elapsed={time.time() - start:.1f}s"
-        )
+            start = time.time()
+            init_params = warm_start.cascade_to_joint(
+                hsmm_params, recipe_params, sequences, d_max, k_recipe, kappa, seed=args.seed
+            )
+            print(f"cascade warm start: {time.time() - start:.1f}s")
+            print(f"warm-start pi_counts (empirical recipe fractions): {np.asarray(init_params.pi_counts)}")
+            _print_warm_start_sanity(init_params, d_max, k_recipe)
+            start_iteration, init_history = 0, []
+
+        if not skip_em:
+            start = time.time()
+            best_params, best_obj, history, converged = joint_em.run_joint_em(
+                init_params, sequences, d_max, alpha_pi=alpha_pi, kappa=kappa,
+                max_iters=max_iters, tol=tol, chunk_size=chunk_size, progress=True,
+                start_iteration=start_iteration, init_history=init_history,
+                init_prev_obj=(init_history[-1] if init_history else None),
+                on_checkpoint=on_checkpoint, checkpoint_every=checkpoint_every,
+            )
+            print(
+                f"joint EM (warm start): best objective={float(best_obj):.1f}, "
+                f"iters={len(history)}, converged={converged}, elapsed={time.time() - start:.1f}s"
+            )
+            _save_checkpoint(args.out, best_params, len(history), history, complete=converged)
+        already_saved = True
     else:
         n_restarts = jcfg["n_restarts"]
         vocab_verbs = config["vocab"]["verbs"]
@@ -159,8 +245,9 @@ def main():
     subtask_ari = recipe_hmm.adjusted_rand(pred_subtask_per_tick, true_subtask_per_tick)
     print(f"\nper-tick subtask ARI (recipe-conditioned segmentation): {subtask_ari:.4f}")
 
-    joint_params.save_params(best_params, args.out)
-    print(f"\nsaved joint params to {args.out}")
+    if not already_saved:
+        joint_params.save_params(best_params, args.out)
+        print(f"\nsaved joint params to {args.out}")
 
 
 if __name__ == "__main__":

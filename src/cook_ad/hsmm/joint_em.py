@@ -132,6 +132,11 @@ def run_joint_em(
     tol=1e-4,
     chunk_size=8,
     progress=False,
+    start_iteration=0,
+    init_history=None,
+    init_prev_obj=None,
+    on_checkpoint=None,
+    checkpoint_every=5,
 ):
     """Single deterministic EM run from `init_params` (the cascade warm start, per spec --
     no restart loop here; random-init fallback restarts are the runner's concern, mirroring
@@ -140,6 +145,23 @@ def run_joint_em(
     The joint objective sum_i logsumexp_r(log_pi[r] + logz_ir) must be non-decreasing across
     iterations; a decrease beyond `tol` is logged as a warning (not raised), since the
     shrinkage duration fit is not an exact M-step and can legitimately dip slightly.
+
+    Resumable: `start_iteration`/`init_history`/`init_prev_obj` let a caller continue a run
+    from a previously checkpointed state (`init_params` is then the CHECKPOINTED params, not
+    the original warm start -- the caller's job). `on_checkpoint(iteration, params, history)`,
+    if given, is called every `checkpoint_every` iterations AFTER that iteration's M-step, so
+    `params` is always the state to resume FROM (the next E-step will use exactly this). This
+    function does no file I/O itself -- `on_checkpoint` owns persistence, keeping this module
+    pure-computation (see run_joint.py for the actual save/resume implementation).
+
+    Returns (p, obj, history, converged). `converged` is True only if the tol-based stopping
+    criterion actually fired (not merely reaching max_iters) -- a caller resuming a checkpoint
+    should keep calling this (with a higher max_iters if needed) until `converged` is True,
+    not until `history` stops growing, since hitting max_iters without converging means there
+    was more work requested than budget allowed, not that the fit is done. If `start_iteration
+    >= max_iters` (resuming a run already at or past this call's iteration budget), the loop
+    body never executes and this returns immediately with `converged=False` and `history`/`p`
+    unchanged from the input -- cheap and safe to call unconditionally.
     """
     if alpha_emit_v is None:
         alpha_emit_v = float(init_params.verb_counts.shape[1])
@@ -149,11 +171,15 @@ def run_joint_em(
     verb_ids, noun_ids, mask = pad_batch(sequences)
 
     p = init_params
-    prev_obj = -jnp.inf
-    obj = -jnp.inf
-    history = []
+    prev_obj = jnp.asarray(-jnp.inf) if init_prev_obj is None else jnp.asarray(init_prev_obj)
+    obj = prev_obj
+    history = list(init_history) if init_history else []
+    converged = False  # stays False if the range is empty (e.g. resuming a run already at max_iters)
 
-    iter_bar = tqdm(range(max_iters), desc="joint EM", disable=not progress)
+    iter_bar = tqdm(
+        range(start_iteration, max_iters), desc="joint EM",
+        initial=start_iteration, total=max_iters, disable=not progress,
+    )
     for iteration in iter_bar:
         stats, obj = e_step(p, verb_ids, noun_ids, mask, d_max, chunk_size=chunk_size)
         obj_value = float(obj)
@@ -167,11 +193,13 @@ def run_joint_em(
         converged = abs(obj_value - float(prev_obj)) < tol
         prev_obj = obj
         p = m_step(p, stats, alpha_pi, alpha_init, alpha_trans, alpha_emit_v, alpha_emit_n, kappa, d_max)
+        if on_checkpoint is not None and ((iteration + 1) % checkpoint_every == 0 or converged):
+            on_checkpoint(iteration + 1, p, history)
         if converged:
             break
     iter_bar.close()
 
-    return p, obj, history
+    return p, obj, history, converged
 
 
 @functools.partial(jax.jit, static_argnames=("d_max",))
