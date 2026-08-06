@@ -113,7 +113,7 @@ def test_k_r_1_m_step_matches_cascade_em():
 
     jp = _single_recipe_joint_params(hp)
     stats_joint, _ = joint_em.e_step(jp, verb_ids, noun_ids, mask, D_MAX, chunk_size=4)
-    jp2 = joint_em.m_step(
+    jp2, _global_r, _global_p = joint_em.m_step(
         jp, stats_joint, alpha_pi=1.0, alpha_init=0.5, alpha_trans=0.5,
         alpha_emit_v=float(V), alpha_emit_n=float(N), kappa=0.0, d_max=D_MAX,
     )
@@ -136,7 +136,7 @@ def test_fit_durations_shrunk_kappa_zero_matches_plain_fit():
     r_old = jax.random.uniform(ks[2], (1, K), minval=1.0, maxval=5.0)
     p_old = jax.random.uniform(ks[3], (1, K), minval=0.2, maxval=0.8)
 
-    dur_r, dur_p = durations.fit_durations_shrunk(xi_dur, cens, r_old, p_old, D_MAX, kappa=0.0)
+    dur_r, dur_p, global_r, global_p = durations.fit_durations_shrunk(xi_dur, cens, r_old, p_old, D_MAX, kappa=0.0)
 
     n_hat = durations.impute_censored_histogram(xi_dur[0], cens[0], r_old[0], p_old[0], D_MAX)
     n_tot, s_hat = durations.duration_stats_from_histogram(n_hat, D_MAX)
@@ -145,6 +145,60 @@ def test_fit_durations_shrunk_kappa_zero_matches_plain_fit():
 
     assert jnp.allclose(dur_r[0], r_ref, atol=1e-6)
     assert jnp.allclose(dur_p[0], p_ref, atol=1e-6)
+    # global_r/global_p are the pooled fit BEFORE shrinkage/re-fit; at K_R=1 that pooled fit
+    # is over the same single cell's histogram (no other recipes to pool with).
+    assert global_r.shape == (K,)
+    assert global_p.shape == (K,)
+
+
+def test_global_damping_reduces_swing_and_matches_ema_formula():
+    """Regression guard for the mechanism found on a real full-scale checkpoint: a near-empty
+    state's pooled global duration fit can swing by an order of magnitude between M-steps
+    (observed directly: r=471->38 in one call), and because it's shared via kappa*pmf_global
+    across every recipe's copy of that state, the swing perturbs K_R cells at once. Simulates
+    two consecutive M-step calls with DIFFERENT sparse histograms for the same state (standing
+    in for the noisy pooled data at real scale) and checks: (1) global_damping=0.0 exactly
+    matches the undamped/legacy fit (already covered above, re-asserted here for the two-call
+    case), (2) damping>0 moves LESS from the previous global fit than the undamped fit does,
+    (3) the damped result matches the documented EMA formula exactly, not just qualitatively."""
+    key = jax.random.PRNGKey(11)
+    ks = jax.random.split(key, 4)
+
+    # call 1: establish a baseline global fit from one sparse histogram
+    xi_dur_1 = jax.random.uniform(ks[0], (1, K, D_MAX)) * 0.3  # sparse: near-empty state
+    cens_1 = jnp.zeros((1, K, D_MAX))
+    r_old = jnp.full((1, K), 5.0)
+    p_old = jnp.full((1, K), 0.5)
+    _, _, global_r_1, global_p_1 = durations.fit_durations_shrunk(
+        xi_dur_1, cens_1, r_old, p_old, D_MAX, kappa=5.0,
+    )
+
+    # call 2: a DELIBERATELY DIFFERENT sparse histogram for the same state (simulates the
+    # E-step's tiny amount of real data shifting between iterations)
+    xi_dur_2 = jax.random.uniform(ks[1], (1, K, D_MAX)) * 0.3 + 2.0
+    cens_2 = jnp.zeros((1, K, D_MAX))
+
+    _, _, global_r_2_undamped, global_p_2_undamped = durations.fit_durations_shrunk(
+        xi_dur_2, cens_2, global_r_1[None, :], global_p_1[None, :], D_MAX, kappa=5.0,
+    )
+    damping = 0.7
+    _, _, global_r_2_damped, global_p_2_damped = durations.fit_durations_shrunk(
+        xi_dur_2, cens_2, global_r_1[None, :], global_p_1[None, :], D_MAX, kappa=5.0,
+        prev_global_r=global_r_1, prev_global_p=global_p_1, global_damping=damping,
+    )
+
+    swing_undamped = jnp.abs(global_r_2_undamped - global_r_1)
+    swing_damped = jnp.abs(global_r_2_damped - global_r_1)
+    assert jnp.all(swing_damped <= swing_undamped + 1e-6), (
+        "damping should never move the global fit FARTHER from the previous estimate than the undamped fit"
+    )
+    assert jnp.mean(swing_damped) < jnp.mean(swing_undamped), "damping should measurably reduce the swing on average"
+
+    # exact EMA formula check, not just directional
+    expected_r = damping * global_r_1 + (1.0 - damping) * global_r_2_undamped
+    expected_p = damping * global_p_1 + (1.0 - damping) * global_p_2_undamped
+    assert jnp.allclose(global_r_2_damped, expected_r, atol=1e-6)
+    assert jnp.allclose(global_p_2_damped, expected_p, atol=1e-6)
 
 
 def test_objective_approximately_non_decreasing():
@@ -239,7 +293,7 @@ def test_dead_recipe_stays_finite():
                                        dur_r, dur_p, pi_counts)
     verb_ids, noun_ids, mask = joint_em.pad_batch(sequences)
     stats, _ = joint_em.e_step(jp, verb_ids, noun_ids, mask, D_MAX, chunk_size=4)
-    jp2 = joint_em.m_step(
+    jp2, _global_r, _global_p = joint_em.m_step(
         jp, stats, alpha_pi=1.0, alpha_init=0.5, alpha_trans=0.5,
         alpha_emit_v=float(V), alpha_emit_n=float(N), kappa=5.0, d_max=D_MAX,
     )

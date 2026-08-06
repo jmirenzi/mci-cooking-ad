@@ -26,6 +26,11 @@ joint_em:
   n_restarts: 1             # warm-start is deterministic; >1 only for random fallback
   max_iters: 100
   tol: 1.0e-4
+  # 0.0 (off) at mini scale on purpose: K_R=6/K=20 has a much smaller weak-limit gap than full
+  # scale (K_R=16/K=64) and hasn't shown the sustained-decline instability the full config's
+  # global_damping=0.7 addresses -- see configs/breakfast.yaml's comment for the mechanism and
+  # durations.fit_durations_shrunk for the fix. Override with --global-damping to validate here.
+  global_damping: 0.0
 
 ambient_gaps:
   inject_synthetic_gaps: false

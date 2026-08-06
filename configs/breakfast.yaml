@@ -31,6 +31,14 @@ joint_em:
   # it is unverified and risks an OOM mid-run, which checkpointing can't recover gracefully
   # from mid-iteration. Safe to raise once a checkpointed run has shown real memory headroom.
   checkpoint_every: 5       # iterations between resumable checkpoints -- see run_joint.py --resume
+  # Measured directly on a real full-scale checkpoint (K_R=16, 931/1024 duration cells near-
+  # empty): the pooled global per-state duration fit, refit from scratch every M-step, swung
+  # r=471->38 in ONE step for a state where every recipe's own cell had ~0 occupancy -- and
+  # because kappa*pmf_global is shared across all 16 recipes' copies of that state, the swing
+  # perturbed 16 cells at once, driving a sustained ~30-iteration objective decline. 0.7 means
+  # the used global fit is 70% previous-iteration / 30% fresh each M-step (see
+  # durations.fit_durations_shrunk's docstring for the exact mechanism and the EMA formula).
+  global_damping: 0.7
 
 ambient_gaps:
   inject_synthetic_gaps: false   # SIL is 7.3% of frames (near-dense) -> skip per spec's audit rule

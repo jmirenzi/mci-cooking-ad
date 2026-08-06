@@ -127,6 +127,13 @@ def main():
                              "checkpoint from a previous run). Only applies to the warm_start "
                              "path -- the random-init fallback (joint_em.warm_start: false) is "
                              "never resumable.")
+    parser.add_argument("--global-damping", type=float, default=None,
+                        help="EMA damping (0-1) for the duration M-step's pooled global "
+                             "per-state fit across iterations; falls back to "
+                             "joint_em.global_damping in the config, or 0.0 (off) if absent. "
+                             "Guards against a near-empty state's global fit swinging by an "
+                             "order of magnitude between M-steps and dragging every recipe's "
+                             "copy of that state with it (see durations.fit_durations_shrunk).")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -141,6 +148,7 @@ def main():
     tol = args.tol if args.tol is not None else jcfg["tol"]
     chunk_size = max(1, config["em"]["chunk_size"] // k_recipe)
     checkpoint_every = args.checkpoint_every if args.checkpoint_every is not None else jcfg.get("checkpoint_every", 5)
+    global_damping = args.global_damping if args.global_damping is not None else jcfg.get("global_damping", 0.0)
 
     sequences, joined_labels = _load_and_join(args.sequences, args.labels)
     print(f"trials: {len(sequences)}")
@@ -194,6 +202,7 @@ def main():
                 start_iteration=start_iteration, init_history=init_history,
                 init_prev_obj=(init_history[-1] if init_history else None),
                 on_checkpoint=on_checkpoint, checkpoint_every=checkpoint_every,
+                global_damping=global_damping,
             )
             print(
                 f"joint EM (warm start): best objective={float(best_obj):.1f}, "
@@ -210,9 +219,10 @@ def main():
         best_params, best_obj, history = None, -jnp.inf, None
         for i, rk in enumerate(restart_keys):
             init_params = _random_init(rk, k_recipe, k_subtask, vocab_verbs, vocab_nouns, d_max)
-            p, obj, hist = joint_em.run_joint_em(
+            p, obj, hist, _converged = joint_em.run_joint_em(
                 init_params, sequences, d_max, alpha_pi=alpha_pi, kappa=kappa,
                 max_iters=max_iters, tol=tol, chunk_size=chunk_size, progress=True,
+                global_damping=global_damping,
             )
             print(f"restart {i + 1}/{n_restarts}: objective={float(obj):.1f}")
             if float(obj) > float(best_obj):

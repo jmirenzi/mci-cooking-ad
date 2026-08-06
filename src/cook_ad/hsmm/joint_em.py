@@ -92,11 +92,19 @@ def e_step(joint_hsmm_params, verb_ids, noun_ids, mask, d_max, temperature=1.0, 
     return total_stats, total_trial_ll
 
 
-@functools.partial(jax.jit, static_argnames=("d_max",))
-def m_step(joint_hsmm_params, stats, alpha_pi, alpha_init, alpha_trans, alpha_emit_v, alpha_emit_n, kappa, d_max):
+@functools.partial(jax.jit, static_argnames=("d_max", "global_damping"))
+def m_step(joint_hsmm_params, stats, alpha_pi, alpha_init, alpha_trans, alpha_emit_v, alpha_emit_n, kappa, d_max,
+           prev_global_r=None, prev_global_p=None, global_damping=0.0):
     """Dirichlet MAP per recipe for init/trans + pi, shared Dirichlet MAP for emissions (as
     today), plus the shrinkage duration fit (durations.fit_durations_shrunk) in place of
     em.py's plain censoring-imputation + Newton.
+
+    `prev_global_r`/`prev_global_p`/`global_damping`: passed straight through to
+    fit_durations_shrunk to damp the pooled global per-state duration fit across calls (see
+    its docstring for why this matters -- shared instability across all K_R recipes' copies of
+    a near-empty state, not per-cell noise). Returns (params, global_r, global_p) instead of
+    just params -- the caller (run_joint_em) threads global_r/global_p back in as
+    prev_global_r/prev_global_p on the next call to continue the EMA.
     """
     k_r = joint_hsmm_params.pi_counts.shape[0]
     k = joint_hsmm_params.init_counts.shape[1]
@@ -109,13 +117,15 @@ def m_step(joint_hsmm_params, stats, alpha_pi, alpha_init, alpha_trans, alpha_em
     new_verb_counts = alpha_emit_v / n_verb + stats["verb_counts"]
     new_noun_counts = alpha_emit_n / n_noun + stats["noun_counts"]
 
-    dur_r, dur_p = durations.fit_durations_shrunk(
-        stats["xi_dur"], stats["cens"], joint_hsmm_params.dur_r, joint_hsmm_params.dur_p, d_max, kappa
+    dur_r, dur_p, global_r, global_p = durations.fit_durations_shrunk(
+        stats["xi_dur"], stats["cens"], joint_hsmm_params.dur_r, joint_hsmm_params.dur_p, d_max, kappa,
+        prev_global_r=prev_global_r, prev_global_p=prev_global_p, global_damping=global_damping,
     )
 
-    return JointHSMMParams(
+    new_params = JointHSMMParams(
         new_init_counts, new_trans_counts, new_verb_counts, new_noun_counts, dur_r, dur_p, new_pi_counts
     )
+    return new_params, global_r, global_p
 
 
 def run_joint_em(
@@ -137,6 +147,7 @@ def run_joint_em(
     init_prev_obj=None,
     on_checkpoint=None,
     checkpoint_every=5,
+    global_damping=0.0,
 ):
     """Single deterministic EM run from `init_params` (the cascade warm start, per spec --
     no restart loop here; random-init fallback restarts are the runner's concern, mirroring
@@ -162,6 +173,15 @@ def run_joint_em(
     >= max_iters` (resuming a run already at or past this call's iteration budget), the loop
     body never executes and this returns immediately with `converged=False` and `history`/`p`
     unchanged from the input -- cheap and safe to call unconditionally.
+
+    `global_damping`: EMA damping factor (0 = off, the default) for the duration M-step's
+    pooled global per-state fit -- see fit_durations_shrunk's docstring for why a near-empty
+    state's global fit can swing by an order of magnitude between calls and drag every recipe's
+    copy of that state with it. The EMA's running state lives in this function's local
+    `prev_global_r`/`prev_global_p`, NOT in `p` (JointHSMMParams's on-disk schema is
+    unchanged), so it resets to undamped on every call -- including a checkpoint resume. That's
+    fine within one long run (it warms up again in a few iterations) but means damping is not
+    itself something a checkpoint remembers across a restart.
     """
     if alpha_emit_v is None:
         alpha_emit_v = float(init_params.verb_counts.shape[1])
@@ -175,6 +195,7 @@ def run_joint_em(
     obj = prev_obj
     history = list(init_history) if init_history else []
     converged = False  # stays False if the range is empty (e.g. resuming a run already at max_iters)
+    prev_global_r, prev_global_p = None, None  # duration EMA state -- see global_damping docstring above
 
     iter_bar = tqdm(
         range(start_iteration, max_iters), desc="joint EM",
@@ -192,7 +213,10 @@ def run_joint_em(
         iter_bar.set_postfix(obj=f"{obj_value:.1f}")
         converged = abs(obj_value - float(prev_obj)) < tol
         prev_obj = obj
-        p = m_step(p, stats, alpha_pi, alpha_init, alpha_trans, alpha_emit_v, alpha_emit_n, kappa, d_max)
+        p, prev_global_r, prev_global_p = m_step(
+            p, stats, alpha_pi, alpha_init, alpha_trans, alpha_emit_v, alpha_emit_n, kappa, d_max,
+            prev_global_r=prev_global_r, prev_global_p=prev_global_p, global_damping=global_damping,
+        )
         if on_checkpoint is not None and ((iteration + 1) % checkpoint_every == 0 or converged):
             on_checkpoint(iteration + 1, p, history)
         if converged:

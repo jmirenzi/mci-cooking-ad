@@ -172,7 +172,8 @@ def newton_update_r(n_hat, N_hat, S_hat, r_old, n_iters=5, r_max=1e4):
     return jnp.where(N_hat > EPS, r_final, r_old)
 
 
-def fit_durations_shrunk(xi_dur_acc, cens_acc, dur_r_old, dur_p_old, d_max, kappa):
+def fit_durations_shrunk(xi_dur_acc, cens_acc, dur_r_old, dur_p_old, d_max, kappa,
+                          prev_global_r=None, prev_global_p=None, global_damping=0.0):
     """Per-(recipe,state) duration M-step with shrinkage toward the global per-state NegBin.
 
     xi_dur_acc, cens_acc: (K_R, K, D_max) responsibility-weighted duration / censoring
@@ -191,7 +192,26 @@ def fit_durations_shrunk(xi_dur_acc, cens_acc, dur_r_old, dur_p_old, d_max, kapp
     kappa * pmf_global raises a starved cell's effective histogram into the well-behaved
     regime while leaving well-populated cells (N_hat >> kappa) essentially unperturbed.
 
-    Returns dur_r, dur_p: (K_R, K).
+    Global-fit damping (`prev_global_r`/`prev_global_p`/`global_damping`): the pooled global
+    fit (r_global, p_global below) is itself refit FROM SCRATCH every call via method-of-
+    moments + Newton -- and for a near-empty state (most cells, at real K_R/K scale), the
+    pooled histogram it's fit against is thin and noisy, so r_global can swing by an order of
+    magnitude between calls (confirmed directly on a real full-scale checkpoint: r=471->38 in
+    one M-step for a state where every recipe's own cell had ~0 occupancy). Because kappa *
+    pmf_global is injected into EVERY recipe's copy of that state, one noisy global estimate
+    perturbs K_R cells at once -- exactly the shared-instability mechanism, not per-cell noise
+    that would average out. With `global_damping` in (0,1) and both `prev_global_*` given, the
+    USED global fit is `damping * prev + (1-damping) * fresh` (an EMA across M-step calls, not
+    a single fresh fit) -- default 0.0 / prev=None reproduces the undamped behavior exactly
+    (verified: test_fit_durations_shrunk_kappa_zero_matches_plain_fit needs no change). The EMA
+    state lives in the caller's loop (run_joint_em), NOT in JointHSMMParams, so it resets to
+    undamped on a checkpoint resume rather than requiring a schema change to persisted params --
+    a deliberate choice to keep existing checkpoints loadable unchanged; the cost is only that
+    damping takes a few iterations to "warm up" again after each resume.
+
+    Returns dur_r, dur_p, global_r, global_p: (K_R, K), (K_R, K), (K,), (K,). The last two are
+    the USED (possibly damped) global fit -- pass them back in as `prev_global_r`/`prev_global_p`
+    on the next call to continue the EMA.
     """
     impute_over_r = jax.vmap(impute_censored_histogram, in_axes=(0, 0, 0, 0, None))
     n_hat = impute_over_r(xi_dur_acc, cens_acc, dur_r_old, dur_p_old, d_max)  # (K_R,K,D)
@@ -199,8 +219,15 @@ def fit_durations_shrunk(xi_dur_acc, cens_acc, dur_r_old, dur_p_old, d_max, kapp
     n_hat_global = jnp.sum(n_hat, axis=0)  # (K,D): pooled over recipes
     n_hat_global_total, s_hat_global = duration_stats_from_histogram(n_hat_global, d_max)
     r_fallback_global = jnp.mean(dur_r_old, axis=0)  # (K,): starved-state fallback for the global fit
-    r_global = newton_update_r(n_hat_global, n_hat_global_total, s_hat_global, r_fallback_global, n_iters=5)
-    p_global = update_p_given_r(n_hat_global_total, s_hat_global, r_global)
+    r_global_fresh = newton_update_r(n_hat_global, n_hat_global_total, s_hat_global, r_fallback_global, n_iters=5)
+    p_global_fresh = update_p_given_r(n_hat_global_total, s_hat_global, r_global_fresh)
+
+    if prev_global_r is not None and global_damping > 0.0:
+        r_global = global_damping * prev_global_r + (1.0 - global_damping) * r_global_fresh
+        p_global = global_damping * prev_global_p + (1.0 - global_damping) * p_global_fresh
+    else:
+        r_global, p_global = r_global_fresh, p_global_fresh
+
     log_pmf_global, _ = duration_tables(r_global, p_global, d_max)
     pmf_global = jnp.exp(log_pmf_global)  # (K,D)
 
@@ -215,4 +242,4 @@ def fit_durations_shrunk(xi_dur_acc, cens_acc, dur_r_old, dur_p_old, d_max, kapp
     p_over_r = jax.vmap(update_p_given_r, in_axes=(0, 0, 0))
     dur_p = p_over_r(n_hat_total, s_hat, dur_r)
 
-    return dur_r, dur_p
+    return dur_r, dur_p, r_global, p_global
