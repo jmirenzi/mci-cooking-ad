@@ -127,6 +127,10 @@ def main():
                              "checkpoint from a previous run). Only applies to the warm_start "
                              "path -- the random-init fallback (joint_em.warm_start: false) is "
                              "never resumable.")
+    parser.add_argument("--chunk-size", type=int, default=None,
+                        help="override configs/breakfast_mini.yaml em.chunk_size (before the "
+                             "//k_recipe split below); raise on a bigger GPU to bound fewer, "
+                             "larger chunks instead of many small ones")
     parser.add_argument("--global-damping", type=float, default=None,
                         help="EMA damping (0-1) for the duration M-step's pooled global "
                              "per-state fit across iterations; falls back to "
@@ -146,7 +150,8 @@ def main():
     jcfg = config["joint_em"]
     max_iters = args.max_iters if args.max_iters is not None else jcfg["max_iters"]
     tol = args.tol if args.tol is not None else jcfg["tol"]
-    chunk_size = max(1, config["em"]["chunk_size"] // k_recipe)
+    base_chunk_size = args.chunk_size if args.chunk_size is not None else config["em"]["chunk_size"]
+    chunk_size = max(1, base_chunk_size // k_recipe)
     checkpoint_every = args.checkpoint_every if args.checkpoint_every is not None else jcfg.get("checkpoint_every", 5)
     global_damping = args.global_damping if args.global_damping is not None else jcfg.get("global_damping", 0.0)
 

@@ -17,6 +17,10 @@ def main():
     parser.add_argument("--n-restarts", type=int, default=None, help="override configs/breakfast.yaml em.restarts")
     parser.add_argument("--max-iters", type=int, default=100)
     parser.add_argument("--tol", type=float, default=1e-4)
+    parser.add_argument("--chunk-size", type=int, default=None,
+                        help="override configs/breakfast.yaml em.chunk_size; batch chunk size "
+                             "for em.e_step -- raise on a bigger GPU to bound fewer, larger "
+                             "chunks instead of many small ones")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -24,6 +28,7 @@ def main():
         sequences = json.load(f)
 
     n_restarts = args.n_restarts if args.n_restarts is not None else config["em"]["restarts"]
+    chunk_size = args.chunk_size if args.chunk_size is not None else config["em"]["chunk_size"]
 
     key = jax.random.PRNGKey(args.seed)
     start = time.time()
@@ -38,13 +43,13 @@ def main():
         max_iters=args.max_iters,
         tol=args.tol,
         annealing=config["em"]["annealing"],
-        chunk_size=config["em"]["chunk_size"],
+        chunk_size=chunk_size,
         progress=True,
     )
     elapsed = time.time() - start
 
     print(f"sequences: {len(sequences)}")
-    print(f"restarts: {n_restarts}, max_iters: {args.max_iters}")
+    print(f"restarts: {n_restarts}, max_iters: {args.max_iters}, chunk_size: {chunk_size}")
     print(f"best log-likelihood: {best_loglik}")
     print(f"iterations per restart: {[len(h) for h in history]}")
     print(f"elapsed: {elapsed:.1f}s")
