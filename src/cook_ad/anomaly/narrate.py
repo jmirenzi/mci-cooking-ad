@@ -3,7 +3,7 @@ from typing import NamedTuple
 import numpy as np
 
 from cook_ad.anomaly import quantile, surprise
-from cook_ad.hsmm import params
+from cook_ad.hsmm import joint_params, params
 from cook_ad.lifecycle.online_update import PreferenceEvent
 
 # Template-based, not generative: every sentence below is a direct read of a model quantity
@@ -137,23 +137,6 @@ def missing_step(log_trans, a, c, min_gain=DEFAULT_MIN_BRIDGE_GAIN):
     return b, gain
 
 
-def _severity(value, threshold):
-    """ratio = value / threshold, bucketed low/medium/high -> hedge phrase. Query intensity
-    scales with discrepancy, per the design doc."""
-    value = float(value)
-    threshold = float(threshold)
-    if not np.isfinite(threshold) or threshold <= 0:
-        return "high", float("inf")
-    ratio = value / threshold
-    if ratio < 1.5:
-        label = "low"
-    elif ratio < 3.0:
-        label = "medium"
-    else:
-        label = "high"
-    return label, ratio
-
-
 def _emission_queries(trace, flags, segments, verb_ids, noun_ids, lexicon, verb_thresh, noun_thresh,
                       pi_all, log_emit_v, log_emit_n):
     queries = []
@@ -168,7 +151,7 @@ def _emission_queries(trace, flags, segments, verb_ids, noun_ids, lexicon, verb_
             tick = int(n_ticks[np.argmax(np.asarray(trace.s_noun)[n_ticks])])
             observed_verb = int(verb_ids[tick])
             observed_noun = int(noun_ids[tick])
-            severity, ratio = _severity(trace.s_noun[tick], noun_thresh[tick])
+            severity, ratio = surprise.severity(trace.s_noun[tick], noun_thresh[tick])
             hedge = SEVERITY_HEDGE[severity]
             # attribution="item" means s_noun dominates s_verb by margin -- the verb is the
             # BIGGER culprit's opposite, not necessarily clean. If s_verb is ALSO independently
@@ -198,7 +181,7 @@ def _emission_queries(trace, flags, segments, verb_ids, noun_ids, lexicon, verb_
             tick = int(v_ticks[np.argmax(np.asarray(trace.s_verb)[v_ticks])])
             observed_verb = int(verb_ids[tick])
             observed_noun = int(noun_ids[tick])
-            severity, ratio = _severity(trace.s_verb[tick], verb_thresh[tick])
+            severity, ratio = surprise.severity(trace.s_verb[tick], verb_thresh[tick])
             hedge = SEVERITY_HEDGE[severity]
             # Mirrors the noun branch above: don't anchor on the observed noun if s_noun is
             # ALSO independently flagged at this tick.
@@ -237,7 +220,7 @@ def _stall_queries(trace, flags, segments, lexicon, dur_threshold):
         tick = start + int(rel[0])
         elapsed = tick - start + 1
         expected = lexicon.expected_duration(state)
-        severity, ratio = _severity(trace.s_temporal[tick], dur_threshold)
+        severity, ratio = surprise.severity(trace.s_temporal[tick], dur_threshold)
         hedge = SEVERITY_HEDGE[severity]
         text = (
             f"{hedge}, are you stuck on {lexicon.subtask(state)}? You've been on it for "
@@ -260,7 +243,7 @@ def _completed_duration_queries(trace, flags, segments, lexicon, dur_threshold):
             continue
         d = end - start
         expected = lexicon.expected_duration(state)
-        severity, ratio = _severity(trace.s_dur_two[tick], dur_threshold)
+        severity, ratio = surprise.severity(trace.s_dur_two[tick], dur_threshold)
         hedge = SEVERITY_HEDGE[severity]
         attr = trace.temporal_attribution[tick]
 
@@ -295,7 +278,7 @@ def _order_queries(trace, flags, segments, lexicon, log_trans, tables, min_gain)
             continue
         a = int(trace.from_state[start])
         c = state
-        severity, ratio = _severity(trace.s_transition[start], tables.transition[a])
+        severity, ratio = surprise.severity(trace.s_transition[start], tables.transition[a])
         hedge = SEVERITY_HEDGE[severity]
 
         bridge, _ = missing_step(log_trans, a, c, min_gain)
@@ -348,6 +331,48 @@ def narrate(trace, flags, vocab, hsmm_params, verb_ids, noun_ids, log_probs, rec
     queries += _emission_queries(
         trace, flags, segments, verb_ids, noun_ids, lexicon, verb_thresh, noun_thresh,
         pi_all, log_probs.log_emit_v, log_probs.log_emit_n,
+    )
+    queries += _stall_queries(trace, flags, segments, lexicon, dur_threshold)
+    queries += _completed_duration_queries(trace, flags, segments, lexicon, dur_threshold)
+    queries += _order_queries(trace, flags, segments, lexicon, log_trans, tables, min_gain)
+    queries.sort(key=lambda q: (q.tick, q.channel))
+    return queries
+
+
+def narrate_joint(trace, flags, vocab, joint_hsmm_params, r_hat, verb_ids, noun_ids, joint_log_probs,
+                   log_trans_marginal, pi_all, alpha=surprise.DEFAULT_ALPHA, min_gain=DEFAULT_MIN_BRIDGE_GAIN):
+    """Joint-model analogue of narrate(). The four per-channel renderers (_emission_queries,
+    _stall_queries, _completed_duration_queries, _order_queries) are model-agnostic already --
+    they only take lexicon/thresholds/log_trans as plain arguments -- so this differs from
+    narrate() in exactly three places: thresholds come from quantile.threshold_tables_joint
+    (recipe r_hat's own tables, not the cascade's single shared set), the bridging log_trans is
+    r_hat's conditioned row set (joint_log_probs.log_trans[r_hat]), and the lexicon is built from
+    joint_params.select_recipe(joint_hsmm_params, r_hat) rather than a plain HSMMParams -- that
+    recipe's own duration/transition tables paired with the shared emissions, so expected-
+    duration text matches the same per-recipe distribution the surprise score was computed
+    against (see select_recipe's docstring), not a marginal average across all recipes.
+
+    `trace`/`joint_log_probs`/`r_hat`/`log_trans_marginal` are what surprise.compute_trace_joint/
+    flag_joint return for this trial -- pass those, not rebuilt copies. `pi_all` is NOT part of
+    compute_trace_joint's return value; get it via surprise.compute_pi_all_joint(joint_log_probs,
+    r_hat, verb_ids, noun_ids, d_max). s_recipe_transition has no renderer here either, for the
+    same reason narrate() omits it for the cascade (see the module-level caveat above).
+    """
+    verb_ids = np.asarray(verb_ids)
+    noun_ids = np.asarray(noun_ids)
+    pi_all = np.asarray(pi_all)
+    recipe_hsmm = joint_params.select_recipe(joint_hsmm_params, r_hat)
+    lexicon = Lexicon(vocab, recipe_hsmm)
+    tables = quantile.threshold_tables_joint(joint_log_probs, r_hat, log_trans_marginal, alpha)
+    _, verb_thresh, noun_thresh = surprise.emission_thresholds(trace, tables)
+    log_trans = np.asarray(joint_log_probs.log_trans[r_hat])
+    dur_threshold = -float(np.log(alpha))
+    segments = segments_from_z(trace.z_star)
+
+    queries = []
+    queries += _emission_queries(
+        trace, flags, segments, verb_ids, noun_ids, lexicon, verb_thresh, noun_thresh,
+        pi_all, joint_log_probs.log_emit_v, joint_log_probs.log_emit_n,
     )
     queries += _stall_queries(trace, flags, segments, lexicon, dur_threshold)
     queries += _completed_duration_queries(trace, flags, segments, lexicon, dur_threshold)

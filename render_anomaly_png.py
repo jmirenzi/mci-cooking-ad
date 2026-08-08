@@ -38,7 +38,7 @@ CARD_WRAP = 96
 def _fmt_ratio(ratio):
     """s_transition has no EMIT_THRESHOLD_FLOOR-style floor (surprise.py only floors
     s_emit/s_verb/s_noun), so a near-deterministic transition row's quantile threshold can be
-    a tiny-but-positive float that _severity's `threshold <= 0` guard doesn't catch -- ratio
+    a tiny-but-positive float that surprise.severity's `threshold <= 0` guard doesn't catch -- ratio
     then blows up to something like 2.6e13. That's a real pre-existing calibration gap, not a
     display bug; this just keeps the card legible instead of printing the raw absurd float."""
     if not np.isfinite(ratio):
@@ -55,7 +55,7 @@ def _wrap_query(i, q):
     return [head] + [f"    {line}" for line in body]
 
 
-def plot_scenario(rec, error_type, out_path):
+def plot_scenario(rec, error_type, out_path, model="cascade"):
     segments = rec["segments"]
     runs = rec["runs"]
     t_max = rec["T"]
@@ -105,12 +105,24 @@ def plot_scenario(rec, error_type, out_path):
     ax.broken_barh(sub_spans, (row_y["subtask"], bar_h), facecolors=POT, alpha=0.85,
                     edgecolor="white", linewidth=0.6, zorder=2)
 
+    listed_ticks_by_channel = {}
+    for q in queries:
+        listed_ticks_by_channel.setdefault(q["channel"], set()).add(q["tick"])
+
     for ch, ticks in flagged.items():
         row = CHANNEL_ROW.get(ch)
         if row is None or not ticks:
             continue
+        listed = listed_ticks_by_channel.get(ch, set())
+        # A tick that also got a narrated query card is drawn ONLY as that query's star below --
+        # marking it with a triangle here too would double-mark the same tick two ways.
+        to_draw = [t for t in ticks if t["tick"] not in listed]
+        if not to_draw:
+            continue
         y = row_y[row] + bar_h + 0.9
-        ax.scatter(ticks, [y] * len(ticks), marker="v", s=16, color=ALARM, alpha=0.75, zorder=3, linewidths=0)
+        xs = [t["tick"] for t in to_draw]
+        colors = [SEVERITY_COLOR[t["severity"]] for t in to_draw]
+        ax.scatter(xs, [y] * len(xs), marker="v", s=16, color=colors, alpha=0.75, zorder=3, linewidths=0)
 
     for i, q in enumerate(queries, start=1):
         row = CHANNEL_ROW.get(q["channel"], "observations")
@@ -137,17 +149,23 @@ def plot_scenario(rec, error_type, out_path):
     subtitle = f"{rec['trial_id']} ({t_max} ticks)"
     if rec.get("select"):
         subtitle += f" — select={rec['select']} seed={rec['seed']}"
-    ax.set_title(f"{error_type}  ·  {subtitle}", fontsize=11, color=INK, loc="left", fontweight="bold")
+    if rec.get("recipe"):
+        r = rec["recipe"]
+        true_part = f", true={r['true_recipe']}" if r.get("true_recipe") else ""
+        subtitle += f" — recipe: r={r['r_hat']} (conf={r['confidence']:.2f}{true_part})"
+    ax.set_title(f"{error_type} ({model})  ·  {subtitle}", fontsize=11, color=INK, loc="left", fontweight="bold")
 
     legend_handles = [
         mpatches.Patch(color=FLAME, alpha=0.35, label="observations, unaltered"),
         mpatches.Patch(color=FLAME, label="observations, fed to detector"),
         mpatches.Patch(color=POT, label="subtask (HSMM state)"),
-        mpatches.Patch(color=ALARM, label="flagged tick (any channel)"),
     ]
     for sev, color in SEVERITY_COLOR.items():
+        legend_handles.append(plt.Line2D([0], [0], marker="v", color="w", markerfacecolor=color,
+                                          markersize=7, label=f"flagged: {sev}"))
+    for sev, color in SEVERITY_COLOR.items():
         legend_handles.append(plt.Line2D([0], [0], marker="*", color="w", markerfacecolor=color,
-                                          markersize=9, label=f"query: {sev}"))
+                                          markersize=9, label=f"query (listed): {sev}"))
     ax.legend(handles=legend_handles, loc="upper left", bbox_to_anchor=(1.005, 1.05),
               fontsize=7, frameon=False, borderaxespad=0)
 
@@ -182,10 +200,14 @@ def main():
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    for error_type, rec in data["scenarios"].items():
-        out_path = out_dir / f"anomaly_{error_type}.png"
-        plot_scenario(rec, error_type, out_path)
-        print(f"wrote {out_path}")
+    for model, suffix in (("cascade", ""), ("joint", "_joint")):
+        block = data.get(model)
+        if block is None:
+            continue
+        for error_type, rec in block["scenarios"].items():
+            out_path = out_dir / f"anomaly_{error_type}{suffix}.png"
+            plot_scenario(rec, error_type, out_path, model=model)
+            print(f"wrote {out_path}")
 
 
 if __name__ == "__main__":

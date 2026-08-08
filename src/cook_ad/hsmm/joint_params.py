@@ -82,6 +82,20 @@ def collapse_to_marginal(joint_params: JointHSMMParams) -> HSMMParams:
     )
 
 
+def select_recipe(joint_params: JointHSMMParams, r_hat: int) -> HSMMParams:
+    """Recipe-r_hat-conditioned HSMMParams: that recipe's own init/trans/duration tables, paired
+    with the shared emission counts. Unlike collapse_to_marginal's pi-weighted average, this is
+    the exact per-trial model assemble_trace_joint/quantile.threshold_tables_joint score
+    against for trial r_hat -- a narrate.Lexicon built from this (not the marginal) reports
+    expected durations consistent with the duration surprise actually computed for the trial.
+    """
+    return HSMMParams(
+        joint_params.init_counts[r_hat], joint_params.trans_counts[r_hat],
+        joint_params.verb_counts, joint_params.noun_counts,
+        joint_params.dur_r[r_hat], joint_params.dur_p[r_hat],
+    )
+
+
 def save_params(joint_params: JointHSMMParams, path):
     import numpy as np
 

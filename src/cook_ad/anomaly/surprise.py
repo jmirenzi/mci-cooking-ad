@@ -6,7 +6,7 @@ import numpy as np
 from jax.scipy.special import logsumexp
 
 from cook_ad.anomaly import quantile, temporal
-from cook_ad.hsmm import emissions, messages, params
+from cook_ad.hsmm import emissions, joint_em, joint_params, messages, params
 from cook_ad.recipe import recipe_hmm, segmentize
 
 # The temporal channels (s_temporal / s_dur_two) are -log(tail probability) against a
@@ -139,6 +139,58 @@ def joint_expected(pi_all_t, log_emit_v, log_emit_n):
     )  # (V, N)
     v, n = np.unravel_index(int(jnp.argmax(joint)), joint.shape)
     return int(v), int(n)
+
+
+def severity(value, threshold):
+    """ratio = value / threshold, bucketed low/medium/high. Shared by narrate.py (per-query
+    severity, one call per narrated card) and flagged_tick_severity below (per-FLAGGED-tick
+    severity, including ticks that never became a narrated query) -- the same bucketing so a
+    tick's marker color always matches what its own query card, if any, would say."""
+    value = float(value)
+    threshold = float(threshold)
+    if not np.isfinite(threshold) or threshold <= 0:
+        return "high", float("inf")
+    ratio = value / threshold
+    if ratio < 1.5:
+        label = "low"
+    elif ratio < 3.0:
+        label = "medium"
+    else:
+        label = "high"
+    return label, ratio
+
+
+def flagged_tick_severity(trace, flags, tables, alpha=DEFAULT_ALPHA, thresholds=None):
+    """For every tick flagged in `flags` (surprise.flag/flag_joint's output), the severity label
+    of that flag -- built from the SAME per-tick value/threshold pairing _base_flags gated on,
+    so a tick's severity always matches why it was flagged. Returns {channel: {tick: label}},
+    restricted to the five channels render_anomaly_png.py's CHANNEL_ROW knows how to place
+    (s_emit/s_verb/s_noun/s_temporal/s_dur_two/s_transition) -- s_recipe_transition is omitted,
+    mirroring narrate.py's own caveat that recipe clusters have no learned name to render against.
+    """
+    resolved = _duration_thresholds(alpha, thresholds)
+    emit_thresh, verb_thresh, noun_thresh = emission_thresholds(trace, tables)
+    from_state_safe = np.where(trace.from_state != -1, trace.from_state, 0)
+    t_dur = np.full(np.asarray(trace.s_temporal).shape, resolved["s_temporal"])
+    d_dur = np.full(np.asarray(trace.s_dur_two).shape, resolved["s_dur_two"])
+
+    per_channel = {
+        "s_emit": (trace.s_emit, emit_thresh),
+        "s_verb": (trace.s_verb, verb_thresh),
+        "s_noun": (trace.s_noun, noun_thresh),
+        "s_temporal": (trace.s_temporal, t_dur),
+        "s_dur_two": (trace.s_dur_two, d_dur),
+        "s_transition": (trace.s_transition, tables.transition[from_state_safe]),
+    }
+
+    out = {}
+    for ch, (values, thresh) in per_channel.items():
+        values = np.asarray(values)
+        thresh = np.asarray(thresh)
+        out[ch] = {
+            int(t): severity(values[t], thresh[t])[0] for t in np.flatnonzero(np.asarray(flags[ch]))
+        }
+    return out
 
 
 def compute_pi_all(log_probs, verb_ids, noun_ids, d_max):
@@ -555,3 +607,57 @@ def compute_trace(hsmm_params, recipe_params, verb_ids, noun_ids, d_max):
     trace = assemble_trace(hsmm_params, log_probs, recipe_log_trans, pi_all, verb_ids, noun_ids,
                             seg_result, seg_recipe_ids)
     return trace, log_probs, recipe_log_trans
+
+
+def compute_pi_all_joint(joint_log_probs, r_hat, verb_ids, noun_ids, d_max):
+    """Joint analogue of compute_pi_all: predictive occupancy under recipe r_hat's own
+    init/trans/duration tables (emissions stay shared, unindexed)."""
+    verb_ids = jnp.asarray(verb_ids)
+    noun_ids = jnp.asarray(noun_ids)
+    t = verb_ids.shape[0]
+    mask = jnp.ones((t,), dtype=bool)
+    loglik = emissions.sequence_loglik(
+        verb_ids, noun_ids, joint_log_probs.log_emit_v, joint_log_probs.log_emit_n, mask
+    )
+    return messages.predictive_occupancy(
+        loglik, joint_log_probs.log_init[r_hat], joint_log_probs.log_trans[r_hat],
+        joint_log_probs.log_dur_pmf[r_hat], joint_log_probs.log_dur_survival[r_hat], mask, d_max,
+    )
+
+
+def compute_trace_joint(joint_hsmm_params, verb_ids, noun_ids, d_max):
+    """Joint analogue of compute_trace: single trial (v,n) stream -> a full SurpriseTrace, but
+    first infers the trial's own MAP recipe (joint_em.infer_recipe) and scores everything under
+    that recipe's conditioned tables, mirroring the batched eval.batch.compute_traces_joint but
+    for one trial without padding. For many trials use compute_traces_joint instead.
+
+    Returns (trace, joint_log_probs, r_hat, log_trans_marginal, rho): the middle three are
+    exactly what flag_joint()/narrate_joint() need and are otherwise built internally and
+    discarded, so callers get them for free instead of re-deriving via a second
+    infer_recipe/to_log_probs_joint call. r_hat is a plain int (not a length-1 array) since this
+    is a single-trial driver. rho is this trial's full (K_R,) recipe posterior -- callers that
+    only need r_hat's own confidence read rho[r_hat]; kept as the full vector rather than a
+    scalar since a flat second-best margin is sometimes more informative than the top value alone.
+    """
+    verb_ids = jnp.asarray(verb_ids)
+    noun_ids = jnp.asarray(noun_ids)
+    t = verb_ids.shape[0]
+    mask = jnp.ones((t,), dtype=bool)
+
+    joint_log_probs = joint_params.to_log_probs_joint(joint_hsmm_params, d_max)
+    r_hat_arr, rho_arr, _ = joint_em.infer_recipe(
+        joint_hsmm_params, verb_ids[None, :], noun_ids[None, :], mask[None, :], d_max, chunk_size=1
+    )
+    r_hat = int(r_hat_arr[0])
+    rho = rho_arr[0]
+
+    pi_all = compute_pi_all_joint(joint_log_probs, r_hat, verb_ids, noun_ids, d_max)
+    seg_result = segmentize.segment_all_conditioned(
+        joint_log_probs, jnp.array([r_hat]), verb_ids[None, :], noun_ids[None, :], mask[None, :], d_max
+    )[0]
+    log_trans_marginal = joint_params.marginal_log_trans(joint_log_probs)
+
+    trace = assemble_trace_joint(
+        joint_hsmm_params, joint_log_probs, r_hat, log_trans_marginal, pi_all, verb_ids, noun_ids, seg_result
+    )
+    return trace, joint_log_probs, r_hat, log_trans_marginal, rho
