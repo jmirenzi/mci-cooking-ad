@@ -37,10 +37,21 @@ NO_ANOMALY = re.compile(r"^\s*no\s+anomaly\s*[.!]?\s*$", re.IGNORECASE)
 
 # The strict grammar the preprompt asks for:
 #   <TYPE> Anomaly. Correct move would have been VERB NOUN for NUMBER seconds
+#
+# Two deliberate tolerances, both for drift that is a formatting slip rather than a different
+# verdict -- being strict about them would measure obedience instead of detection:
+#
+#   * the literal word "anomaly" is OPTIONAL. Models routinely write "Substitution. Correct move
+#     ..." and the type name alone is unambiguous. _canon_type still requires it to be one of the
+#     five, so a chatty first word cannot sneak through.
+#   * VERB and NOUN may be separated by an UNDERSCORE as well as whitespace. The with-recipes
+#     preprompt renders recipe steps as `stir_dough (~36s)`, and models imitate that format in
+#     their corrections. Rejecting it penalised that arm for copying the format the prompt itself
+#     showed it -- measured at a 25% parse-failure rate before this was allowed.
 STRICT = re.compile(
-    r"^\s*(?P<type>\w+)\s+anomaly\s*[.:!]?\s*"
+    r"^\s*(?P<type>\w+)(?:\s+anomaly)?\s*[.:!]?\s*"
     r"(?:correct\s+move\s+would\s+have\s+been\s+"
-    r"(?P<verb>\w+)\s+(?P<noun>\w+)\s+for\s+(?P<dur>\d+)\s+seconds?\s*[.!]?)?\s*$",
+    r"(?P<verb>\w+)[\s_]+(?P<noun>\w+)\s+for\s+(?P<dur>\d+)\s+seconds?\s*[.!]?)?\s*$",
     re.IGNORECASE,
 )
 
@@ -51,7 +62,7 @@ LENIENT_TYPE = re.compile(
     r"\b(" + "|".join(error_injection.ERROR_TYPES) + r")\b", re.IGNORECASE
 )
 LENIENT_CORRECTION = re.compile(
-    r"\b(?P<verb>\w+)\s+(?P<noun>\w+)\s+for\s+(?P<dur>\d+)\s+seconds?\b", re.IGNORECASE
+    r"\b(?P<verb>\w+)[\s_]+(?P<noun>\w+)\s+for\s+(?P<dur>\d+)\s+seconds?\b", re.IGNORECASE
 )
 
 

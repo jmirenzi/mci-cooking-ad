@@ -143,3 +143,12 @@ def test_assert_tick_seconds_rejects_non_one_second_ticks():
     textify.assert_tick_seconds({})  # default
     with pytest.raises(ValueError, match="seconds"):
         textify.assert_tick_seconds({"tick_seconds": 0.5})
+
+
+def test_recipe_block_does_not_teach_the_underscore_format():
+    """The prompt must name steps the same way the observation stream does. Rendering them as
+    `stir_dough` made models copy that into corrections, which the grammar then rejected."""
+    from cook_ad.llm import prompts
+    assert prompts._label_to_step_text("stir_dough") == "stir dough"
+    assert prompts._label_to_step_text("SIL") == "stall kitchen"
+    assert prompts._label_to_step_text("put_egg2plate") == "put egg2plate"  # only first _ splits

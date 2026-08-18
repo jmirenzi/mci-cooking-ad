@@ -161,11 +161,20 @@ def _canonical_recipes(labels, top_k_variants=1):
 
 
 def _label_to_step_text(label, sil_verb="stall", sil_noun="kitchen"):
-    """labels.json writes the idle class as the bare sentinel 'SIL', but the steps the model is
-    actually shown render it as '<sil_verb> <sil_noun>' (textify uses lexicon.verb/noun, which do
-    not collapse SIL). Translate here so the recipe descriptions and the observation stream name
-    the same thing the same way -- otherwise the model is told to match a token it never sees."""
-    return f"{sil_verb}_{sil_noun}" if label == "SIL" else label
+    """labels.json label -> the same 'VERB NOUN' surface form the observation stream uses.
+
+    Two translations, both so the recipe descriptions name things exactly as the steps do:
+    'SIL' becomes '<sil_verb> <sil_noun>', and the underscore in 'stir_dough' becomes a space.
+
+    The underscore matters more than it looks. An earlier version left labels as `stir_dough`, and
+    models copied that into their corrections ("Correct move would have been stir_dough for 36
+    seconds"), which the response grammar then rejected -- a 25% parse-failure rate on the
+    with-recipes arm, caused entirely by the prompt teaching a format the parser refused. The
+    parser is now tolerant of both, and this no longer teaches the wrong one.
+    """
+    if label == "SIL":
+        return f"{sil_verb} {sil_noun}"
+    return label.replace("_", " ", 1)
 
 
 def recipe_block(labels):

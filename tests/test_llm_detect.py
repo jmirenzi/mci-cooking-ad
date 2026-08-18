@@ -524,3 +524,40 @@ def test_conversational_ablation_feeds_replies_back():
         seen = " ".join(m["content"] for m in call)
         for future in steps[i + 1:]:
             assert textify.render_step(future) not in seen
+
+
+# ---- format tolerances -----------------------------------------------------------------------
+
+@pytest.mark.parametrize("text,etype,corr", [
+    # the literal word "Anomaly" dropped -- the type name alone is unambiguous
+    ("Substitution. Correct move would have been take bowl for 9 seconds",
+     "substitution", ("take", "bowl", 9)),
+    ("repetition", "repetition", None),
+    # verb_noun with an underscore: the with-recipes preprompt renders recipe steps that way, so
+    # models copy it. Rejecting it cost that arm a 25% parse-failure rate.
+    ("Omission Anomaly. Correct move would have been stall_kitchen for 4 seconds",
+     "omission", ("stall", "kitchen", 4)),
+    ("Abandonment. Correct move would have been pour_milk for 12 seconds",
+     "abandonment", ("pour", "milk", 12)),
+])
+def test_format_drift_is_tolerated_not_penalised(text, etype, corr):
+    v = detect.parse_response(text, 0, VOCAB)
+    assert v.parse_ok is True
+    assert v.is_anomaly is True
+    assert v.error_type == etype
+    assert v.correction == corr
+
+
+def test_tolerance_does_not_admit_arbitrary_first_words():
+    """Making 'Anomaly' optional must not let any leading noun through -- _canon_type still gates
+    on the five real types."""
+    for text in ("hallucination Anomaly.", "Banana.", "the person seems fine"):
+        v = detect.parse_response(text, 0, VOCAB)
+        assert v.error_type is None
+        assert v.parse_ok is False
+
+
+def test_no_anomaly_still_wins_over_the_relaxed_type_pattern():
+    for text in ("No Anomaly", "no anomaly.", "  NO ANOMALY  "):
+        v = detect.parse_response(text, 0, VOCAB)
+        assert (v.is_anomaly, v.parse_ok) == (False, True)
