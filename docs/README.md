@@ -207,6 +207,7 @@ python run_lifecycle.py                         # frozen/live dual-model demo
 python run_rollout_demo.py --scenario all       # per-user calibrated rollout
 python run_llm_eval.py --dry-run                # LLM baseline: cost the sweep before sending
 python run_llm_eval.py --skip-llm               # ...or score just the HSMM at step level
+python render_llm_compare_png.py                # HSMM vs LLM figures from the report JSON
 ```
 
 `run_llm_eval.py` is the odd one out: it scores an **LLM reading each trial as text** against the

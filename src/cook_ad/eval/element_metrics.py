@@ -237,6 +237,11 @@ def evaluate_steps(healthy_verdicts, degraded_by_type, tol_steps=DEFAULT_STEP_TO
     per_type, type_confusion, correction_accuracy = {}, {}, {}
     tp_steps = fp_steps = fn_steps = 0
     n_parsed = n_verdicts = 0
+    # Total steps scored, degraded + healthy. Needed to state a CHANCE precision: precision has to
+    # be read against the base rate of anomalous steps, or a detector that simply flags everything
+    # looks respectable. tp+fp+fn cannot stand in for it -- that denominator varies per detector,
+    # so it would give the two arms different chance baselines for the same data.
+    n_steps_total = 0
 
     for etype in types:
         trials = degraded_by_type.get(etype, [])
@@ -268,6 +273,7 @@ def evaluate_steps(healthy_verdicts, degraded_by_type, tol_steps=DEFAULT_STEP_TO
 
             # Step-level pooling: every step of every degraded trial is one test.
             gt = set(gt_steps)
+            n_steps_total += len(verdicts)
             for v in verdicts:
                 if v.step_index in gt:
                     tp_steps += int(v.is_anomaly)
@@ -298,6 +304,7 @@ def evaluate_steps(healthy_verdicts, degraded_by_type, tol_steps=DEFAULT_STEP_TO
         }
 
     for verdicts in healthy_verdicts:
+        n_steps_total += len(verdicts)
         n_verdicts += len(verdicts)
         n_parsed += sum(1 for v in verdicts if v.parse_ok)
         fp_steps += sum(1 for v in verdicts if v.persistent)
@@ -316,6 +323,10 @@ def evaluate_steps(healthy_verdicts, degraded_by_type, tol_steps=DEFAULT_STEP_TO
             "tp": tp_steps, "fp": fp_steps, "fn": fn_steps,
             "precision": tp_steps / (tp_steps + fp_steps) if (tp_steps + fp_steps) else 0.0,
             "recall": tp_steps / (tp_steps + fn_steps) if (tp_steps + fn_steps) else 0.0,
+            "n_steps": n_steps_total,
+            # Precision a detector would get by flagging steps at random: the base rate of
+            # ground-truth anomalous steps. Identical for every arm scored on the same pool.
+            "chance_precision": ((tp_steps + fn_steps) / n_steps_total) if n_steps_total else 0.0,
         },
         "parse_failure_rate": 1.0 - (n_parsed / n_verdicts) if n_verdicts else 0.0,
         "channels": [*types, "none"],

@@ -237,3 +237,30 @@ def test_report_shape_matches_the_tick_level_report():
     assert set(report["attribution"]) == set(report["per_type"])
     for row in report["attribution"].values():
         assert set(row) == set(report["channels"])
+
+
+def test_chance_precision_is_a_property_of_the_data_not_the_detector():
+    """Two detectors scored on the same pool must get the SAME chance baseline. Deriving it from
+    tp+fp+fn would not: that denominator moves with how much each detector flags."""
+    gt = [2]
+    trigger_happy = _llm(anomaly_at=(0, 1, 2, 3, 4))
+    conservative = _llm(anomaly_at=(2,))
+    reports = [
+        em.evaluate_steps(healthy_verdicts=[_llm()],
+                          degraded_by_type={"substitution": [(v, gt, None)]})
+        for v in (trigger_happy, conservative)
+    ]
+    a, b = (r["step_level"] for r in reports)
+    assert a["n_steps"] == b["n_steps"] == 2 * N_STEPS
+    assert a["chance_precision"] == b["chance_precision"] == pytest.approx(1 / (2 * N_STEPS))
+    # ...while the achieved precisions differ sharply, which is the point of having the baseline
+    assert a["precision"] < b["precision"]
+
+
+def test_chance_precision_counts_healthy_steps_in_the_denominator():
+    one = em.evaluate_steps(healthy_verdicts=[],
+                            degraded_by_type={"substitution": [(_llm(anomaly_at=(2,)), [2], None)]})
+    two = em.evaluate_steps(healthy_verdicts=[_llm(), _llm()],
+                            degraded_by_type={"substitution": [(_llm(anomaly_at=(2,)), [2], None)]})
+    assert two["step_level"]["n_steps"] == one["step_level"]["n_steps"] + 2 * N_STEPS
+    assert two["step_level"]["chance_precision"] < one["step_level"]["chance_precision"]

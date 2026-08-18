@@ -10,6 +10,7 @@ and score its answers against the same injected errors the HSMM is scored on.
 | `llm/client.py` | OpenAI-compatible chat client: cache, rate limit, budget guard |
 | `llm/detect.py` | response grammar + parser, and the two protocol drivers |
 | `eval/element_metrics.py` | the step-level metric layer **both** detectors are scored through |
+| `render_llm_compare_png.py` | comparison figures from the report JSON (layout only, no inference) |
 
 Driven by `run_llm_eval.py`. Nothing here touches `eval/metrics.py`, `run_evaluation.py`, or any
 tick-level figure — every number in [`eval.md`](eval.md) is exactly what it was.
@@ -20,6 +21,44 @@ tick-level figure — every number in [`eval.md`](eval.md) is exactly what it wa
 > detector. Nothing in `anomaly/` calls it.
 
 ---
+
+## 0. Headline result
+
+Full corpus, 2026-08-18: **447 real** and **90 synthetic** trials x 5 injected errors,
+`gemma3:27b` served locally, prefix-only incremental protocol, joint HSMM.
+
+| arm | steps scored | chance precision | precision | recall | F1 | healthy FPR |
+|---|---|---|---|---|---|---|
+| **real / HSMM** | 19,253 | 0.139 | **0.897** | **0.790** | **0.840** | **0.087** |
+| real / LLM | 19,253 | 0.139 | 0.155 | 0.333 | 0.212 | 0.418 |
+| synthetic / HSMM | 4,299 | 0.147 | 0.842 | 0.735 | 0.785 | 0.078 |
+| synthetic / LLM | 4,299 | 0.147 | 0.168 | 0.552 | 0.257 | 0.767 |
+
+**The LLM's step-level precision is at chance** -- 1.12x on real, 1.14x on synthetic. It is not a
+usable detector for this task, and the HSMM beats it on recall *and* precision for all five error
+types. `parse_failure_rate` was 0.0039 over 11,645 requests, so this is a capability result, not a
+formatting artifact.
+
+The LLM is better at exactly two things, both cases where the HSMM is structurally blind:
+identifying a **transposition** (0.20 vs 0.00 on the confusion diagonal -- `s_transition` covers
+omission, transposition and repetition alike, so the HSMM can never name it) and a **repetition**
+(0.63 vs 0.41). It also proposes a better correction for **omission** (0.156 vs 0.025, the HSMM's
+near-zero being structural: `trace.expected_noun` is z*'s argmax, which after a deletion points at
+the step *after* the missing one). Everywhere else the HSMM wins, including correction accuracy on
+substitution (0.96 vs 0.37) and abandonment (0.89 vs 0.62).
+
+> **The synthetic arm is not neutral ground for this comparison and should not be read as a second
+> opinion.** Synthetic trials are ancestral samples from the HSMM, so they flatter it -- which
+> [`eval.md`](eval.md) already says -- but they also actively *penalise* the LLM: healthy
+> false-positive rate 0.767 there against 0.418 on real trials. The samples are valid under the
+> model while containing (verb, noun) pairings and orderings no real cook would produce, so a
+> detector reasoning from real-world priors is correct to call them anomalous. **Report the real
+> arm.**
+
+An earlier n=10 pilot suggested the LLM identified the error type correctly on 5/5 types against
+the HSMM's 3/5. That did not survive scaling: it rested on the argmax of each confusion column, a
+weak statistic at n=10. On the confusion *diagonal* at n=447 the LLM leads on only the two types
+named above.
 
 ## 1. The unit problem, and the step
 
@@ -510,6 +549,34 @@ at iteration 200 and 320 rather than 100, with the same effective $K_R = 5$, and
 ~100 changes downstream metrics by nothing. Every joint checkpoint reports `converged: false` —
 that is the `tol`-based stopping rule being structurally unable to fire against a period-3 limit
 cycle in the objective, not an unfinished fit.
+
+### Figures
+
+`run_llm_eval.py` writes per-arm figures as it goes. `render_llm_compare_png.py` then reads only
+the report JSON and draws the HSMM against the LLM:
+
+```bash
+python render_llm_compare_png.py --report dataset/processed/breakfast/llm_full_report.json
+```
+
+| figure | shows |
+|---|---|
+| `compare_detection_{source}` | recall and precision per error type, both detectors |
+| `compare_steplevel` | pooled step-level precision / recall / F1, with the **chance-precision line** |
+| `compare_type_confusion_{source}` | predicted x true type heatmaps, side by side, fixed [0,1] scale |
+| `compare_type_accuracy` | the confusion diagonal alone -- given a detection, was the type right? |
+| `compare_correction` | accuracy of the proposed "correct move", tokens and duration separately |
+| `compare_latency` | mean detection latency in steps |
+| `compare_healthy_fpr` | trial-level false-positive rate on healthy controls |
+
+The chance line on `compare_steplevel` is not decoration. Step-level precision has to be read
+against the base rate of anomalous steps or a detector that flags everything looks respectable:
+`gemma3:4b` scored 0.166 precision at n=10, which is 1.16x chance, i.e. essentially nothing.
+`step_level.chance_precision` is computed in `evaluate_steps` from the true step total rather than
+derived in the renderer, because `tp+fp+fn` moves with how much a given detector flags and would
+hand the two arms different baselines for identical data.
+
+Being layout-only, the renderer can restyle a three-hour sweep's figures in seconds.
 
 Healthy trajectories and all five injections are built **once per source** and handed to every
 arm, so the LLM and the HSMM score byte-identical degraded trials. Regenerating them per arm would
