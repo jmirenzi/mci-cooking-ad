@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from cook_ad.llm import client as llm_client
@@ -13,13 +15,17 @@ class StubClient:
     """Records every message list it is handed and replays canned replies in order. Keeps the
     whole suite offline -- nothing here touches the network."""
 
-    def __init__(self, replies):
+    def __init__(self, replies, concurrency=1):
         self.replies = list(replies)
         self.calls = []
+        self.concurrency = concurrency
 
     def complete(self, messages):
         self.calls.append([dict(m) for m in messages])
         return self.replies[len(self.calls) - 1] if len(self.calls) <= len(self.replies) else "No Anomaly"
+
+    def complete_many(self, message_lists, concurrency=None):
+        return [self.complete(m) for m in message_lists]
 
     n_would_request = 0
 
@@ -232,9 +238,12 @@ def test_cache_round_trips_and_does_not_consume_budget(tmp_path):
     assert c.stats()["uncached_requests_needed"] == 0
 
 
+REMOTE = "https://generativelanguage.googleapis.com/v1beta/openai"
+
+
 def test_missing_api_key_is_a_clear_error(monkeypatch):
     monkeypatch.delenv("COOK_AD_TEST_KEY", raising=False)
-    c = llm_client.ChatClient(api_key_env="COOK_AD_TEST_KEY")
+    c = llm_client.ChatClient(base_url=REMOTE, api_key_env="COOK_AD_TEST_KEY")
     with pytest.raises(llm_client.LLMError, match="COOK_AD_TEST_KEY"):
         c._api_key()
 
@@ -244,7 +253,7 @@ def test_blank_key_is_treated_as_missing(monkeypatch):
     rather than send an empty bearer token."""
     monkeypatch.setenv("COOK_AD_TEST_KEY", "")
     with pytest.raises(llm_client.LLMError):
-        llm_client.ChatClient(api_key_env="COOK_AD_TEST_KEY")._api_key()
+        llm_client.ChatClient(base_url=REMOTE, api_key_env="COOK_AD_TEST_KEY")._api_key()
 
 
 # ---- env file -------------------------------------------------------------------------------
@@ -283,13 +292,10 @@ def test_missing_env_file_is_not_an_error(tmp_path):
     assert llm_client.load_env_file(tmp_path / "nope.env") == 0
 
 
-def test_defaults_target_the_gemini_free_tier():
-    """The defaults encode a request budget, not a taste: 15 RPM / 1000 RPD on flash-lite versus
-    OpenRouter's 50/day cap on :free variants."""
+def test_remote_fallback_still_names_the_gemini_key():
+    """Switching --base-url to a hosted provider should not also require naming the key variable."""
     assert llm_client.DEFAULT_API_KEY_ENV == "GEMINI_API_KEY"
-    assert llm_client.DEFAULT_BASE_URL.endswith("/openai")
-    assert "flash-lite" in llm_client.DEFAULT_MODEL
-    assert llm_client.DEFAULT_RPM == 15
+    assert llm_client.REMOTE_RPM == 15
 
 
 # ---- 429 / quota handling --------------------------------------------------------------------
@@ -385,3 +391,118 @@ def test_non_transient_http_error_is_not_retried(monkeypatch):
     with pytest.raises(llm_client.LLMError, match="model not found"):
         c._post([{"role": "user", "content": "x"}])
     assert len(calls) == 1
+
+
+# ---- local servers ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("url", [
+    "http://localhost:11434/v1", "http://127.0.0.1:8000/v1", "http://0.0.0.0:8000/v1",
+])
+def test_local_server_needs_no_api_key(monkeypatch, url):
+    """Pointing --base-url at a local inference server should need no other ceremony."""
+    monkeypatch.delenv("COOK_AD_TEST_KEY", raising=False)
+    c = llm_client.ChatClient(base_url=url, api_key_env="COOK_AD_TEST_KEY")
+    assert c._api_key() == "local"
+
+
+def test_remote_server_still_requires_a_key(monkeypatch):
+    monkeypatch.delenv("COOK_AD_TEST_KEY", raising=False)
+    c = llm_client.ChatClient(base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+                              api_key_env="COOK_AD_TEST_KEY")
+    with pytest.raises(llm_client.LLMError):
+        c._api_key()
+
+
+def test_explicit_key_still_wins_for_a_local_server(monkeypatch):
+    monkeypatch.setenv("COOK_AD_TEST_KEY", "real-key")
+    c = llm_client.ChatClient(base_url="http://localhost:11434/v1", api_key_env="COOK_AD_TEST_KEY")
+    assert c._api_key() == "real-key"
+
+
+# ---- concurrency -----------------------------------------------------------------------------
+
+def test_defaults_are_local_and_unpaced():
+    """Local is the default destination: no key, no pacing, concurrency on."""
+    c = llm_client.ChatClient()
+    assert c._is_local()
+    assert c.rpm == 0
+    assert c.concurrency == llm_client.LOCAL_CONCURRENCY
+    assert c.model.startswith("gemma3")
+
+
+def test_remote_destination_gets_paced_and_serialised():
+    """The opposite defaults, because a hosted free tier is request-capped: concurrency there
+    would just convert one 429 into eight."""
+    c = llm_client.ChatClient(base_url="https://generativelanguage.googleapis.com/v1beta/openai")
+    assert not c._is_local()
+    assert c.rpm == llm_client.REMOTE_RPM
+    assert c.concurrency == 1
+
+
+def test_explicit_rpm_and_concurrency_override_the_destination_default():
+    c = llm_client.ChatClient(base_url="http://localhost:11434/v1", rpm=30, concurrency=2)
+    assert (c.rpm, c.concurrency) == (30, 2)
+    c = llm_client.ChatClient(base_url="https://example.com/v1", rpm=0)
+    assert c.rpm == 0     # an explicit 0 must not be read as "unset"
+
+
+def test_complete_many_preserves_input_order_under_concurrency(tmp_path):
+    """Verdict k must still be step k's after parallel dispatch."""
+    import time as _t
+    c = llm_client.ChatClient(base_url="http://localhost:1/v1", cache_dir=tmp_path, concurrency=8)
+    order = []
+
+    def fake_post(messages):
+        idx = int(messages[0]["content"])
+        _t.sleep((10 - idx) * 0.005)   # later items finish FIRST if order is not preserved
+        order.append(idx)
+        return f"reply-{idx}"
+
+    c._post = fake_post
+    out = c.complete_many([[{"role": "user", "content": str(i)}] for i in range(10)])
+    assert out == [f"reply-{i}" for i in range(10)]
+    assert sorted(order) == list(range(10))
+    assert order != list(range(10))    # they really did complete out of order
+
+
+def test_concurrent_counters_are_not_lost(tmp_path):
+    c = llm_client.ChatClient(base_url="http://localhost:1/v1", cache_dir=tmp_path, concurrency=16)
+    c._post = lambda messages: "No Anomaly"
+    c.complete_many([[{"role": "user", "content": str(i)}] for i in range(200)])
+    assert c.n_requests == 200
+    assert c.stats()["uncached_requests_needed"] == 200
+
+
+def test_concurrent_cache_writes_are_all_readable(tmp_path):
+    """Write-then-rename: a half-written entry would read back as a corrupt cache miss."""
+    import json as _j
+    c = llm_client.ChatClient(base_url="http://localhost:1/v1", cache_dir=tmp_path, concurrency=16)
+    c._post = lambda messages: "x" * 5000
+    msgs = [[{"role": "user", "content": str(i)}] for i in range(60)]
+    c.complete_many(msgs)
+    files = list(tmp_path.glob("*.json"))
+    assert len(files) == 60
+    for f in files:
+        assert _j.loads(f.read_text())["content"] == "x" * 5000
+    assert not list(tmp_path.glob("*.tmp"))     # no temp files left behind
+
+
+def test_incremental_uses_complete_many():
+    steps = _steps(3)
+    stub = StubClient(["No Anomaly"] * 3)
+    detect.run_trial(stub, "SYS", steps, VOCAB, protocol="incremental")
+    assert len(stub.calls) == 3
+    assert detect.incremental_messages("SYS", steps)[2][1]["content"].count("\n") == 2
+
+
+def test_rate_limiter_is_shared_across_threads():
+    """N workers must be paced as one stream, or concurrency multiplies the effective rate."""
+    import threading as _th
+    lim = llm_client.RateLimiter(600)      # 0.11s spacing with the safety margin
+    start = time.monotonic()
+    threads = [_th.Thread(target=lim.wait) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert time.monotonic() - start >= 4 * lim.min_interval

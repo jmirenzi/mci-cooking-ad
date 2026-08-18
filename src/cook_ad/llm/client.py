@@ -31,22 +31,35 @@ Switch back with:
 Either way the on-disk cache below makes reruns and resumed sweeps free, which is what lets a
 sweep survive a daily cap being hit part-way through.
 """
+import concurrent.futures
 import hashlib
 import json
 import os
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 # Google's OpenAI-compatibility layer. Same /chat/completions body as everyone else; the trailing
 # path segment is "openai", and ChatClient appends "/chat/completions".
-DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
-DEFAULT_API_KEY_ENV = "GEMINI_API_KEY"
+# Local by default. A local server removes every constraint the hosted path imposes -- no key, no
+# per-minute pacing, no daily quota, no 429 handling -- and it pins the model, which the hosted
+# path cannot: gemini-2.5-flash-lite was retired mid-experiment here, invalidating results
+# collected against it. A pinned local checkpoint stays re-runnable, which matters for a baseline
+# whose numbers end up in a writeup.
+DEFAULT_BASE_URL = "http://localhost:11434/v1"
+DEFAULT_API_KEY_ENV = "GEMINI_API_KEY"   # only consulted for non-local base URLs
 # Small on purpose: this is a proof-of-concept baseline, and Flash-Lite carries the friendliest
 # free-tier request budget (15 RPM / 1000 RPD), which is the binding constraint here.
-DEFAULT_MODEL = "gemini-3.1-flash-lite"
-DEFAULT_RPM = 15            # verified Flash-Lite free-tier floor; raise if your tier allows
+DEFAULT_MODEL = "gemma3:27b"
+# rpm/concurrency default by destination rather than to one number, because the right value is
+# opposite for the two cases: a hosted free tier wants pacing and no concurrency, a local server
+# wants no pacing and as much concurrency as it has slots. Measured on this corpus: gemma3:4b at
+# 2.8 req/s sequential, and gemma3:27b likewise GPU-bound rather than latency-bound.
+REMOTE_RPM = 15             # verified Flash-Lite free-tier floor
+LOCAL_CONCURRENCY = 8       # match or exceed with OLLAMA_NUM_PARALLEL, else the server serialises
 DEFAULT_TIMEOUT = 120
 # Each 429 retry now waits a full rate-limit window (~60s) rather than an exponential ramp
 # from 1s, so 6 attempts covers ~5 minutes of transient limiting instead of ~31 seconds.
@@ -154,17 +167,22 @@ class RateLimiter:
     """Token bucket at `rpm` requests/minute, with RATE_SAFETY_MARGIN of headroom. Cache hits do
     not consume budget (they never leave the process), so this only paces real calls."""
 
-    def __init__(self, rpm=DEFAULT_RPM):
+    def __init__(self, rpm=REMOTE_RPM):
         self.min_interval = (60.0 / rpm) * RATE_SAFETY_MARGIN if rpm and rpm > 0 else 0.0
         self._last = 0.0
+        self._lock = threading.Lock()
 
     def wait(self):
+        """Blocks until the next request is due. Holds the lock across the sleep so N concurrent
+        workers are paced as one stream rather than each pacing itself -- without that,
+        concurrency would multiply the effective request rate and defeat the limit."""
         if self.min_interval <= 0:
             return
-        delta = time.monotonic() - self._last
-        if delta < self.min_interval:
-            time.sleep(self.min_interval - delta)
-        self._last = time.monotonic()
+        with self._lock:
+            delta = time.monotonic() - self._last
+            if delta < self.min_interval:
+                time.sleep(self.min_interval - delta)
+            self._last = time.monotonic()
 
 
 class ChatClient:
@@ -175,9 +193,10 @@ class ChatClient:
     """
 
     def __init__(self, model=DEFAULT_MODEL, base_url=DEFAULT_BASE_URL,
-                 api_key_env=DEFAULT_API_KEY_ENV, cache_dir=None, rpm=DEFAULT_RPM,
+                 api_key_env=DEFAULT_API_KEY_ENV, cache_dir=None, rpm=None,
                  max_requests=None, temperature=0.0, timeout=DEFAULT_TIMEOUT,
-                 max_retries=DEFAULT_MAX_RETRIES, dry_run=False, extra_headers=None):
+                 max_retries=DEFAULT_MAX_RETRIES, dry_run=False, extra_headers=None,
+                 concurrency=None):
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_key_env = api_key_env
@@ -187,7 +206,14 @@ class ChatClient:
         self.dry_run = dry_run
         self.max_requests = max_requests
         self.extra_headers = dict(extra_headers or {})
-        self.limiter = RateLimiter(rpm)
+        # rpm=None / concurrency=None mean "pick by destination" (see REMOTE_RPM above); an
+        # explicit value always wins, including an explicit 0 to disable pacing.
+        local = self._is_local()
+        self.rpm = (0 if local else REMOTE_RPM) if rpm is None else rpm
+        self.concurrency = (LOCAL_CONCURRENCY if local else 1) if concurrency is None else concurrency
+        self.limiter = RateLimiter(self.rpm)
+        # Counters and the limiter are shared across worker threads once concurrency > 1.
+        self._lock = threading.Lock()
         self.cache_dir = Path(cache_dir) if cache_dir else None
         if self.cache_dir:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -197,8 +223,18 @@ class ChatClient:
 
     # ---- key handling -------------------------------------------------------------------
 
+    def _is_local(self):
+        """A server on loopback is a local inference server (ollama, vLLM, llama.cpp), which does
+        not authenticate. Treating that as 'no key needed' is what lets --base-url point at
+        localhost with no other ceremony -- the alternative is making users invent a dummy value
+        for a field nobody checks."""
+        host = urllib.parse.urlparse(self.base_url).hostname or ""
+        return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+
     def _api_key(self):
         key = os.environ.get(self.api_key_env)
+        if not key and self._is_local():
+            return "local"   # OpenAI-compatible servers require the header, not a real value
         if not key:
             raise LLMError(
                 f"no API key in ${self.api_key_env}. Put it in an untracked {DEFAULT_ENV_FILE} "
@@ -239,11 +275,15 @@ class ChatClient:
         path = self._cache_path(key)
         if path is None:
             return
-        path.write_text(json.dumps(
+        # Write-then-rename: with concurrent workers two threads can race on the same key, and a
+        # half-written file would be read back as a corrupt cache entry on the next run.
+        tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps(
             {"content": content, "model": self.model, "base_url": self.base_url,
              "temperature": self.temperature, "messages": messages,
              "written_at": time.strftime("%Y-%m-%dT%H:%M:%S")},
         ))
+        tmp.replace(path)
 
     # ---- the call -----------------------------------------------------------------------
 
@@ -316,11 +356,15 @@ class ChatClient:
         key = self._cache_key(messages)
         cached = self._cache_get(key)
         if cached is not None:
-            self.n_cache_hits += 1
+            with self._lock:
+                self.n_cache_hits += 1
             return cached
 
-        self.n_would_request += 1
-        if self.max_requests is not None and self.n_would_request > self.max_requests:
+        with self._lock:
+            self.n_would_request += 1
+            over_budget = (self.max_requests is not None
+                           and self.n_would_request > self.max_requests)
+        if over_budget:
             raise BudgetExceeded(
                 f"this sweep needs more than --max-requests={self.max_requests} uncached "
                 f"requests. Raise the budget and rerun -- cached responses are reused, so the "
@@ -330,14 +374,31 @@ class ChatClient:
             return "No Anomaly"
 
         content = self._post(messages)
-        self.n_requests += 1
+        with self._lock:
+            self.n_requests += 1
         self._cache_put(key, content, messages)
         return content
+
+    def complete_many(self, message_lists, concurrency=None):
+        """Answer many independent requests, results in input order.
+
+        Safe only because the prefix-only protocol made every request a pure function of (trial,
+        step) -- with conversational feedback, request i+1 could not be built until response i
+        arrived, so this could not exist. Threads (not processes) because the work is entirely
+        network/GPU wait, so the GIL is not the bottleneck.
+        """
+        workers = self.concurrency if concurrency is None else concurrency
+        if workers <= 1 or len(message_lists) <= 1:
+            return [self.complete(m) for m in message_lists]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            return list(pool.map(self.complete, message_lists))
 
     def stats(self):
         return {
             "model": self.model,
             "base_url": self.base_url,
+            "rpm": self.rpm,
+            "concurrency": self.concurrency,
             "temperature": self.temperature,
             "requests_sent": self.n_requests,
             "cache_hits": self.n_cache_hits,

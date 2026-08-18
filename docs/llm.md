@@ -341,7 +341,107 @@ plus `step_level`, a pooled precision/recall over every step of every trial as o
 
 ---
 
-## 6. Running it
+## 6. Running it locally (the default)
+
+The client defaults to `http://localhost:11434/v1` with `gemma3:27b`. A local server removes every
+constraint the hosted path imposes -- no key, no pacing, no daily quota -- and it *pins the model*,
+which the hosted path cannot: `gemini-2.5-flash-lite` was retired mid-experiment here, invalidating
+the results collected against it. For a baseline whose numbers end up in a writeup, that
+reproducibility is the strongest argument for local, ahead of speed or cost.
+
+```bash
+# rootless install, no sudo
+mkdir -p ~/.local/ollama && cd ~/.local/ollama
+curl -sSL -o o.tar.zst https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64.tar.zst
+tar --zstd -xf o.tar.zst && rm o.tar.zst
+export PATH="$HOME/.local/ollama/bin:$PATH" LD_LIBRARY_PATH="$HOME/.local/ollama/lib:$LD_LIBRARY_PATH"
+ollama serve &
+ollama pull gemma3:27b
+```
+
+`--rpm` and `--concurrency` default *by destination*, because the right value is opposite in the
+two cases: a localhost URL gets no pacing and 8 workers, anything else gets 15 rpm and 1 worker
+(concurrency against a request-capped free tier just converts one 429 into eight).
+
+### Sharing the GPU with JAX
+
+JAX preallocates ~75% of the device on first use -- **37 GB of a 48 GB card**, measured -- which
+starves a model server that has not loaded yet. `run_llm_eval.py` therefore sets
+`XLA_PYTHON_CLIENT_PREALLOCATE=false` by default, after which JAX holds **572 MB** and JAX plus
+`gemma3:27b` coexist at 29.5 GB.
+
+Measured cost of disabling it, HSMM arm on 20 real trials: **68.83 s vs 68.97 s** -- nothing. This
+workload is dominated by XLA compilation and a few large ops, not allocation churn, so there is no
+trade-off to manage.
+
+If you would rather keep the arms apart anyway, `--skip-llm` then `--skip-hsmm` **merge** into one
+report at the same `--out`. The merge is guarded on the pool-defining arguments (seed, source,
+trial counts, checkpoint): a run with a different `--seed` is refused rather than silently
+producing a table that looks like a comparison and is not one.
+
+### Measured throughput, and why concurrency disappoints here
+
+Prefix-only requests are independent, so they are issued through a thread pool. n=10 real trials,
+251 requests, RTX 6000 Ada:
+
+| model | concurrency 1 | 8 | 16 |
+|---|---|---|---|
+| `gemma3:4b` | 104 s | **63 s** (1.66x) | 61 s (1.70x) |
+| `gemma3:27b` | 850 s | 701 s (1.21x) | — |
+
+Real, but far short of the ~7x that independent requests suggest, and it saturates by 8 workers.
+The client is not the bottleneck; llama.cpp simply batches weakly. This is the ollama-vs-vLLM
+difference: vLLM's continuous batching is what converts request independence into throughput.
+
+### The configuration trap that dominates everything else
+
+**Raising `OLLAMA_NUM_PARALLEL` without also bounding `OLLAMA_CONTEXT_LENGTH` will silently push
+most of the model onto the CPU.** KV cache is allocated as `context_length x num_parallel`, and
+these models default to enormous contexts -- 131072 for gemma3, 40960 for qwen3. At
+`NUM_PARALLEL=8` that is an **80 GB** demand on a 48 GB card, so ollama loads only what fits:
+
+```
+llama_kv_cache: size = 81920.00 MiB (131072 cells, 10 layers, 8/8 seqs)
+load_tensors: offloaded 21/63 layers to GPU      <- gemma3:27b, two thirds on CPU
+```
+
+Nothing errors. The run just becomes CPU inference. Measured on n=10, 251 requests:
+
+| gemma3:27b | concurrency 1 | concurrency 8 |
+|---|---|---|
+| default context (21/63 layers on GPU) | 850 s | 701 s |
+| `OLLAMA_CONTEXT_LENGTH=2048` (63/63 on GPU) | **212 s** | **167 s** |
+
+**4x from one environment variable** -- far more than concurrency ever contributed. The longest
+prompt this evaluation produces is 842 tokens (1476 with recipe descriptions), so 2048 is ample.
+
+An earlier version of this document blamed the slowdown on Gemma 3's sliding-window attention,
+having seen ollama churning ~250 MB KV checkpoints in its log (`n_swa = 1024`). That churn is real
+but it was not the bottleneck: the layer-offload lines above are, and `gemma3:4b` -- same SWA
+architecture -- scaled fine precisely because it fit on the GPU whole. Diagnosis by log-grepping
+found a true symptom and the wrong cause.
+
+### Model choice
+
+`gemma3:27b` is the recommended local model. **`qwen3:32b` is a poor fit despite being a
+reasonable model**, for a mechanical reason: its thinking mode cannot be disabled through the
+OpenAI-compatible endpoint. `think: false` works only on ollama's native `/api/chat`
+(4 completion tokens, 0.26 s), while the OpenAI path ignores it and also ignores
+`chat_template_kwargs: {enable_thinking: false}`; `PARAMETER think false` in a Modelfile is
+rejected as an unknown parameter. The result is 219-294 completion tokens per verdict against
+gemma3's ~15, roughly 10x the generation cost for a one-line answer, plus a tendency to invent
+out-of-vocabulary types ("Sequence Anomaly", "Time Anomaly"). Supporting it would mean teaching
+the client ollama's native protocol, which is exactly the provider-specific coupling
+`--base-url` exists to avoid.
+
+So: **ollama is right for validating the pipeline and for n<=10; vLLM is what makes n=100+
+pleasant.** Raise `OLLAMA_NUM_PARALLEL` to at least `--concurrency` if you use concurrency -- and
+bound `OLLAMA_CONTEXT_LENGTH` when you do, or you will lose far more to CPU offload than
+concurrency wins back.
+
+## 7. Running it
+
+
 
 ```bash
 # cost the sweep first -- no key needed, no requests sent
@@ -358,6 +458,10 @@ python run_llm_eval.py --config configs/breakfast.yaml --variant both --n 20 --m
 
 # score the 2-stage cascade as the HSMM arm instead of the joint model
 python run_llm_eval.py --config configs/breakfast.yaml --cascade
+
+# switch back to a hosted provider (needs GEMINI_API_KEY in .env)
+python run_llm_eval.py --base-url https://generativelanguage.googleapis.com/v1beta/openai \
+    --model gemini-3.1-flash-lite
 ```
 
 ### Which HSMM, and which checkpoint

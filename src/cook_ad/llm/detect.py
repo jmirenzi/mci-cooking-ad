@@ -123,6 +123,16 @@ def render_prefix(steps, upto):
     return "\n".join(f"{s.index + 1}. {textify.render_step(s)}" for s in steps[: upto + 1])
 
 
+def incremental_messages(system_prompt, steps):
+    """Every request for one trial, built upfront. Possible only because the protocol is
+    prefix-only -- with self-feedback, request i+1 could not be built until response i arrived."""
+    return [
+        [{"role": "system", "content": system_prompt},
+         {"role": "user", "content": render_prefix(steps, i)}]
+        for i in range(len(steps))
+    ]
+
+
 def run_incremental(client, system_prompt, steps, vocab):
     """One request per step, prefix-only (no self-feedback). len(steps) requests.
 
@@ -130,16 +140,12 @@ def run_incremental(client, system_prompt, steps, vocab):
     conversation. A single growing user turn is universally supported (consecutive same-role
     messages are not), and it keeps the append-only prefix property that makes the prompts
     cacheable.
+
+    All requests for the trial are issued through client.complete_many, so they run concurrently
+    when the client allows it. Order is preserved, so verdict k is still step k's.
     """
-    verdicts = []
-    for i, step in enumerate(steps):
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": render_prefix(steps, i)},
-        ]
-        reply = client.complete(messages)
-        verdicts.append(parse_response(reply, step.index, vocab))
-    return verdicts
+    replies = client.complete_many(incremental_messages(system_prompt, steps))
+    return [parse_response(reply, step.index, vocab) for step, reply in zip(steps, replies)]
 
 
 BATCH_INSTRUCTION = (

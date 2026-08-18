@@ -21,7 +21,15 @@ never had -- an asymmetry this script prints next to the numbers rather than bur
 """
 import argparse
 import json
+import os
 from pathlib import Path
+
+# JAX preallocates ~75% of the GPU on first use -- ~37 GB of a 48 GB card, measured. Harmless when
+# JAX is the only tenant, but this script can share the GPU with a local inference server
+# (--base-url http://localhost:...), and a model that has not loaded yet will then fail or fall
+# back silently to CPU. Allocating on demand instead lets the HSMM arm (a few GB for inference)
+# and a 27B model (~17 GB) coexist in 48 GB. Set the variable yourself to override.
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import jax
 import numpy as np
@@ -183,7 +191,13 @@ def llm_arm(pool, lexicon, client, system_prompt, vocab, protocol, tag):
 
 
 def pool_request_cost(pool, lexicon, protocol):
-    """Uncached requests a full sweep over this pool costs, for --dry-run and the budget line."""
+    """UPPER BOUND on the requests a sweep over this pool costs, for --dry-run and the budget line.
+
+    A bound rather than an estimate: prefix-only requests cache on the whole prompt, and the six
+    conditions share prefixes (a substitution rewrites one tick mid-trial, so every earlier step
+    renders identically to the healthy trial's). Measured on 10 real trials: 398 predicted, 251
+    actually sent. Budget against this and expect to spend less.
+    """
     total = 0
     for traj, degraded in pool:
         total += detect.request_cost(textify.steps_from_trajectory(traj, lexicon), protocol)
@@ -235,6 +249,60 @@ BATCH_CAVEAT = (
 
 # --------------------------------------------------------------------------------------------
 
+# Arguments that must match for two runs to describe the same experiment: everything the shared
+# trial pool depends on. --model/--variant/--protocol are deliberately absent -- comparing two
+# models or two prompt variants inside one report is the whole point of merging.
+POOL_DEFINING_ARGS = ("seed", "source", "n", "max_ticks", "max_real", "config", "sequences",
+                      "joint_params", "cascade", "params", "recipe_params", "min_run")
+
+
+def _write_report(args, reports, incomplete=False):
+    """Merge into an existing report at --out rather than overwriting it.
+
+    This is what makes `--skip-llm` then `--skip-hsmm` compose into one comparable report, which
+    matters because the two arms want the GPU on very different terms: the HSMM arm wants JAX, the
+    LLM arm wants a local server holding 17+ GB of weights. Running them as separate invocations
+    is always safe, and the shared --seed guarantees both scored the identical trial pool.
+
+    The merge is guarded on POOL_DEFINING_ARGS, because two runs only describe the same experiment
+    if they built the same pool. Silently merging arms scored on different data would produce a
+    table that looks like a comparison and is not one.
+    """
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    merged = {}
+    key = {k: getattr(args, k) for k in POOL_DEFINING_ARGS}
+
+    if out.exists():
+        try:
+            prior = json.loads(out.read_text())
+        except (json.JSONDecodeError, OSError):
+            prior = None
+        if prior:
+            prior_cfg = prior.get("config", {})
+            differing = [k for k in POOL_DEFINING_ARGS
+                         if str(prior_cfg.get(k)) != str(key.get(k))]
+            if not differing:
+                merged = prior.get("reports", {})
+                print(f"merging into {out} ({len(merged)} prior arm(s): "
+                      f"{', '.join(merged) or 'none'})")
+            else:
+                print(f"NOT merging with the existing {out}: produced with different "
+                      f"{', '.join(differing)}, so its arms were scored on a different trial "
+                      f"pool. Overwriting -- use a different --out to keep both.")
+
+    merged.update(reports)
+    out.write_text(json.dumps({
+        "config": dict(vars(args)),
+        "incomplete": incomplete,
+        "reports": merged,
+    }, indent=2, default=str))
+    done = [k for k, v in merged.items() if not v.get("incomplete")]
+    print(f"\n{'PARTIAL report' if incomplete else 'report'} written to {out} "
+          f"({len(done)} arm(s) complete: {', '.join(done) or 'none'})")
+    print(f"figures written to {args.figures_dir}/")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -275,7 +343,15 @@ def main():
                         help="untracked KEY=VALUE file to load the API key from (see "
                              ".env.example). Missing file is fine; already-set environment "
                              "variables win over it.")
-    parser.add_argument("--rpm", type=int, default=llm_client.DEFAULT_RPM)
+    parser.add_argument("--rpm", type=int, default=None,
+                        help="requests/minute pacing. Default depends on destination: 0 (no "
+                             "pacing) for a localhost base URL, 15 for anything else. Pass 0 to "
+                             "disable explicitly.")
+    parser.add_argument("--concurrency", type=int, default=None,
+                        help="requests in flight at once. Default 8 for a localhost base URL, 1 "
+                             "otherwise. Only safe because the prefix-only protocol makes every "
+                             "request independent. For ollama, also raise OLLAMA_NUM_PARALLEL to "
+                             "at least this, or the server will queue them anyway.")
     parser.add_argument("--max-requests", type=int, default=None,
                         help="hard budget: raise rather than silently truncate a sweep")
     parser.add_argument("--dry-run", action="store_true",
@@ -350,12 +426,26 @@ def main():
                 for s in sequences[: args.max_real]]
         pools["real"] = build_pool(traj, rng, inject_params)
 
+    # Report cache state before spending anything: the difference between "this costs 400
+    # requests" and "this is mostly cached and costs 40" decides whether a run is worth starting.
+    # The model id namespaces the cache, so this also makes an accidental --model switch visible
+    # as a suddenly-empty cache rather than as a surprise part-way through.
+    cache_dir = Path(args.cache_dir) / args.model.replace("/", "_")
+    n_cached = len(list(cache_dir.glob("*.json"))) if cache_dir.exists() else 0
+    print(f"cache: {n_cached} response(s) for {args.model} in {cache_dir}")
+    if n_cached == 0 and Path(args.cache_dir).exists():
+        for d in sorted(Path(args.cache_dir).glob("*")):
+            n = len(list(d.glob("*.json"))) if d.is_dir() else 0
+            if n and d.name != cache_dir.name:
+                print(f"  (note: {n} cached response(s) exist for {d.name}; NOT reused for "
+                      f"{args.model}, and results across models are not comparable)")
+
     for name, pool in pools.items():
         cost = pool_request_cost(pool, lexicon, args.protocol)
         n_variants = 0 if args.skip_llm else (2 if args.variant == "both" else 1)
-        print(f"\n[{name}] {len(pool)} usable trials; "
-              f"{cost} requests per variant, {cost * n_variants} for this run "
-              f"({args.protocol} protocol)")
+        print(f"\n[{name}] {len(pool)} usable trials; at most {cost} requests per variant, "
+              f"{cost * n_variants} for this run ({args.protocol} protocol). Shared prefixes "
+              f"between conditions cache, so the real cost runs ~35% lower.")
 
     if args.dry_run:
         name, pool = next(iter(pools.items()))
@@ -390,9 +480,21 @@ def main():
                 model=args.model, base_url=args.base_url, api_key_env=args.api_key_env,
                 cache_dir=Path(args.cache_dir) / args.model.replace("/", "_"),
                 rpm=args.rpm, max_requests=args.max_requests, dry_run=False,
+                concurrency=args.concurrency,
             )
+            print(f"  client: rpm={client.rpm} concurrency={client.concurrency}", flush=True)
             system_prompt = prompts.build_variant(variant, vocab, labels)
-            report = llm_arm(pool, lexicon, client, system_prompt, vocab, args.protocol, tag)
+            try:
+                report = llm_arm(pool, lexicon, client, system_prompt, vocab, args.protocol, tag)
+            except (llm_client.LLMError, llm_client.BudgetExceeded) as e:
+                # Running out of quota part-way through is an expected operating condition on a
+                # free tier, not a crash. Write the arms that DID finish rather than discarding an
+                # hour of HSMM work because the last arm ran out of requests.
+                print(f"\n[{tag}] stopped early: {e}", flush=True)
+                reports[tag] = {"incomplete": True, "error": str(e), "client": client.stats(),
+                                "prompt_variant": variant, "protocol": args.protocol}
+                _write_report(args, reports, incomplete=True)
+                raise SystemExit(1) from None
             report["client"] = client.stats()
             report["prompt_variant"] = variant
             report["protocol"] = args.protocol
@@ -405,14 +507,7 @@ def main():
             print_report(report, tag, note or None)
             plotting.save_step_figures(report, args.figures_dir, f"{name}_llm_{variant}")
 
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({
-        "config": {k: v for k, v in vars(args).items()},
-        "reports": reports,
-    }, indent=2, default=str))
-    print(f"\nreport written to {out}")
-    print(f"figures written to {args.figures_dir}/")
+    _write_report(args, reports)
 
 
 if __name__ == "__main__":
