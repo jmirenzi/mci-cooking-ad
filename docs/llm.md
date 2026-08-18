@@ -207,6 +207,34 @@ universally accepted.
 > older conversational protocol will not be reused, and results from the two are not directly
 > comparable.
 
+### `conversational` (ablation)
+
+The original protocol: one request per step with the model's own earlier replies fed back as
+assistant turns. Superseded as the default by prefix-only, but **kept runnable because the two are
+not equivalent in behaviour**, and measurement contradicted the argument for the switch.
+
+Same model, same 10 real trials, same seed, same prompt; only the protocol differs:
+
+| protocol | tp | fp | fn | precision | recall |
+|---|---|---|---|---|---|
+| `incremental` (prefix-only) | 18 | 77 | 42 | 0.189 | 0.300 |
+| `conversational` | 22 | **47** | 38 | **0.319** | **0.367** |
+
+Self-feedback improves **both** precision and recall. The error-cascade argument above predicted
+the opposite. The assistant turns evidently act as a conservatism anchor -- a model that has just
+said "No Anomaly" five times is being shown five reasons to say it again -- which suppresses the
+prompt-length drift in section 0. The conversational arm even ran with the prompt written for
+prefix-only ("a numbered list ... judge only the last step"), which does not describe what it
+sees, and still won.
+
+So the prefix-only default buys parallelism and clean independence at a real cost in accuracy on
+this model. That trade is worth restating whenever a number from either protocol is reported, and
+the headline in section 0 was measured under `incremental`, i.e. under the weaker of the two.
+
+Cannot be parallelised within a trial: request *i+1* literally contains response *i*. Measured
+throughput was nonetheless comparable (~1.55 req/s), since ollama's prefix cache handles the
+growing message list well.
+
 ### `batch`
 
 One request for the whole trial, one verdict line per step. ~7× cheaper, and **non-causal** — the

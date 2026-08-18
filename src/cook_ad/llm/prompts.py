@@ -67,19 +67,37 @@ def vocab_block(vocab, sil_verb="stall", sil_noun="kitchen"):
     )
 
 
-def task_block():
+# How the steps arrive differs by protocol, so the sentence describing that has to differ too.
+# The `incremental` text is FROZEN: it is part of the response-cache key, and changing a character
+# invalidates every cached response collected under it.
+_DELIVERY = {
+    "incremental": """You will be given a numbered list of the steps taken SO FAR, in order. The list stops at the
+present moment: there are no future steps, and the task may not be finished.
+
+Judge ONLY THE LAST step in the list. The earlier steps are context for that judgement -- do not
+comment on them, and do not judge them again.""",
+    "conversational": """You will be given the steps ONE AT A TIME, in order, as the person performs them. There are no
+future steps, the task may not be finished, and you cannot revise an answer you have already
+given.
+
+Judge ONLY the step you have just been given. Everything earlier in this conversation is context
+for that judgement -- do not comment on it, and do not judge it again.""",
+    "batch": """You will be given the complete numbered list of steps for one trial.
+
+Judge EVERY step in the list, in order, one verdict per step.""",
+}
+
+
+def task_block(protocol="incremental"):
     """Protocol + the strict response grammar detect.parse_response is built against."""
+    delivery = _DELIVERY.get(protocol, _DELIVERY["incremental"])
     return f"""You are monitoring a person with mild cognitive impairment as they cook a
 single breakfast recipe. Each step is one uninterrupted stretch of a single action on a single
 object, written as:
 
     VERB NOUN for NUMBER seconds
 
-You will be given a numbered list of the steps taken SO FAR, in order. The list stops at the
-present moment: there are no future steps, and the task may not be finished.
-
-Judge ONLY THE LAST step in the list. The earlier steps are context for that judgement -- do not
-comment on them, and do not judge them again.
+{delivery}
 
 Reply with EXACTLY one line, in one of these two forms and nothing else -- no preamble, no
 explanation, no markdown:
@@ -181,12 +199,12 @@ def recipe_block(labels):
     return "\n".join(lines)
 
 
-def build_system_prompt(vocab, with_recipes=False, labels=None):
+def build_system_prompt(vocab, with_recipes=False, labels=None, protocol="incremental"):
     """The full preprompt. with_recipes=True requires labels (parsed labels.json) -- see this
     module's docstring for why that arm is not a like-for-like comparison against the HSMM."""
     if with_recipes and labels is None:
         raise ValueError("with_recipes=True requires labels (the parsed labels.json)")
-    blocks = [task_block(), vocab_block(vocab)]
+    blocks = [task_block(protocol), vocab_block(vocab)]
     if with_recipes:
         blocks.append(recipe_block(labels))
     return "\n\n".join(blocks).strip()
@@ -195,7 +213,8 @@ def build_system_prompt(vocab, with_recipes=False, labels=None):
 VARIANTS = ("no-recipes", "with-recipes")
 
 
-def build_variant(variant, vocab, labels=None):
+def build_variant(variant, vocab, labels=None, protocol="incremental"):
     if variant not in VARIANTS:
         raise ValueError(f"unknown prompt variant: {variant!r} (expected one of {VARIANTS})")
-    return build_system_prompt(vocab, with_recipes=(variant == "with-recipes"), labels=labels)
+    return build_system_prompt(vocab, with_recipes=(variant == "with-recipes"), labels=labels,
+                               protocol=protocol)

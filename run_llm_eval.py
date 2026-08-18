@@ -452,7 +452,7 @@ def main():
         traj, _ = pool[0]
         variant = prompts.VARIANTS[0] if args.variant == "both" else args.variant
         print(f"\n----- system prompt ({variant}) -----")
-        print(prompts.build_variant(variant, vocab, labels))
+        print(prompts.build_variant(variant, vocab, labels, args.protocol))
         print(f"\n----- first trial as steps ({name}) -----")
         for line in textify.render_trial(textify.steps_from_trajectory(traj, lexicon)):
             print("   ", line)
@@ -483,7 +483,7 @@ def main():
                 concurrency=args.concurrency,
             )
             print(f"  client: rpm={client.rpm} concurrency={client.concurrency}", flush=True)
-            system_prompt = prompts.build_variant(variant, vocab, labels)
+            system_prompt = prompts.build_variant(variant, vocab, labels, args.protocol)
             try:
                 report = llm_arm(pool, lexicon, client, system_prompt, vocab, args.protocol, tag)
             except (llm_client.LLMError, llm_client.BudgetExceeded) as e:

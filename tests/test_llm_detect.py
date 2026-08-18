@@ -506,3 +506,21 @@ def test_rate_limiter_is_shared_across_threads():
     for t in threads:
         t.join()
     assert time.monotonic() - start >= 4 * lim.min_interval
+
+
+def test_conversational_ablation_feeds_replies_back():
+    """The ablation that isolates protocol from model: it must differ from `incremental` in
+    exactly one way -- the assistant turns."""
+    steps = _steps(3)
+    stub = StubClient(["No Anomaly", "omission Anomaly.", "No Anomaly"])
+    verdicts = detect.run_trial(stub, "SYS", steps, VOCAB, protocol="conversational")
+
+    assert len(stub.calls) == 3
+    assert [v.is_anomaly for v in verdicts] == [False, True, False]
+    assert [len(c) for c in stub.calls] == [2, 4, 6]
+    assert stub.calls[2][2] == {"role": "assistant", "content": "No Anomaly"}
+    # ...and still never shows a future step
+    for i, call in enumerate(stub.calls):
+        seen = " ".join(m["content"] for m in call)
+        for future in steps[i + 1:]:
+            assert textify.render_step(future) not in seen

@@ -188,7 +188,37 @@ def run_batch(client, system_prompt, steps, vocab):
     ]
 
 
-PROTOCOLS = {"incremental": run_incremental, "batch": run_batch}
+def run_conversational(client, system_prompt, steps, vocab):
+    """The ORIGINAL incremental protocol, kept as an ablation: one request per step with the
+    model's own earlier replies fed back as assistant turns.
+
+    Superseded as the default by run_incremental (prefix-only) because self-feedback lets one
+    early false alarm contaminate the rest of a trial, and because it makes every request depend
+    on the previous response, which forbids any concurrency or batch submission.
+
+    Retained because the two are NOT equivalent in behaviour, and the difference is measurable:
+    the assistant turns act as a conservatism anchor -- a model that has just said "No Anomaly"
+    five times is being shown five reasons to say it again. Removing them removes that anchor.
+    Whether that anchor is doing useful work or merely suppressing a prompt-length artifact is an
+    empirical question, so the protocol that answers it has to stay runnable.
+
+    Cannot be parallelised within a trial: request i+1 literally contains response i.
+    """
+    messages = [{"role": "system", "content": system_prompt}]
+    verdicts = []
+    for step in steps:
+        messages.append({"role": "user", "content": textify.render_step(step)})
+        reply = client.complete(messages)
+        messages.append({"role": "assistant", "content": reply})
+        verdicts.append(parse_response(reply, step.index, vocab))
+    return verdicts
+
+
+PROTOCOLS = {
+    "incremental": run_incremental,        # prefix-only, default
+    "conversational": run_conversational,  # ablation: prefix + self-feedback
+    "batch": run_batch,
+}
 
 
 def run_trial(client, system_prompt, steps, vocab, protocol="incremental"):
