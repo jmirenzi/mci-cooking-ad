@@ -24,6 +24,7 @@ import numpy as np
 from cook_ad.anomaly import narrate, quantile, surprise
 from cook_ad.eval import metrics
 from cook_ad.hsmm import joint_params, params
+from cook_ad.llm import textify
 from cook_ad.recipe import recipe_hmm
 from cook_ad.synthetic import error_injection, generate
 
@@ -46,18 +47,16 @@ def _combos():
 
 
 def _runs(verb_ids, noun_ids, lexicon):
-    from itertools import groupby
-
-    runs = []
-    pos = 0
-    for (v, n), group in groupby(zip(verb_ids.tolist(), noun_ids.tolist())):
-        length = sum(1 for _ in group)
-        runs.append({
-            "verb": lexicon.verb(v), "noun": lexicon.noun(n), "phrase": lexicon.phrase(v, n),
-            "start": pos, "end": pos + length, "n": length,
-        })
-        pos += length
-    return runs
+    """Run-length encode the observation stream for the renderer. Delegates the RLE itself to
+    llm.textify.steps_from_ids (the same steps the LLM baseline is scored on, so the figure and
+    that evaluation can never drift apart), and adds the display-only `phrase` field, which uses
+    lexicon.phrase()'s SIL collapse -- right for a rendered label, deliberately not used in the
+    LLM text (see textify.steps_from_ids)."""
+    return [
+        {"verb": s.verb, "noun": s.noun, "phrase": lexicon.phrase(s.verb_id, s.noun_id),
+         "start": s.tick_start, "end": s.tick_end, "n": s.duration}
+        for s in textify.steps_from_ids(verb_ids, noun_ids, lexicon)
+    ]
 
 
 def _segments(segments, lexicon):

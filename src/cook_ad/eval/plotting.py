@@ -74,3 +74,22 @@ def save_figures(report, out_dir, tag):
     plot_precision_recall_latency(report, pr_path, title=f"Per-error-type detection ({tag})")
     plot_attribution_heatmap(report, attr_path, title=f"Channel x error attribution ({tag})")
     return [pr_path, attr_path]
+
+
+def save_step_figures(report, out_dir, tag):
+    """Figures for a step-level report (eval/element_metrics.evaluate_steps). Reuses the two
+    plotters above unchanged -- evaluate_steps deliberately returns the same per_type/attribution/
+    channels shape -- but relabels the heatmap, whose rows are PREDICTED anomaly types here, not
+    surprise channels. Same viridis / fixed [0,1] colorbar, so step-level and tick-level figures
+    stay visually comparable."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pr_path = out_dir / f"step_detection_{tag}.png"
+    cm_path = out_dir / f"step_type_confusion_{tag}.png"
+    plot_precision_recall_latency(
+        report, pr_path, title=f"Per-error-type detection, step-level ({tag})"
+    )
+    plot_attribution_heatmap(
+        report, cm_path, title=f"Predicted x true anomaly type ({tag})"
+    )
+    return [pr_path, cm_path]

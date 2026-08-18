@@ -25,6 +25,7 @@ the design constraint the rest of the architecture serves.
 | [`lifecycle.md`](lifecycle.md) | `src/cook_ad/lifecycle/` | frozen/live dual model, bounded preference updates, drift reports |
 | [`eval.md`](eval.md) | `src/cook_ad/eval/` | batched trace computation, precision/recall/latency metrics, figures |
 | [`synthetic.md`](synthetic.md) | `src/cook_ad/synthetic/` | ancestral sampling and the five canonical injected errors |
+| [`llm.md`](llm.md) | `src/cook_ad/llm/`, `eval/element_metrics.py` | the LLM comparison baseline and the step-level metrics that make it comparable |
 
 ---
 
@@ -115,7 +116,8 @@ mci-cooking-ad/
 │   ├── anomaly/    surprise channels, quantile thresholds, narration
 │   ├── lifecycle/  frozen/live dual model, online updates, drift detection
 │   ├── eval/       batched trace computation, detection metrics, plots
-│   └── synthetic/  ancestral sampling + the five injected error types
+│   ├── synthetic/  ancestral sampling + the five injected error types
+│   └── llm/        trial-as-text rendering + the LLM comparison baseline
 ├── tests/          13 pytest modules, one per src module of substance
 └── *.py            top-level runner / export / render scripts (see below)
 ```
@@ -203,7 +205,14 @@ python run_anomaly.py    --inject-noun --plot   # single-trial channel trace
 python run_evaluation.py --min-run 10           # full 5-error precision/recall/latency sweep
 python run_lifecycle.py                         # frozen/live dual-model demo
 python run_rollout_demo.py --scenario all       # per-user calibrated rollout
+python run_llm_eval.py --dry-run                # LLM baseline: cost the sweep before sending
+python run_llm_eval.py --skip-llm               # ...or score just the HSMM at step level
 ```
+
+`run_llm_eval.py` is the odd one out: it scores an **LLM reading each trial as text** against the
+HSMM on a shared unit (one run-length-encoded step), on byte-identical injected errors. It is a
+comparison baseline, not part of the detector -- see [`llm.md`](llm.md), and note the request-budget
+arithmetic there before running it against a metered API.
 
 **6 — Export and render**
 
