@@ -101,7 +101,7 @@ def test_unknown_type_name_is_not_accepted_as_a_type():
 
 # ---- incremental protocol -------------------------------------------------------------------
 
-def test_incremental_sends_one_request_per_step_with_growing_history():
+def test_incremental_sends_one_request_per_step():
     steps = _steps(3)
     stub = StubClient(["No Anomaly", "substitution Anomaly.", "No Anomaly"])
     verdicts = detect.run_trial(stub, "SYS", steps, VOCAB, protocol="incremental")
@@ -110,18 +110,55 @@ def test_incremental_sends_one_request_per_step_with_growing_history():
     assert [v.step_index for v in verdicts] == [0, 1, 2]
     assert [v.is_anomaly for v in verdicts] == [False, True, False]
 
-    # system + (user, assistant) per completed step + the current user turn
-    assert [len(c) for c in stub.calls] == [2, 4, 6]
+    # exactly two turns per request: system, then the step list so far
+    assert [len(c) for c in stub.calls] == [2, 2, 2]
     assert all(c[0] == {"role": "system", "content": "SYS"} for c in stub.calls)
-    # the model's own earlier replies are fed back -- this is a conversation, not n independent
-    # classifications
-    assert stub.calls[2][2] == {"role": "assistant", "content": "No Anomaly"}
-    assert stub.calls[2][4] == {"role": "assistant", "content": "substitution Anomaly."}
-    # each turn shows exactly one rendered step
-    assert stub.calls[1][-1]["content"] == textify.render_step(steps[1])
+    assert all(c[1]["role"] == "user" for c in stub.calls)
+
+
+def test_incremental_does_not_feed_back_the_models_own_answers():
+    """Prefix-only: causality is what the comparison needs, self-feedback is not, and feeding a
+    false alarm at step 2 into steps 3..7 makes a later miss indistinguishable from contamination
+    by that earlier mistake."""
+    steps = _steps(3)
+    stub = StubClient(["substitution Anomaly.", "No Anomaly", "No Anomaly"])
+    detect.run_trial(stub, "SYS", steps, VOCAB, protocol="incremental")
+
+    for call in stub.calls:
+        assert not any(m["role"] == "assistant" for m in call)
+        assert "substitution Anomaly." not in " ".join(m["content"] for m in call)
+
+
+def test_incremental_requests_are_independent_of_earlier_replies():
+    """The property that makes the sweep parallelisable / batch-submittable: a request is a pure
+    function of (trial, step index), so different replies must produce identical prompts."""
+    steps = _steps(3)
+    a = StubClient(["No Anomaly"] * 3)
+    b = StubClient(["omission Anomaly.", "repetition Anomaly.", "No Anomaly"])
+    detect.run_trial(a, "SYS", steps, VOCAB, protocol="incremental")
+    detect.run_trial(b, "SYS", steps, VOCAB, protocol="incremental")
+    assert a.calls == b.calls
+
+
+def test_incremental_prompts_grow_by_pure_append():
+    """Request i's user turn must be a strict prefix of request i+1's, or prefix caching (vLLM
+    APC, hosted implicit caching) cannot reuse it."""
+    steps = _steps(4)
+    stub = StubClient(["No Anomaly"] * 4)
+    detect.run_trial(stub, "SYS", steps, VOCAB, protocol="incremental")
+
+    contents = [c[1]["content"] for c in stub.calls]
+    for earlier, later in zip(contents, contents[1:]):
+        assert later.startswith(earlier)
+    # ...and the last line of each is the step being judged
+    for i, content in enumerate(contents):
+        assert content.splitlines()[-1].endswith(textify.render_step(steps[i]))
+    assert len(contents[-1].splitlines()) == 4
 
 
 def test_incremental_never_shows_a_future_step():
+    """The one property the comparison actually depends on: latency in steps is only meaningful if
+    the model could not have seen the anomaly before the step it is judging."""
     steps = _steps(3)
     stub = StubClient(["No Anomaly"] * 3)
     detect.run_trial(stub, "SYS", steps, VOCAB, protocol="incremental")

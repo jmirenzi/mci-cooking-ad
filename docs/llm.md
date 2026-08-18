@@ -129,19 +129,54 @@ participant variation as `transposition`.
 
 ## 3. Protocols
 
-### `incremental` (default)
+### `incremental` (default) — prefix-only
 
-One request per step. The model's own earlier replies are fed back as conversation history, so it
-sees a growing **prefix** and never the future. This is what makes its step latency comparable to
-the HSMM's online channels (predictive occupancy, live stall).
+One request per step. Request *i* shows steps 0…*i* as a numbered list and asks for a verdict on
+step *i*. The model sees a growing **prefix** and never the future, which is what makes its step
+latency comparable to the HSMM's online channels (predictive occupancy, live stall).
+
+```
+system: <preprompt>
+user:   1. stall kitchen for 2 seconds
+        2. take bowl for 8 seconds
+        3. pour cereals for 19 seconds      <- judge this one
+```
 
 Cost: `len(steps)` requests per trial, ~7 on this corpus.
+
+**The model's own earlier answers are not fed back**, and that is deliberate. Causality — seeing
+only the prefix — is the property the comparison depends on. Conversational self-feedback is a
+*separate* property, and an earlier version of this module had it. Removing it bought two things:
+
+1. **No error cascade.** A false alarm at step 2 previously sat in context for steps 3–7 and could
+   bias them, so a miss at step 5 could not be distinguished from contamination by an earlier
+   mistake. Every step is now an independent test, which is what `element_metrics` already assumed
+   when it scored them as one test each.
+2. **The sweep became parallelisable.** Every request is now a pure function of `(trial, step
+   index)` instead of depending on a previous response. That is a precondition for issuing
+   requests concurrently, and for submitting the whole sweep to an async batch endpoint — neither
+   is possible when request *i+1* contains response *i*.
+
+**Prompt layout is chosen for prefix caching.** One system turn plus one user turn that only ever
+grows by appending a line, so request *i*'s prompt is a strict token prefix of request *i+1*'s. A
+server with prefix caching (vLLM's APC, or hosted providers' implicit caching) then reuses almost
+all of it, and the ~600-token system prompt is reused across the entire sweep. A single growing
+user turn is used rather than repeated user turns because consecutive same-role messages are not
+universally accepted.
+
+> Changing the protocol changes the prompts, hence the cache keys. Responses collected under the
+> older conversational protocol will not be reused, and results from the two are not directly
+> comparable.
 
 ### `batch`
 
 One request for the whole trial, one verdict line per step. ~7× cheaper, and **non-causal** — the
 model sees every step before judging any of them. Its latency column is not comparable to the
 incremental arm or to the HSMM, and the report labels it as such.
+
+(Named before the Gemini/OpenAI *async batch endpoints* were under consideration. This is a
+prompt-shape, not an async submission mode; if the latter is ever added it should be called
+something else — `async` — rather than overloading this name.)
 
 ### The response grammar
 

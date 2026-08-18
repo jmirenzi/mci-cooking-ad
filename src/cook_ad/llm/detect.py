@@ -3,10 +3,26 @@
 Two protocols, both returning one Verdict per step so eval/element_metrics.py scores them
 identically:
 
-  * `run_incremental` (default) -- one request per step, with the model's own earlier replies fed
-    back as conversation history. The model sees a growing PREFIX and never the future, which is
-    what makes its step-latency comparable to the HSMM's online channels (predictive occupancy,
-    live stall). Costs ~1 request per step, i.e. ~7 per trial.
+  * `run_incremental` (default) -- one request per step. Request i shows the steps 0..i and asks
+    for a verdict on step i. The model sees a growing PREFIX and never the future, which is what
+    makes its step-latency comparable to the HSMM's online channels (predictive occupancy, live
+    stall). Costs ~1 request per step, i.e. ~7 per trial.
+
+    It is PREFIX-ONLY: the model's own earlier answers are NOT fed back. Causality -- seeing only
+    the prefix -- is what the comparison needs; conversational self-feedback is a separate
+    property that was costing two things for no measurement benefit. First, error cascade: a false
+    alarm at step 2 sat in context for steps 3..7 and could bias them, so a miss at step 5 could
+    not be distinguished from contamination by an earlier mistake. Each step is now an independent
+    test, which is what the metrics assume. Second, every request in a sweep is now a pure
+    function of (trial, step index) rather than depending on a previous response, so the sweep is
+    embarrassingly parallel -- schedulable concurrently, or submissible to an async batch endpoint,
+    neither of which is possible when request i+1 contains response i.
+
+    The message layout is chosen so request i's prompt is a strict token PREFIX of request i+1's:
+    one system turn, then one user turn holding the numbered step list, which only ever grows by
+    appending a line. Servers with prefix caching (vLLM APC, and the hosted providers' implicit
+    caching) then reuse nearly all of it, and the shared system prompt is reused across the whole
+    sweep.
   * `run_batch` -- one request for the whole trial, one verdict line per step. ~7x cheaper, but
     the model sees every step before judging any of them, so it is NOT causal and its latency
     column is not comparable to the incremental arm or to the HSMM. Reports must label it.
@@ -98,14 +114,30 @@ def parse_response(text, step_index, vocab):
     return Verdict(step_index, False, None, None, raw, False)
 
 
+def render_prefix(steps, upto):
+    """The numbered step list through index `upto` inclusive -- the user turn's whole content.
+
+    Grows by pure append as `upto` advances, which is what keeps request i's prompt a strict
+    prefix of request i+1's.
+    """
+    return "\n".join(f"{s.index + 1}. {textify.render_step(s)}" for s in steps[: upto + 1])
+
+
 def run_incremental(client, system_prompt, steps, vocab):
-    """One request per step, replies fed back as history. len(steps) requests."""
-    messages = [{"role": "system", "content": system_prompt}]
+    """One request per step, prefix-only (no self-feedback). len(steps) requests.
+
+    Two turns per request -- system, then the step list so far -- rather than an alternating
+    conversation. A single growing user turn is universally supported (consecutive same-role
+    messages are not), and it keeps the append-only prefix property that makes the prompts
+    cacheable.
+    """
     verdicts = []
-    for step in steps:
-        messages.append({"role": "user", "content": textify.render_step(step)})
+    for i, step in enumerate(steps):
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": render_prefix(steps, i)},
+        ]
         reply = client.complete(messages)
-        messages.append({"role": "assistant", "content": reply})
         verdicts.append(parse_response(reply, step.index, vocab))
     return verdicts
 

@@ -70,13 +70,16 @@ def vocab_block(vocab, sil_verb="stall", sil_noun="kitchen"):
 def task_block():
     """Protocol + the strict response grammar detect.parse_response is built against."""
     return f"""You are monitoring a person with mild cognitive impairment as they cook a
-single breakfast recipe. You will be given their actions ONE STEP AT A TIME, in order. Each step
-is one uninterrupted stretch of a single action on a single object, written as:
+single breakfast recipe. Each step is one uninterrupted stretch of a single action on a single
+object, written as:
 
     VERB NOUN for NUMBER seconds
 
-After each step you must decide whether THAT step is an anomaly, given every step you have already
-seen. You do not get to see future steps, and you cannot revise an earlier answer.
+You will be given a numbered list of the steps taken SO FAR, in order. The list stops at the
+present moment: there are no future steps, and the task may not be finished.
+
+Judge ONLY THE LAST step in the list. The earlier steps are context for that judgement -- do not
+comment on them, and do not judge them again.
 
 Reply with EXACTLY one line, in one of these two forms and nothing else -- no preamble, no
 explanation, no markdown:
@@ -96,7 +99,8 @@ The five anomaly types mean:
         f"  - {t}: {ERROR_TYPE_DEFINITIONS[t]}" for t in error_injection.ERROR_TYPES
     ) + """
 
-Most steps in most trials are NORMAL. Answer 'No Anomaly' unless the step genuinely looks wrong.
+Most steps in most trials are NORMAL. Answer 'No Anomaly' unless the LAST step genuinely looks
+wrong.
 """
 
 
