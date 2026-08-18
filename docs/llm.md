@@ -172,14 +172,24 @@ the per-day request cap always is.
 
 | Provider | Model | Req/min | Req/day |
 |---|---|---|---|
-| **Gemini API** (default) | `gemini-3.5-flash-lite` | 15+ | **1000** |
+| **Gemini API** (default) | `gemini-3.5-flash-lite` | 15 | **500, per model** |
 | OpenRouter | any `:free` variant | 20 | **50** (1000 after $10 lifetime credit) |
 
-The 15/1000 figures were verified for `gemini-3.5-flash-lite` and `DEFAULT_RPM` is set to that
-floor; newer Flash-Lite revisions have been reported at up to 30 RPM. Check your own at
-[aistudio.google.com/rate-limit](https://aistudio.google.com/rate-limit) and pass `--rpm` if it is
-higher — the token bucket only slows requests down, so the conservative default is safe but not
-optimal.
+`DEFAULT_RPM` is pinned to the low end (15) because the token bucket only ever slows requests
+down: being wrong low costs wall-clock time, being wrong high costs a 429 storm. Check your own at
+[aistudio.google.com/rate-limit](https://aistudio.google.com/rate-limit) and pass `--rpm 30` to
+halve sweep duration if your tier allows it.
+
+**The daily cap is the one that bites.** Two back-to-back 10-trial incremental sweeps (~470
+requests) exhausted it in practice. Gemini meters RPD *per model*, so `--model` is a genuine way
+to keep working the same day — but the model id namespaces the response cache, so switching starts
+from empty and **results collected under different models are not comparable**. Finish a variant
+before switching. The runner prints cache state at startup so an accidental switch shows up as a
+suddenly-empty cache rather than a surprise quota crash.
+
+When a per-day quota does hit, the client raises `QuotaExhausted` immediately rather than burning
+retries on something waiting cannot fix, and the runner writes a **partial report** of whatever
+arms completed instead of discarding the run.
 
 The default is therefore the Gemini API, not OpenRouter. OpenRouter's daily cap is per-account and
 platform-wide — it does **not** depend on which free model you pick, so choosing a smaller model

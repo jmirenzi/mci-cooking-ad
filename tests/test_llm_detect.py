@@ -253,3 +253,98 @@ def test_defaults_target_the_gemini_free_tier():
     assert llm_client.DEFAULT_BASE_URL.endswith("/openai")
     assert "flash-lite" in llm_client.DEFAULT_MODEL
     assert llm_client.DEFAULT_RPM == 15
+
+
+# ---- 429 / quota handling --------------------------------------------------------------------
+
+def _http_error(code, body, headers=None):
+    import io
+    import urllib.error
+    return urllib.error.HTTPError(
+        url="http://x/chat/completions", code=code, msg="err",
+        hdrs=headers or {}, fp=io.BytesIO(body.encode()),
+    )
+
+
+def test_retry_delay_read_from_retry_after_header():
+    e = _http_error(429, "{}", headers={"Retry-After": "42"})
+    assert llm_client._parse_retry_delay(e, "{}") == 42.0
+
+
+def test_retry_delay_read_from_google_retryinfo_body():
+    """The Gemini API puts the delay in the body, not the header. The header-only version silently
+    discarded the one authoritative signal about how long to wait."""
+    body = '{"error":{"code":429,"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo",'\
+           '"retryDelay":"57s"}]}}'
+    assert llm_client._parse_retry_delay(_http_error(429, body), body) == 57.0
+
+
+def test_retry_delay_none_when_server_says_nothing():
+    assert llm_client._parse_retry_delay(_http_error(429, "not json"), "not json") is None
+    assert llm_client._parse_retry_delay(_http_error(429, "{}"), "{}") is None
+
+
+def test_http_date_retry_after_falls_through_instead_of_crashing():
+    e = _http_error(429, "{}", headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"})
+    assert llm_client._parse_retry_delay(e, "{}") is None
+
+
+@pytest.mark.parametrize("body", [
+    '{"error":{"message":"Quota exceeded","details":[{"quotaId":'
+    '"GenerateRequestsPerDayPerProjectPerModel"}]}}',
+    '{"error":{"message":"free-models-per-day limit reached"}}',
+    '{"error":{"message":"Daily limit exceeded"}}',
+])
+def test_per_day_quota_raises_immediately_without_burning_retries(monkeypatch, body):
+    """Waiting cannot clear a daily quota, so retrying it 6 times just delays the crash."""
+    monkeypatch.setenv("COOK_AD_TEST_KEY", "k")
+    c = llm_client.ChatClient(api_key_env="COOK_AD_TEST_KEY", rpm=0)
+    calls = []
+
+    def _boom(*a, **k):
+        calls.append(1)
+        raise _http_error(429, body)
+
+    monkeypatch.setattr(llm_client.urllib.request, "urlopen", _boom)
+    with pytest.raises(llm_client.QuotaExhausted, match="daily request quota"):
+        c._post([{"role": "user", "content": "x"}])
+    assert len(calls) == 1     # not self.max_retries
+
+
+def test_per_minute_429_is_retried(monkeypatch):
+    monkeypatch.setenv("COOK_AD_TEST_KEY", "k")
+    c = llm_client.ChatClient(api_key_env="COOK_AD_TEST_KEY", rpm=0, max_retries=3)
+    monkeypatch.setattr(llm_client.time, "sleep", lambda s: None)
+    calls = []
+
+    def _boom(*a, **k):
+        calls.append(1)
+        raise _http_error(429, '{"error":{"message":"rate limit, requests per minute"}}')
+
+    monkeypatch.setattr(llm_client.urllib.request, "urlopen", _boom)
+    with pytest.raises(llm_client.LLMError) as exc:
+        c._post([{"role": "user", "content": "x"}])
+    assert not isinstance(exc.value, llm_client.QuotaExhausted)
+    assert len(calls) == 3
+    assert "cached" in str(exc.value)   # tells the user rerunning resumes
+
+
+def test_rate_limiter_paces_under_the_stated_limit():
+    """Spacing at exactly 60/rpm sits dead on the cap and still collects 429s."""
+    assert llm_client.RateLimiter(15).min_interval > 60.0 / 15
+    assert llm_client.RateLimiter(0).min_interval == 0.0
+
+
+def test_non_transient_http_error_is_not_retried(monkeypatch):
+    monkeypatch.setenv("COOK_AD_TEST_KEY", "k")
+    c = llm_client.ChatClient(api_key_env="COOK_AD_TEST_KEY", rpm=0)
+    calls = []
+
+    def _boom(*a, **k):
+        calls.append(1)
+        raise _http_error(404, '{"error":{"message":"model not found"}}')
+
+    monkeypatch.setattr(llm_client.urllib.request, "urlopen", _boom)
+    with pytest.raises(llm_client.LLMError, match="model not found"):
+        c._post([{"role": "user", "content": "x"}])
+    assert len(calls) == 1

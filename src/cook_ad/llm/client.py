@@ -10,12 +10,16 @@ evaluation is request-bound, not token-bound: at ~7 steps per trial the incremen
 ~7 requests per trial, so a 6-condition sweep (healthy + 5 error types) over 20 trials is ~880
 requests per prompt variant.
 
-  * Gemini free tier, Flash-Lite: 15 requests/minute and 1000 requests/DAY were verified for
-    gemini-3.5-flash-lite; DEFAULT_RPM is set to that floor. Newer Flash-Lite revisions have been
-    reported at up to 30 RPM, so check your own limit at
-    https://aistudio.google.com/rate-limit and raise --rpm if yours is higher -- the token bucket
-    only ever slows requests down, so the conservative default is safe but not optimal. A
-    20-trial single-variant incremental sweep fits inside one 1000-request day.
+  * Gemini free tier, Flash-Lite: on the order of 15-30 requests/minute and ~1000 requests/DAY,
+    varying by revision. DEFAULT_RPM is pinned to the low end (15) because the token bucket only
+    ever slows requests down -- being wrong low costs wall-clock time, being wrong high costs a
+    429 storm. gemini-3.1-flash-lite has been reported at 30 RPM; check yours at
+    https://aistudio.google.com/rate-limit and pass --rpm 30 to halve sweep duration.
+
+    The DAILY cap is the one that actually bites: two back-to-back 10-trial incremental sweeps
+    (~470 requests) exhausted it in practice. Gemini meters RPD per model, so switching --model
+    is a genuine way to keep working the same day -- but see the cache note below before doing
+    it mid-experiment.
   * OpenRouter :free variants: 20 requests/minute but only 50 requests/day, rising to 1000/day
     only after $10 of lifetime credit purchases. That cap is per-account and platform-wide -- it
     does NOT depend on which free model you pick, so choosing a smaller model buys nothing.
@@ -41,10 +45,12 @@ DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 DEFAULT_API_KEY_ENV = "GEMINI_API_KEY"
 # Small on purpose: this is a proof-of-concept baseline, and Flash-Lite carries the friendliest
 # free-tier request budget (15 RPM / 1000 RPD), which is the binding constraint here.
-DEFAULT_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_MODEL = "gemini-3.1-flash-lite"
 DEFAULT_RPM = 15            # verified Flash-Lite free-tier floor; raise if your tier allows
 DEFAULT_TIMEOUT = 120
-DEFAULT_MAX_RETRIES = 5
+# Each 429 retry now waits a full rate-limit window (~60s) rather than an exponential ramp
+# from 1s, so 6 attempts covers ~5 minutes of transient limiting instead of ~31 seconds.
+DEFAULT_MAX_RETRIES = 6
 
 # Untracked file holding the API key. Listed in .gitignore; .env.example shows the shape.
 DEFAULT_ENV_FILE = ".env"
@@ -58,6 +64,53 @@ class BudgetExceeded(RuntimeError):
 
 class LLMError(RuntimeError):
     pass
+
+
+class QuotaExhausted(LLMError):
+    """A 429 that waiting will not fix within this run -- a per-DAY quota, as opposed to the
+    per-minute limit the rate limiter paces against. Retrying burns attempts and then crashes,
+    losing the run, so this is raised immediately and caught by the runner, which writes whatever
+    the sweep completed before exiting. The response cache means the next run resumes rather than
+    repeating that work."""
+
+
+# Substrings that identify a 429 as a per-day quota rather than a per-minute burst. Google reports
+# the quota id in the error body (e.g. "GenerateRequestsPerDayPerProjectPerModel"); OpenRouter
+# says "free-models-per-day". Matched case-insensitively against the whole body.
+_PER_DAY_MARKERS = ("perday", "per-day", "per day", "daily")
+
+
+def _parse_retry_delay(err, body):
+    """Seconds to wait before retrying a 429/5xx, from whatever the server actually told us.
+
+    Checks, in order: the standard Retry-After header (integer seconds; HTTP-date form is ignored
+    rather than mis-parsed), then Google's RetryInfo in the JSON body, which is where the Gemini
+    API puts it -- `error.details[].retryDelay: "57s"`. Returns None if the server said nothing.
+
+    The header-only version of this missed the body form entirely, so the one authoritative signal
+    about how long to wait was being discarded on exactly the provider that sends it.
+    """
+    header = err.headers.get("Retry-After") if getattr(err, "headers", None) else None
+    if header:
+        try:
+            return float(header)
+        except ValueError:
+            pass  # HTTP-date form; fall through to the body
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    details = (payload.get("error") or {}).get("details") or []
+    if isinstance(details, dict):
+        details = [details]
+    for d in details:
+        delay = d.get("retryDelay") if isinstance(d, dict) else None
+        if isinstance(delay, str) and delay.endswith("s"):
+            try:
+                return float(delay[:-1])
+            except ValueError:
+                continue
+    return None
 
 
 def load_env_file(path=DEFAULT_ENV_FILE, override=False):
@@ -90,12 +143,19 @@ def load_env_file(path=DEFAULT_ENV_FILE, override=False):
     return n
 
 
+# Pace slightly UNDER the stated limit. Spacing requests at exactly 60/rpm hits the cap dead on,
+# and the provider's counting window is not aligned with ours -- clock skew, request duration, and
+# their window boundary all push a nominally-legal request over the edge, which is how a run
+# pacing at exactly 15/min still collects 429s. 10% of headroom costs ~24s per 400-request sweep.
+RATE_SAFETY_MARGIN = 1.10
+
+
 class RateLimiter:
-    """Token bucket at `rpm` requests/minute. Cache hits do not consume budget (they never leave
-    the process), so this only paces real calls."""
+    """Token bucket at `rpm` requests/minute, with RATE_SAFETY_MARGIN of headroom. Cache hits do
+    not consume budget (they never leave the process), so this only paces real calls."""
 
     def __init__(self, rpm=DEFAULT_RPM):
-        self.min_interval = 60.0 / rpm if rpm and rpm > 0 else 0.0
+        self.min_interval = (60.0 / rpm) * RATE_SAFETY_MARGIN if rpm and rpm > 0 else 0.0
         self._last = 0.0
 
     def wait(self):
@@ -150,6 +210,11 @@ class ChatClient:
 
     # ---- cache --------------------------------------------------------------------------
 
+    # NOTE: the model id is part of BOTH the cache key and the cache directory, which is correct
+    # -- two models give different answers to the same prompt, so sharing entries would silently
+    # mix them into one number. The consequence to plan around: switching --model starts an empty
+    # cache namespace, so every response has to be paid for again, and results already collected
+    # under the old model are NOT comparable to the new one. Finish a variant before switching.
     def _cache_key(self, messages):
         payload = json.dumps(
             {"base_url": self.base_url, "model": self.model, "temperature": self.temperature,
@@ -207,10 +272,33 @@ class ChatClient:
             except urllib.error.HTTPError as e:
                 # 429 and 5xx are transient; everything else (401, 400, 404 model-not-found) is a
                 # configuration error that retrying cannot fix, so fail immediately with the body.
+                body = e.read().decode(errors="replace")
                 if e.code != 429 and e.code < 500:
-                    raise LLMError(f"HTTP {e.code} from {self.base_url}: {e.read().decode()[:500]}") from e
-                retry_after = e.headers.get("Retry-After") if e.headers else None
-                sleep_for = float(retry_after) if retry_after and retry_after.isdigit() else delay
+                    raise LLMError(f"HTTP {e.code} from {self.base_url}: {body[:500]}") from e
+
+                if e.code == 429 and any(m in body.lower().replace("_", "")
+                                         for m in _PER_DAY_MARKERS):
+                    raise QuotaExhausted(
+                        f"daily request quota exhausted on {self.model} "
+                        f"({self.n_requests} sent + {self.n_cache_hits} served from cache this "
+                        f"run). Waiting will not clear it today. Everything already answered is "
+                        f"cached, so rerunning this command tomorrow resumes instead of "
+                        f"repeating it.\nTo keep going NOW, cheapest first:\n"
+                        f"  --protocol batch      ~7x fewer requests (1 per trial, non-causal)\n"
+                        f"  --max-real N          fewer trials\n"
+                        f"  --model <other>       Gemini meters RPD per model, so another model "
+                        f"has its own daily budget -- but it starts an EMPTY cache and its "
+                        f"results are not comparable to what you already collected\n"
+                        f"  --base-url <other>    a different provider entirely\n"
+                        f"server said: {body[:300]}"
+                    ) from e
+
+                hinted = _parse_retry_delay(e, body)
+                # A per-minute 429 needs the window to actually roll over. Exponential backoff
+                # from 1s gives up after ~31s across 5 attempts -- less than the 60s window it is
+                # waiting for -- so a rate-limited run failed even though every retry was correct.
+                # Floor the wait at a full window when the server gives no hint.
+                sleep_for = hinted if hinted is not None else max(delay, self.limiter.min_interval * 2, 60.0)
                 last_err = e
             except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError) as e:
                 sleep_for = delay
@@ -218,7 +306,10 @@ class ChatClient:
             if attempt < self.max_retries - 1:
                 time.sleep(sleep_for)
                 delay = min(delay * 2, 60.0)
-        raise LLMError(f"giving up after {self.max_retries} attempts: {last_err!r}")
+        raise LLMError(
+            f"giving up after {self.max_retries} attempts: {last_err!r}. Completed responses are "
+            f"cached, so rerunning resumes where this stopped."
+        )
 
     def complete(self, messages):
         """messages: OpenAI-format [{'role','content'}, ...]. Returns the assistant text."""
