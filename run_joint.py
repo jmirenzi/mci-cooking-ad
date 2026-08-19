@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from cook_ad.data.config import load_config
+from cook_ad.data import split as split_mod
 from cook_ad.hsmm import joint_em, joint_params, params
 from cook_ad.recipe import recipe_hmm, segmentize, warm_start
 
@@ -138,6 +139,17 @@ def main():
                              "Guards against a near-empty state's global fit swinging by an "
                              "order of magnitude between M-steps and dragging every recipe's "
                              "copy of that state with it (see durations.fit_durations_shrunk).")
+    parser.add_argument("--split-file", default=None,
+                        help="path to a split.json from split_dataset.py; if given, only the "
+                             "trials in --split-part are fit on")
+    parser.add_argument("--split-part", choices=["train", "test"], default=None)
+    parser.add_argument("--cascade-hsmm-params", default=None,
+                        help="override joint_em.cascade_hsmm_params in the config -- needed to "
+                             "warm-start from a cascade fit produced on the same --split-part "
+                             "rather than the full-data artifact the config points at by default")
+    parser.add_argument("--cascade-recipe-params", default=None,
+                        help="override joint_em.cascade_recipe_params in the config; see "
+                             "--cascade-hsmm-params")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -156,6 +168,14 @@ def main():
     global_damping = args.global_damping if args.global_damping is not None else jcfg.get("global_damping", 0.0)
 
     sequences, joined_labels = _load_and_join(args.sequences, args.labels)
+
+    if args.split_file:
+        if args.split_part is None:
+            parser.error("--split-part is required when --split-file is given")
+        split = split_mod.load_split(args.split_file)
+        sequences = split_mod.filter_sequences(sequences, split, args.split_part)
+        joined_labels = split_mod.filter_labels(joined_labels, split, args.split_part)
+
     print(f"trials: {len(sequences)}")
     print(f"k_subtask={k_subtask}, k_recipe={k_recipe}, chunk_size={chunk_size}")
 
@@ -187,8 +207,10 @@ def main():
                 print(f"[checkpoint] resuming {args.out} from iteration {start_iteration} "
                       f"({status}, last objective={init_history[-1]:.1f}) -- skipping cascade warm start.")
         else:
-            hsmm_params = params.load_params(jcfg["cascade_hsmm_params"])
-            recipe_params = recipe_hmm.load_params(jcfg["cascade_recipe_params"])
+            cascade_hsmm_path = args.cascade_hsmm_params or jcfg["cascade_hsmm_params"]
+            cascade_recipe_path = args.cascade_recipe_params or jcfg["cascade_recipe_params"]
+            hsmm_params = params.load_params(cascade_hsmm_path)
+            recipe_params = recipe_hmm.load_params(cascade_recipe_path)
 
             start = time.time()
             init_params = warm_start.cascade_to_joint(

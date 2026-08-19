@@ -36,6 +36,7 @@ import numpy as np
 
 from cook_ad.anomaly import narrate, surprise
 from cook_ad.data.config import load_config
+from cook_ad.data import split as split_mod
 from cook_ad.eval import batch, element_metrics, plotting
 from cook_ad.hsmm import joint_params, params
 from cook_ad.llm import client as llm_client
@@ -276,7 +277,8 @@ BATCH_CAVEAT = (
 # trial pool depends on. --model/--variant/--protocol are deliberately absent -- comparing two
 # models or two prompt variants inside one report is the whole point of merging.
 POOL_DEFINING_ARGS = ("seed", "source", "n", "max_ticks", "max_real", "config", "sequences",
-                      "joint_params", "cascade", "params", "recipe_params")
+                      "joint_params", "cascade", "params", "recipe_params",
+                      "split_file", "split_part")
 
 
 def _write_report(args, reports, incomplete=False):
@@ -384,6 +386,10 @@ def main():
     parser.add_argument("--n", type=int, default=20, help="synthetic healthy trials to generate")
     parser.add_argument("--max-ticks", type=int, default=100)
     parser.add_argument("--max-real", type=int, default=20, help="real trials to use")
+    parser.add_argument("--split-file", default=None,
+                        help="path to a split.json from split_dataset.py; if given, the real "
+                             "trial pool is restricted to --split-part before the --max-real cap")
+    parser.add_argument("--split-part", choices=["train", "test"], default=None)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--chunk-size", type=int, default=16)
     parser.add_argument("--min-run", type=int, default=10,
@@ -442,6 +448,11 @@ def main():
     if args.source in ("real", "both"):
         with open(args.sequences) as f:
             sequences = json.load(f)
+        if args.split_file:
+            if args.split_part is None:
+                parser.error("--split-part is required when --split-file is given")
+            split = split_mod.load_split(args.split_file)
+            sequences = split_mod.filter_sequences(sequences, split, args.split_part)
         adapt = (generate.trajectory_from_real_joint if model["kind"] == "joint"
                  else generate.trajectory_from_real)
         base = model["joint"] if model["kind"] == "joint" else inject_params

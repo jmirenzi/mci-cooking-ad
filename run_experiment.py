@@ -5,6 +5,7 @@ import time
 import jax
 
 from cook_ad.data.config import load_config
+from cook_ad.data import split as split_mod
 from cook_ad.hsmm import em, params
 
 
@@ -21,11 +22,21 @@ def main():
                         help="override configs/breakfast.yaml em.chunk_size; batch chunk size "
                              "for em.e_step -- raise on a bigger GPU to bound fewer, larger "
                              "chunks instead of many small ones")
+    parser.add_argument("--split-file", default=None,
+                        help="path to a split.json from split_dataset.py; if given, only the "
+                             "trials in --split-part are fit on")
+    parser.add_argument("--split-part", choices=["train", "test"], default=None)
     args = parser.parse_args()
 
     config = load_config(args.config)
     with open(args.sequences) as f:
         sequences = json.load(f)
+
+    if args.split_file:
+        if args.split_part is None:
+            parser.error("--split-part is required when --split-file is given")
+        split = split_mod.load_split(args.split_file)
+        sequences = split_mod.filter_sequences(sequences, split, args.split_part)
 
     n_restarts = args.n_restarts if args.n_restarts is not None else config["em"]["restarts"]
     chunk_size = args.chunk_size if args.chunk_size is not None else config["em"]["chunk_size"]

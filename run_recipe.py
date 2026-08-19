@@ -6,6 +6,7 @@ import jax
 import numpy as np
 
 from cook_ad.data.config import load_config
+from cook_ad.data import split as split_mod
 from cook_ad.hsmm import em, params
 from cook_ad.recipe import recipe_hmm, segmentize
 
@@ -53,6 +54,10 @@ def main():
     parser.add_argument("--n-restarts", type=int, default=10)
     parser.add_argument("--max-iters", type=int, default=100)
     parser.add_argument("--tol", type=float, default=1e-4)
+    parser.add_argument("--split-file", default=None,
+                        help="path to a split.json from split_dataset.py; if given, only the "
+                             "trials in --split-part are fit on")
+    parser.add_argument("--split-part", choices=["train", "test"], default=None)
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -61,6 +66,14 @@ def main():
     k_recipe = config["k_recipe"]
 
     sequences, joined_labels = _load_and_join(args.sequences, args.labels)
+
+    if args.split_file:
+        if args.split_part is None:
+            parser.error("--split-part is required when --split-file is given")
+        split = split_mod.load_split(args.split_file)
+        sequences = split_mod.filter_sequences(sequences, split, args.split_part)
+        joined_labels = split_mod.filter_labels(joined_labels, split, args.split_part)
+
     hsmm_params = params.load_params(args.params)
 
     print(f"trials: {len(sequences)}")
