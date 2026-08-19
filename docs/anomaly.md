@@ -141,17 +141,26 @@ duration always has *high* survival probability, hence *low* $s_{\text{temporal}
 early is invisible to a monotone survival ramp, by construction. It needs its own retrospective
 channel.
 
-> **Known limitation — the trial's own final segment.** `completed_segment_surprise` runs on every
-> segment, including the last one, whose duration is **right-censored**: observation stopped, the
-> activity did not. Scoring it against $P(D \le d)$ therefore asks a question the data cannot
-> answer, and on a state with a long fitted mean it reliably produces a spurious `left_early` flag
-> at the trial's final tick — rendered as *"idle only took 8 ticks — you usually spend about 186."*
-> The inflated means themselves have the same origin: a state that is disproportionately the final
-> segment of training trials has little uncensored duration data pinning it down. The live channel
-> already handles censoring correctly (survival, not pmf); the retrospective channel assumes every
-> segment it sees has genuinely closed, which is true of all but the last. Measured impact on
-> detection is small — one isolated tick at the very end — but the flag is spurious and the
-> narrated text it produces is misleading.
+**The trial's own final segment is not scored** (`final_censored=True`, the default). That segment
+is right-censored — observation stopped, the activity did not — so $P(D \le d)$ asks a question the
+data cannot answer. Left in, it fires a spurious `left_early` flag at the final tick of any trial
+whose last state has a long fitted mean, rendered as *"idle only took 8 ticks — you usually spend
+about 186."* Measured on 419 healthy real trials, that one flag was **62% of the residual
+trial-level false-positive rate** at tight $\alpha$ (0.100 → 0.038). The right tail would still be
+valid for a censored segment, but `live_stall_surprise` already carries it, so nothing is lost.
+
+> **The cost is not free, and it lands unevenly.** Suppressing that flag costs abandonment recall
+> −4.2 points and omission −3.1 (26% of abandonment injections land at the trial end, and an
+> omission of the second-to-last segment makes the final step the ground-truth one), against
+> +3.4 precision and −2.1 healthy false alarms. F1 is essentially unchanged. The judgement is that
+> the lost detections were credit for a flag that fires at every trial's end regardless of whether
+> anything was injected — but it is a judgement, and `final_censored=False` restores the old
+> behaviour.
+>
+> The inflated means driving this have the same root cause: a state that is disproportionately the
+> final segment of training trials has little uncensored duration data pinning it down. Several are
+> fitted at 32–734 ticks. That fit problem is still open, and it is what makes §6's repetition test
+> unusable.
 
 **PIT — a model check, not a detector.** The mid-probability integral transform per segment:
 
@@ -467,16 +476,47 @@ per-recipe distribution the surprise was computed against — not a cross-recipe
 
 A second detector over the same trial, reading the **Viterbi segment sequence**
 $z_1 \dots z_J$ (`segments_from_z`) rather than the tick stream. It shares no state with the seven
-channels and is scored as its own arm.
+channels and is scored as its own arm by `run_sequence_eval.py`.
 
-Two properties the tick pipeline cannot provide:
+It was built to supply two things the tick pipeline cannot:
 
 - **One verdict per event.** Each junction and each segment is tested exactly once, so a single
-  structural error produces a single detection rather than a spread of tick flags whose extent has
-  to be reconciled against a ground-truth window.
+  structural error produces a single detection rather than a spread of tick flags.
 - **It names the error type.** $s_{\text{trans}}$ fires identically for omission, transposition and
   repetition — the cascade genuinely cannot separate them ([`synthetic.md`](synthetic.md)). Three
   separate local edit tests can, because each asks a different question of the same transition row.
+
+> ### Measured: the naming mechanism works, the detector does not carry its weight
+>
+> 419 real trials, $\alpha = 5\times10^{-3}$, trial-located ([`eval.md`](eval.md) §6):
+>
+> | arm | precision | recall | F1 | healthy FPR |
+> |---|---|---|---|---|
+> | tick-level | **0.728** | 0.453 | **0.558** | **0.141** |
+> | sequence only | 0.412 | 0.107 | 0.170 | 0.086 |
+> | union | 0.635 | **0.484** | 0.549 | 0.191 |
+>
+> **Transposition naming goes 0.000 → 0.380 standalone**, which is the capability this module
+> exists for and which nothing else in the package can do. But standalone transposition *recall*
+> is 0.186 against the tick arm's 0.377 — it names better and detects worse — and unioning the two
+> arms lowers F1 (0.558 → 0.549) while raising healthy false alarms 0.141 → 0.191. In the union
+> the naming win is also diluted to 0.149, because where the sequence test did not flag that exact
+> step the tick arm's `CHANNEL_TO_TYPE` verdict wins it.
+>
+> Two specific defects, both upstream of this module rather than tuning problems:
+>
+> 1. **The repetition test is calibrated above its own signal.** The healthy $(1-\alpha)$ quantile
+>    of the duration ratio is **3.97x expected**, while a Viterbi-merged duplicate produces ~2x.
+>    Recall is 0.079. The heavy tail comes from the duration fits themselves — several states are
+>    fitted with means of 32–734 ticks (see §2.3's censoring note) — so this test cannot work until
+>    those fits do.
+> 2. **The omission test strays more than it hits** (stray rate 0.289 vs recall 0.236).
+>    `missing_step`'s 2-nat gate was tuned to choose *phrasing* once a channel had already fired,
+>    not to decide whether anything fired at all, and it does not transfer to that role.
+>
+> The measured-good use is therefore narrower than "a third arm": run the swap test to **relabel**
+> transposition on trials the tick channels already flagged, rather than as an independent detector
+> contributing its own alarms. That is not what the code currently does.
 
 ### The three tests
 
@@ -518,6 +558,11 @@ The two magnitude thresholds are the $(1-\alpha)$ empirical quantile of each sta
 distribution over **healthy** trials, via `quantile.sequence_thresholds` (§3.3) — the same
 null-distribution discipline the per-tick channels use, with an empirical null in place of a fitted
 one. The bridging test needs no such table: it inherits `missing_step`'s fixed nat gate.
+
+At full scale this calibrates on ~2,600 junctions and ~3,000 segments, putting the $\alpha$ cut at
+roughly the 13th-largest healthy gain — in the tail, but with enough support to be a genuine
+quantile rather than a single-sample artifact. `run_sequence_eval.py` prints that count alongside
+the threshold so the estimate's support is visible rather than implied.
 
 The detector is **non-causal by construction**: the swap test at junction $j$ needs segment $j+1$
 to have closed, so a verdict lags by one segment. That is the same latency $s_{\text{dur2}}$

@@ -284,6 +284,47 @@ def test_from_sequence_verdicts_no_verdicts_flags_nothing():
     assert not any(x.is_anomaly for x in v)
 
 
+# ---- relabel_with_sequence ----------------------------------------------------------------------
+
+def test_relabel_never_changes_whether_a_step_is_flagged():
+    """The containment property the whole design rests on: relabelling may only move `error_type`.
+    If it could move `is_anomaly`, precision/recall/FPR would shift and the sequence tests would be
+    raising alarms through the back door."""
+    tick = [em.StepVerdict(i, is_anomaly=(i in (1, 3)), error_type="omission")
+            for i in range(N_STEPS)]
+    seq = [em.StepVerdict(i, is_anomaly=True, error_type="transposition") for i in range(N_STEPS)]
+    out = em.relabel_with_sequence(tick, seq)
+    assert [v.is_anomaly for v in out] == [v.is_anomaly for v in tick]
+
+
+def test_relabel_corrects_transposition_on_flagged_steps_only():
+    # mirrors step_verdicts_from_flags: an unflagged step carries no type
+    tick = [em.StepVerdict(i, is_anomaly=(i == 2), error_type=("omission" if i == 2 else None))
+            for i in range(N_STEPS)]
+    seq = [em.StepVerdict(i, is_anomaly=(i in (2, 4)),
+                          error_type=("transposition" if i in (2, 4) else None))
+           for i in range(N_STEPS)]
+    out = em.relabel_with_sequence(tick, seq)
+    assert out[2].error_type == "transposition"   # tick flagged it, sequence renamed it
+    assert out[4].error_type is None              # sequence flagged it but the tick arm did not
+    assert out[4].is_anomaly is False             # ...and it still raises no alarm
+
+
+def test_relabel_ignores_sequence_types_outside_the_allowed_set():
+    """Only transposition by default: the tick channels already name omission and repetition
+    better, so deferring on those would swap better type evidence for worse."""
+    tick = [em.StepVerdict(i, is_anomaly=(i == 2), error_type="repetition") for i in range(N_STEPS)]
+    for seq_type in ("omission", "repetition"):
+        seq = [em.StepVerdict(i, is_anomaly=(i == 2), error_type=seq_type) for i in range(N_STEPS)]
+        assert em.relabel_with_sequence(tick, seq)[2].error_type == "repetition"
+
+
+def test_relabel_keeps_the_tick_type_when_the_sequence_test_is_silent():
+    tick = [em.StepVerdict(i, is_anomaly=(i == 2), error_type="omission") for i in range(N_STEPS)]
+    seq = [em.StepVerdict(i, is_anomaly=False) for i in range(N_STEPS)]
+    assert em.relabel_with_sequence(tick, seq)[2].error_type == "omission"
+
+
 # ---- debris exclusion (Phase 1 A) --------------------------------------------------------------
 
 def test_debris_step_is_excluded_from_out_of_window_false_positive():

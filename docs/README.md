@@ -209,7 +209,13 @@ python run_llm_eval.py --dry-run                # LLM baseline: cost the sweep b
 python run_llm_eval.py --skip-llm               # ...or score just the HSMM at step level
 python render_llm_compare_png.py                # HSMM vs LLM figures from the report JSON
 python run_threshold_sweep.py                   # accuracy vs alpha, per granularity
+python run_counterfactual.py                    # is detection attributable to the injection?
+python run_sequence_eval.py                     # segment-sequence detector vs the tick channels
 ```
+
+`run_counterfactual.py` scores each degraded trial against its own healthy counterfactual, which
+supplies the matched null a raw recall number lacks ([`eval.md`](eval.md) §5) — reach for it before
+concluding anything about whether a detection rate is meaningful.
 
 `run_threshold_sweep.py` is the calibration diagnostic: it computes traces once and re-flags them
 across an $\alpha$ grid, reporting precision/recall/FPR at tick, step and trial granularity.

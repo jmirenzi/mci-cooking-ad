@@ -114,3 +114,26 @@ def test_full_dataset_build_end_to_end(config):
     for seq in sequences:
         assert len(seq["verb_ids"]) == len(seq["noun_ids"]) > 0
     assert {s["trial_id"] for s in sequences} == {lab["trial_id"] for lab in labels}
+
+
+def test_trim_terminal_idle_strips_only_the_trailing_sil_run():
+    """The trailing idle is post-recipe, and the E-step would otherwise treat it as
+    right-censored -- a fixed point for any state that is ALWAYS terminal (see the function's
+    docstring). Interior SIL is real ambient gap between steps and must survive."""
+    from cook_ad.data.parse_breakfast import trim_terminal_idle
+    SV, SN = 11, 18
+
+    # interior SIL preserved, trailing run removed
+    v, n, k = trim_terminal_idle([1, 2, SV, 3, SV, SV], [1, 2, SN, 3, SN, SN], SV, SN)
+    assert (v, n, k) == ([1, 2, SV, 3], [1, 2, SN, 3], 2)
+
+    # nothing to strip
+    assert trim_terminal_idle([1, 2, 3], [1, 2, 3], SV, SN) == ([1, 2, 3], [1, 2, 3], 0)
+
+    # an all-SIL trial degenerates to empty rather than raising -- the caller decides
+    assert trim_terminal_idle([SV, SV], [SN, SN], SV, SN) == ([], [], 2)
+    assert trim_terminal_idle([], [], SV, SN) == ([], [], 0)
+
+    # a SIL VERB with a non-SIL noun is not the terminal sentinel and is kept
+    v, n, k = trim_terminal_idle([1, SV], [1, 5], SV, SN)
+    assert k == 0 and v == [1, SV]

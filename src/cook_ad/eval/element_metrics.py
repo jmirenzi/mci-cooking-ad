@@ -129,6 +129,42 @@ def from_sequence_verdicts(seq_verdicts, segments, steps):
     ]
 
 
+# Only transposition. The sequence tests are worth deferring to exactly where the tick channels
+# are STRUCTURALLY incapable, not merely worse: s_transition collapses omission, transposition and
+# repetition onto one channel (CHANNEL_TO_TYPE), so its transposition diagonal is 0.000 and can
+# never be anything else. Measured at full scale the other two types do not qualify -- on omission
+# the tick channels already name 0.904 against the sequence tests' 0.931, and on repetition they
+# lead outright, 0.796 against 0.757. Relabelling those would trade a better source of type
+# evidence for a worse one.
+DEFAULT_RELABEL_TYPES = ("transposition",)
+
+
+def relabel_with_sequence(tick_verdicts, seq_verdicts, types=DEFAULT_RELABEL_TYPES):
+    """Correct the TYPE of steps the tick channels already flagged, using the sequence tests --
+    without letting the sequence tests raise any alarm of their own.
+
+    `is_anomaly` is copied through untouched, so precision, recall and the healthy false-positive
+    rate are identical to the tick arm by construction and the only metric that can move is
+    `type_confusion`. That containment is the whole design: scored as an independent arm the
+    sequence detector lowers F1 and raises false alarms (docs/anomaly.md 6), because
+    `missing_step`'s bridging gate was tuned to choose phrasing after a channel fired rather than
+    to decide whether one should. Its swap test is nonetheless the only evidence in the package
+    that can distinguish a transposition from an omission, so it is used for that and nothing else.
+
+    Both arguments are StepVerdict lists over the SAME steps, index-aligned -- the tick arm from
+    `step_verdicts_from_flags` and the sequence arm from `from_sequence_verdicts`.
+    """
+    allowed = set(types)
+    out = []
+    for tv, sv in zip(tick_verdicts, seq_verdicts):
+        etype = tv.error_type
+        if tv.is_anomaly and sv.is_anomaly and sv.error_type in allowed:
+            etype = sv.error_type
+        out.append(StepVerdict(tv.step_index, tv.is_anomaly, etype, tv.correction,
+                               tv.parse_ok, tv.raw))
+    return out
+
+
 def _predicted_type(fired_channels, trace, tick_slice):
     """Map the channels that fired on a step to a single predicted anomaly type."""
     for ch in CHANNEL_PRIORITY:

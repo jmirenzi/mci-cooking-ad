@@ -105,9 +105,11 @@ better at *naming* what it found on four of five types, but worse at finding it 
 $s_{\text{trans}}$ fires identically for omission, transposition and repetition and cannot
 separate them. Note the counterfactual table above shows transposition detection *is* real
 (lift +0.322) — the model notices, it just cannot say what it noticed.
-`anomaly/sequence.py` ([`anomaly.md`](anomaly.md) §6) exists to close exactly that gap by testing
-the swap hypothesis directly against the fitted transition row. It is built and unit-tested but
-**not yet wired into a scored arm**, so no measured claim is made for it here.
+`anomaly/sequence.py` ([`anomaly.md`](anomaly.md) §6) closes exactly that gap by testing the swap
+hypothesis directly against the fitted transition row: measured standalone it takes transposition
+naming from **0.000 to 0.380**. It does not, however, earn a place as an independent arm — unioned
+with the tick channels it lowers F1 and raises false alarms, and the naming win dilutes to 0.149.
+See `anomaly.md` §6 for the measurement and the two upstream defects behind it.
 
 > **The synthetic arm is not neutral ground for this comparison and should not be read as a second
 > opinion.** Synthetic trials are ancestral samples from the HSMM, so they flatter it — which
