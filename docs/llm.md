@@ -14,8 +14,8 @@ and score its answers against the same injected errors the HSMM is scored on.
 | `render_llm_vs_hsmm_png.py` | one trial, all detectors, at their native resolutions |
 
 Driven by `run_llm_eval.py`. `eval/metrics.py` and `run_evaluation.py` keep their own tick-level
-path: `evaluate_steps` gained only optional arguments, so every number in [`eval.md`](eval.md) is
-unchanged.
+path; `evaluate_steps` takes only optional extra arguments, so that path is unaffected by anything
+here.
 
 > `anomaly/narrate.py` opens by stating that routing the system's user-facing questions through a
 > language model would throw away their auditability. That still holds, and this module does not
@@ -26,38 +26,88 @@ unchanged.
 
 ## 0. Headline result
 
-Full corpus: **447 real** and **90 synthetic** trials x 5 injected errors, `gemma3:27b` served
-locally, prefix-only incremental protocol, joint HSMM, scored through `evaluate_steps` (§5).
+**95 real trials** x (healthy + 5 injected errors), `gemma3:27b` served locally, conversational
+protocol, joint HSMM at $\alpha = 5\times10^{-3}$. Scored **trial-located** (§5): one verdict per
+trial, on whether the flag landed inside the injection-touched range.
 
-> ⚠️ **The HSMM rows below are stale and are being re-measured.** They were produced before
-> `surprise.EMISSION_FLAG_ATOL` ([`anomaly.md`](anomaly.md) §3.4), which changes when
-> $s_{\text{emit}}$/$s_{\text{verb}}$/$s_{\text{noun}}$ fire and therefore every HSMM number on
-> this page. On healthy real trials that tolerance moves $s_{\text{emit}}$'s trial-level
-> false-positive rate from 0.995 to 0.081, so the corrected figures will differ substantially.
-> The LLM rows are unaffected — no HSMM channel participates in them.
+| arm | precision | recall | F1 | stray/degraded | healthy FPR |
+|---|---|---|---|---|---|
+| **HSMM** | **0.618** | 0.423 | **0.503** | **0.219** | **0.211** |
+| gemma3 (no recipes) | 0.439 | 0.537 | 0.483 | 0.554 | 0.663 |
+| gemma3 (+ recipes) | 0.416 | **0.613** | 0.496 | 0.693 | 0.832 |
 
-| arm | steps scored | chance precision | precision | recall | F1 | healthy FPR |
-|---|---|---|---|---|---|---|
-| real / HSMM ⚠️ | 17,950 | 0.125 | 0.894 | 0.888 | 0.891 | 0.087 |
-| real / LLM | 17,950 | 0.125 | 0.183 | 0.443 | 0.259 | 0.418 |
-| synthetic / HSMM ⚠️ | 3,939 | 0.114 | 0.829 | 0.907 | 0.866 | 0.078 |
-| synthetic / LLM | 3,939 | 0.114 | 0.150 | 0.644 | 0.244 | 0.767 |
+**On F1 the three are tied.** The HSMM's advantage is entirely in alarm volume: it reaches the
+same F1 while flagging 21% of healthy trials against the LLM's 66–83%. For an assistant whose
+failure mode is nagging a user with MCI, that is the axis that decides usability — but it is a
+narrower claim than "the HSMM detects better."
 
-**The LLM's step-level precision is at chance** — 1.46x the base rate on real trials, 1.32x on
-synthetic. It is not a usable detector for this task. `parse_failure_rate` is 0.0025 over 19,253
-real-arm requests, so this is a capability result, not a formatting artefact.
+**Recipe descriptions make the LLM flag more, not better**: recall +7.6 points, precision −2.3,
+healthy false alarms +16.9. That arm also has the `labels.json` advantage the HSMM never had (§2),
+and it runs on the conversational protocol, the LLM's stronger one (§3) — so both choices favour
+the LLM and its false-alarm disadvantage is if anything understated.
 
-The LLM leads on exactly two things, both places the tick-level HSMM is structurally blind:
-naming a **transposition** (0.20 vs 0.00 on the confusion diagonal — $s_{\text{trans}}$ covers
-omission, transposition and repetition alike, so the tick channels cannot name it) and a
-**repetition** (0.63 vs 0.41). It also proposes a better correction for **omission** (0.156 vs
-0.025; the HSMM's near-zero is structural — `trace.expected_noun` is $z^*$'s argmax, which after a
-deletion points at the step *after* the missing one). Elsewhere the HSMM leads, including
-correction accuracy on substitution (0.96 vs 0.37) and abandonment (0.89 vs 0.62).
+### Detection is real on every error type
 
-`anomaly/sequence.py` ([`anomaly.md`](anomaly.md) §6) exists to close the transposition gap: it
-tests the swap hypothesis explicitly against the fitted transition row instead of inferring it from
-$s_{\text{trans}}$, and reports a named type per junction.
+Per-type recall is low outside substitution, which raises the obvious question of whether those
+detections are anything more than a chatty detector occasionally landing in the right place.
+`run_counterfactual.py` ([`eval.md`](eval.md) §5) answers it by scoring each degraded trial
+against **its own healthy counterfactual** — same trial, same range, no injection — which is a
+matched null that absorbs trial length, range width, and the detector's own per-trial noise:
+
+| error type | recall | matched null | lift | McNemar |
+|---|---|---|---|---|
+| substitution | 0.998 | 0.043 | **+0.955** | $\chi^2$ = 398 |
+| abandonment | 0.384 | 0.017 | **+0.368** | $\chi^2$ = 148 |
+| omission | 0.294 | 0.031 | **+0.263** | $\chi^2$ = 97 |
+| transposition | 0.377 | 0.055 | **+0.322** | $\chi^2$ = 129 |
+| repetition | 0.210 | 0.041 | **+0.169** | $\chi^2$ = 69 |
+
+(419 real trials, $\alpha = 5\times10^{-3}$; every $\chi^2$ far past 3.84 at $p = 0.05$, with
+discordance almost entirely one-directional.)
+
+So the correct reading of the low per-type numbers is **low sensitivity, not absent detection**.
+Note also how far the matched null sits below a uniform-random estimate: flags cluster at segment
+boundaries rather than spreading across a trial, so a healthy run's flags usually miss the injected
+range entirely. Any chance baseline derived by assuming uniform flag placement overstates it by
+roughly 5x.
+
+> **Every number on this page is in-sample.** `run_joint.py` fits on all of `sequences.json` and
+> the evaluation scores a prefix of the same file; there is no held-out split. Treat these as
+> upper bounds.
+
+### The older step-level numbers
+
+`evaluate_steps` also reports a pooled step-level precision/recall (§5). The last full-corpus
+measurement of it — 447 real / 90 synthetic trials, incremental protocol — predates
+`surprise.EMISSION_FLAG_ATOL`, the right-censoring fix, the removal of the persistence rule, and
+the $\alpha$ change, so **its HSMM rows no longer describe the shipping detector** and are not
+reproduced here. The LLM rows from that run remain valid: step-level precision 0.183 (real) and
+0.150 (synthetic) against chance baselines of 0.125 and 0.114, i.e. **at roughly 1.2–1.5x chance**,
+with `parse_failure_rate` 0.0025 over 19,253 requests — a capability result, not a formatting
+artefact.
+
+### Per-type: the HSMM dominates one type, the LLM leads on the rest
+
+Trial-located recall, and the confusion diagonal (given a detection, was the type named right):
+
+| | HSMM recall | LLM(+r) recall | HSMM diagonal | LLM(+r) diagonal |
+|---|---|---|---|---|
+| substitution | **0.989** | 0.979 | **1.000** | 0.935 |
+| abandonment | 0.358 | **0.842** | 0.838 | **0.901** |
+| omission | 0.316 | **0.337** | **0.879** | 0.058 |
+| transposition | 0.253 | **0.589** | **0.000** | 0.088 |
+| repetition | 0.200 | **0.316** | **0.789** | 0.281 |
+
+The HSMM clearly dominates only **substitution** — its own emission channel's error type. It is
+better at *naming* what it found on four of five types, but worse at finding it on four of five.
+
+**Transposition is the structural blind spot**: the diagonal is exactly 0.000 because
+$s_{\text{trans}}$ fires identically for omission, transposition and repetition and cannot
+separate them. Note the counterfactual table above shows transposition detection *is* real
+(lift +0.322) — the model notices, it just cannot say what it noticed.
+`anomaly/sequence.py` ([`anomaly.md`](anomaly.md) §6) exists to close exactly that gap by testing
+the swap hypothesis directly against the fitted transition row. It is built and unit-tested but
+**not yet wired into a scored arm**, so no measured claim is made for it here.
 
 > **The synthetic arm is not neutral ground for this comparison and should not be read as a second
 > opinion.** Synthetic trials are ancestral samples from the HSMM, so they flatter it — which
@@ -420,7 +470,24 @@ Three additions the tick layer structurally cannot provide:
 | `correction_accuracy` | does the proposed correct move match the pre-injection step? Token match and duration match are reported **separately**, because abandonment leaves verb and noun untouched — a combined score would credit naming a step the detector never had to identify. |
 | `parse_failure_rate` | LLM arms only. |
 
-plus `step_level`, a pooled precision / recall / chance-precision over every scoreable step.
+plus two pooled views:
+
+| Field | Unit | Question |
+|---|---|---|
+| `step_level` | one step | of all steps, which were correctly classified? |
+| **`trial_located`** | one trial | did the detector flag **in the right place** on this trial? |
+
+`trial_located` is the headline metric (§0) and mirrors `run_threshold_sweep.py`'s `trial_loc`
+([`eval.md`](eval.md) §6) in step space rather than tick space. A degraded trial's positive range
+is `gt_steps` $\cup$ `debris`; a flag inside it is a hit (TP) and no in-range flag is a miss (FN);
+a flag outside it is a **stray**, charged as a false positive *independently* of whether the trial
+was also hit, so finding the anomaly buys no absolution for firing elsewhere. Healthy trials have
+no range: any flag is a false positive.
+
+`stray_rate` (per degraded trial) and `healthy.false_positive_rate` (per healthy trial) are
+reported separately rather than pooled into one FPR, because a degraded trial can contribute both
+a TP and an FP and so is not a member of a well-defined negative class — `FP/(FP+TN)` would mix
+the two populations and is deliberately not reported.
 
 ### What counts as one test — the `step_level` pool
 

@@ -3,7 +3,7 @@
 | File | Role |
 |---|---|
 | `batch.py` | many-trial analogues of `surprise.compute_trace{,_joint}` |
-| `metrics.py` | recall / precision / latency / channel attribution, plus the persistence rule |
+| `metrics.py` | recall / precision / latency / channel attribution at tick level |
 | `element_metrics.py` | the **step**-level layer both the HSMM and the LLM are scored through |
 | `counterfactual.py` | pairs each degraded trial against its own healthy counterfactual |
 | `plotting.py` | two matplotlib figures per evaluation run |
@@ -12,6 +12,8 @@
 `run_llm_eval.py` and documented in [`llm.md`](llm.md) §5, since the step unit exists to make the
 LLM baseline comparable. The three layers measure the same detector at three granularities and are
 kept separate rather than reconciled — a tick, a step and a trial are genuinely different questions.
+`run_counterfactual.py` (§5) and `run_threshold_sweep.py` (§6) are the two analysis runners built
+on top of them.
 
 ---
 
@@ -233,6 +235,31 @@ therefore nothing to attribute — which is the cleanest form of the question.
 By construction $\text{detection} \ge \text{localisation}$, and detection is $\ge$ the in-window
 recall of §2 on the same trials, since it credits strictly more flags.
 
+### The matched null — what this is actually for
+
+Beyond crediting downstream disturbance, the pairing supplies the null that a raw recall number
+lacks: **the same detector, the same trial, the same range, with no injection present.** Ask
+whether a *projected healthy* flag lands in the injection-touched range and you have the rate the
+detector would score by being chatty in the right neighbourhood anyway. `run_counterfactual.py`
+reports the three side by side per error type:
+
+| | question |
+|---|---|
+| `observed` | did a **degraded** flag land in the range (what recall normally reports) |
+| `chance` | did a **projected healthy** flag land there (the matched null) |
+| `attributable` | was there a flag in the degraded run and *not* its counterfactual |
+
+The null is matched per trial, so it absorbs trial length, step count, range width, and the
+detector's own per-trial noise level — all things a uniform-random baseline gets wrong. Measured
+on 419 real trials it sits at **0.017–0.055**, roughly 5x below what assuming uniform flag
+placement predicts, because flags cluster at segment boundaries instead of spreading out. Any
+"is this above chance?" argument built on a uniform assumption will therefore be far too
+pessimistic; measure the matched null instead.
+
+Because the two outcomes are paired, significance is **McNemar** on the discordant trials, not an
+unpaired two-proportion test — which would both ignore the pairing and degenerate when the null
+rate is zero.
+
 ### Cost
 
 None beyond what is already computed. Every evaluation runs healthy trials through the detector
@@ -242,6 +269,13 @@ hand — no extra inference, and for the LLM arm no extra requests.
 ---
 
 ## 6. `run_threshold_sweep.py` — picking $\alpha$
+
+$\alpha$ is the detector's **only** sensitivity knob: there is no persistence rule, run-length
+filter, or post-hoc smoothing anywhere downstream (§2), so this one number sets the whole
+operating point. The shipped value is `surprise.DEFAULT_ALPHA` $= 5\times10^{-3}$, chosen from
+this sweep — trial-located recall 0.453 at precision 0.728 with 14.1% of healthy trials raising
+any alarm. Loosening to 0.05 buys 16 points of recall for roughly triple the false-alarm rate;
+tightening to $10^{-3}$ returns 4 points of false alarms for 5 points of recall.
 
 Reports accuracy, precision, recall and false-positive rate across an $\alpha$ grid spanning
 $5\times10^{-1}$ to $10^{-10}$, at four granularities.
