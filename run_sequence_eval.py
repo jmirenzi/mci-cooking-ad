@@ -135,19 +135,21 @@ def main():
         )
         for tr, rh, t in zip(h_traces, h_rhat, usable)
     ]
-    healthy_both = [element_metrics.relabel_with_sequence(a, b)
+    healthy_both = [element_metrics.relabel_with_sequence(a, b, scope="trial")
+                    for a, b in zip(healthy_tick, healthy_seq)]
+    healthy_step = [element_metrics.relabel_with_sequence(a, b, scope="step")
                     for a, b in zip(healthy_tick, healthy_seq)]
 
     # ---- stage 2: score both arms on the same degraded pool -----------------------------------
     rng = np.random.default_rng(args.seed)
-    deg_seq, deg_tick, deg_both, artifacts = {}, {}, {}, {}
+    deg_seq, deg_tick, deg_both, deg_step, artifacts = {}, {}, {}, {}, {}
     for et in error_injection.ERROR_TYPES:
         print(f"computing traces: {et}", flush=True)
         degraded = [error_injection.inject(et, t, rng, marg) for t in usable]
         d_traces, log_probs_d, d_rhat, ltm_d = batch.compute_traces_joint(
             jp, degraded, d_max, chunk_size=args.chunk_size
         )
-        srows, trows, brows, arows = [], [], [], []
+        srows, trows, brows, strows, arows = [], [], [], [], []
         for i, deg in enumerate(degraded):
             steps = textify.steps_from_ids(deg["verb_ids"], deg["noun_ids"], inject_lex)
             gt = textify.gt_steps_for_window(steps, deg["window"])
@@ -163,13 +165,16 @@ def main():
             )
             srows.append((sv, gt, None))
             trows.append((tv, gt, None))
-            brows.append((element_metrics.relabel_with_sequence(tv, sv), gt, None))
+            brows.append((element_metrics.relabel_with_sequence(tv, sv, scope="trial"), gt, None))
+            strows.append((element_metrics.relabel_with_sequence(tv, sv, scope="step"), gt, None))
             arows.append(debris)
-        deg_seq[et], deg_tick[et], deg_both[et], artifacts[et] = srows, trows, brows, arows
+        deg_seq[et], deg_tick[et], deg_both[et] = srows, trows, brows
+        deg_step[et], artifacts[et] = strows, arows
 
     rep_seq = element_metrics.evaluate_steps(healthy_seq, deg_seq, artifact_steps=artifacts)
     rep_tick = element_metrics.evaluate_steps(healthy_tick, deg_tick, artifact_steps=artifacts)
     rep_both = element_metrics.evaluate_steps(healthy_both, deg_both, artifact_steps=artifacts)
+    rep_step = element_metrics.evaluate_steps(healthy_step, deg_step, artifact_steps=artifacts)
 
     # ---- report --------------------------------------------------------------------------------
     def f1(p, r):
@@ -179,27 +184,30 @@ def main():
     print(f"{'arm':<22} {'prec':>6} {'recall':>7} {'F1':>6} {'stray':>7} {'healthyFPR':>11}")
     print("-" * 64)
     for lab, rep in (("tick-level HSMM", rep_tick), ("sequence detector", rep_seq),
-                     ("tick + RELABEL", rep_both)):
+                     ("tick + relabel[step]", rep_step),
+                     ("tick + RELABEL[trial]", rep_both)):
         t = rep["trial_located"]
         print(f"{lab:<22} {t['precision']:>6.3f} {t['recall']:>7.3f} "
               f"{f1(t['precision'], t['recall']):>6.3f} {t['stray_rate']:>7.3f} "
               f"{t['healthy_fpr']:>11.3f}")
 
     print(f"\n=== per-type trial-located RECALL ===\n")
-    print(f"{'error type':<15} {'tick-level':>12} {'sequence':>10} {'relabel':>9}")
+    print(f"{'error type':<15} {'tick-level':>12} {'sequence':>10} {'rl[step]':>10} {'rl[trial]':>10}")
     print("-" * 48)
     for et in error_injection.ERROR_TYPES:
         print(f"{et:<15} {rep_tick['trial_located']['per_type'][et]['recall']:>12.3f} "
               f"{rep_seq['trial_located']['per_type'][et]['recall']:>10.3f} "
-              f"{rep_both['trial_located']['per_type'][et]['recall']:>9.3f}")
+              f"{rep_step['trial_located']['per_type'][et]['recall']:>10.3f} "
+              f"{rep_both['trial_located']['per_type'][et]['recall']:>10.3f}")
 
     print(f"\n=== TYPE-NAMING (confusion diagonal) -- the point of this detector ===\n")
-    print(f"{'error type':<15} {'tick-level':>12} {'sequence':>10} {'relabel':>9}")
+    print(f"{'error type':<15} {'tick-level':>12} {'sequence':>10} {'rl[step]':>10} {'rl[trial]':>10}")
     print("-" * 48)
     for et in error_injection.ERROR_TYPES:
         print(f"{et:<15} {rep_tick['type_confusion'][et].get(et, 0.0):>12.3f} "
               f"{rep_seq['type_confusion'][et].get(et, 0.0):>10.3f} "
-              f"{rep_both['type_confusion'][et].get(et, 0.0):>9.3f}")
+              f"{rep_step['type_confusion'][et].get(et, 0.0):>10.3f} "
+              f"{rep_both['type_confusion'][et].get(et, 0.0):>10.3f}")
 
     with open(args.out, "w") as f:
         json.dump({
@@ -207,7 +215,8 @@ def main():
             "thresholds": {"transposition": thresholds.transposition,
                            "repetition": thresholds.repetition,
                            "n_junctions": len(all_gains), "n_segments": len(all_ratios)},
-            "sequence": rep_seq, "tick_level": rep_tick, "relabel": rep_both,
+            "sequence": rep_seq, "tick_level": rep_tick,
+            "relabel_trial": rep_both, "relabel_step": rep_step,
         }, f, indent=2, default=str)
     print(f"\nwritten to {args.out}")
 

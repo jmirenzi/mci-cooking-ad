@@ -514,9 +514,45 @@ It was built to supply two things the tick pipeline cannot:
 >    `missing_step`'s 2-nat gate was tuned to choose *phrasing* once a channel had already fired,
 >    not to decide whether anything fired at all, and it does not transfer to that role.
 >
-> The measured-good use is therefore narrower than "a third arm": run the swap test to **relabel**
-> transposition on trials the tick channels already flagged, rather than as an independent detector
-> contributing its own alarms. That is not what the code currently does.
+> The measured-good use is therefore narrower than "a third arm", and is what ships:
+> `element_metrics.relabel_with_sequence` runs the swap test **only to correct the type** of an
+> alarm the tick channels already raised. See below.
+
+### How it is actually used: type relabelling, not detection
+
+`element_metrics.relabel_with_sequence(tick_verdicts, seq_verdicts)` copies `is_anomaly` through
+untouched and may only change `error_type`. Precision, recall and the healthy false-positive rate
+are therefore **identical to the tick arm by construction** — verified, not asserted — and the only
+metric that can move is `type_confusion`. Three narrowings make that trade positive:
+
+| knob | default | why |
+|---|---|---|
+| `types` | `("transposition",)` | the only type the tick channels are *structurally* unable to name, rather than merely worse at |
+| `from_types` | `("omission",)` | what `CHANNEL_TO_TYPE` resolves $s_{\text{trans}}$ to, and so the label a mis-read transposition wears — 0.862 of true transpositions |
+| `scope` | `"trial"` | the swap test and the tick channels often flag *opposite halves* of the swapped pair, so step-exact matching misses most real agreements |
+
+Restricting the **source** label is what removes the collateral damage: substitution (0.998) and
+abandonment (0.921) come from channels a swap cannot be confused with, and an earlier unrestricted
+version lost 0.008 and 0.025 on them for nothing.
+
+Measured on 419 real trials, $\alpha = 5\times10^{-3}$:
+
+| error type | tick arm | relabel (step) | **relabel (trial, shipping)** |
+|---|---|---|---|
+| transposition | **0.000** | 0.116 | **0.199** |
+| omission | 0.904 | 0.880 | 0.872 |
+| substitution / abandonment / repetition | — | unchanged | **unchanged** |
+
+Net: a total blind spot becomes a **weak** one, for −0.032 on omission and nothing else. The
+remaining ceiling is not the plumbing — trial scope already recovers most of what step scope
+missed — but the swap test's own 0.186 detection recall: relabelling cannot fire on a trial where
+the test stayed silent, and lowering its threshold to fix that reintroduces exactly the false
+alarms this containment exists to avoid.
+
+> `scope="trial"` is sound **because the harness injects exactly one anomaly per trial**, so a swap
+> found anywhere and an alarm raised anywhere are almost certainly the same event. A live stream
+> carrying several concurrent anomalies would need `scope="step"` or a windowed variant; the
+> default is a property of the evaluation, not a general claim.
 
 ### The three tests
 

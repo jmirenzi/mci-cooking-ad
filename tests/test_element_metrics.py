@@ -290,7 +290,8 @@ def test_relabel_never_changes_whether_a_step_is_flagged():
     """The containment property the whole design rests on: relabelling may only move `error_type`.
     If it could move `is_anomaly`, precision/recall/FPR would shift and the sequence tests would be
     raising alarms through the back door."""
-    tick = [em.StepVerdict(i, is_anomaly=(i in (1, 3)), error_type="omission")
+    tick = [em.StepVerdict(i, is_anomaly=(i in (1, 3)),
+                           error_type=("omission" if i in (1, 3) else None))
             for i in range(N_STEPS)]
     seq = [em.StepVerdict(i, is_anomaly=True, error_type="transposition") for i in range(N_STEPS)]
     out = em.relabel_with_sequence(tick, seq)
@@ -304,19 +305,65 @@ def test_relabel_corrects_transposition_on_flagged_steps_only():
     seq = [em.StepVerdict(i, is_anomaly=(i in (2, 4)),
                           error_type=("transposition" if i in (2, 4) else None))
            for i in range(N_STEPS)]
-    out = em.relabel_with_sequence(tick, seq)
+    out = em.relabel_with_sequence(tick, seq, scope="step")
     assert out[2].error_type == "transposition"   # tick flagged it, sequence renamed it
     assert out[4].error_type is None              # sequence flagged it but the tick arm did not
     assert out[4].is_anomaly is False             # ...and it still raises no alarm
 
 
+def test_relabel_only_overwrites_the_collapsed_channels_label():
+    """`s_transition` resolves to "omission" via CHANNEL_TO_TYPE, so that is the one label a
+    mis-read transposition wears. substitution/abandonment come from channels a swap cannot be
+    confused with and are already accurate, so they must survive untouched."""
+    seq = [em.StepVerdict(i, is_anomaly=True, error_type="transposition") for i in range(N_STEPS)]
+    for src, expected in (("omission", "transposition"),      # overridable
+                          ("substitution", "substitution"),   # not
+                          ("abandonment", "abandonment"),     # not
+                          ("repetition", "repetition")):      # not
+        tick = [em.StepVerdict(i, is_anomaly=(i == 2), error_type=(src if i == 2 else None))
+                for i in range(N_STEPS)]
+        assert em.relabel_with_sequence(tick, seq)[2].error_type == expected
+
+
+def test_relabel_trial_scope_matches_a_swap_found_on_a_different_step():
+    """Step-exact matching misses the common case: one detector flags one half of the swapped
+    pair, the other names the opposite half. Trial scope is sound because the harness injects
+    exactly one anomaly per trial."""
+    tick = [em.StepVerdict(i, is_anomaly=(i == 2), error_type=("omission" if i == 2 else None))
+            for i in range(N_STEPS)]
+    seq = [em.StepVerdict(i, is_anomaly=(i == 4),
+                          error_type=("transposition" if i == 4 else None))
+           for i in range(N_STEPS)]
+
+    assert em.relabel_with_sequence(tick, seq, scope="trial")[2].error_type == "transposition"
+    assert em.relabel_with_sequence(tick, seq, scope="step")[2].error_type == "omission"
+    # containment holds under both scopes
+    for sc in ("trial", "step"):
+        out = em.relabel_with_sequence(tick, seq, scope=sc)
+        assert [v.is_anomaly for v in out] == [v.is_anomaly for v in tick]
+
+
+def test_relabel_trial_scope_is_inert_when_the_swap_test_never_fires():
+    tick = [em.StepVerdict(i, is_anomaly=(i == 2), error_type=("omission" if i == 2 else None))
+            for i in range(N_STEPS)]
+    seq = [em.StepVerdict(i, is_anomaly=False) for i in range(N_STEPS)]
+    assert em.relabel_with_sequence(tick, seq, scope="trial")[2].error_type == "omission"
+
+
+def test_relabel_rejects_an_unknown_scope():
+    with pytest.raises(ValueError, match="scope"):
+        em.relabel_with_sequence([], [], scope="nonsense")
+
+
 def test_relabel_ignores_sequence_types_outside_the_allowed_set():
     """Only transposition by default: the tick channels already name omission and repetition
     better, so deferring on those would swap better type evidence for worse."""
-    tick = [em.StepVerdict(i, is_anomaly=(i == 2), error_type="repetition") for i in range(N_STEPS)]
+    tick = [em.StepVerdict(i, is_anomaly=(i == 2), error_type=("omission" if i == 2 else None))
+            for i in range(N_STEPS)]
     for seq_type in ("omission", "repetition"):
         seq = [em.StepVerdict(i, is_anomaly=(i == 2), error_type=seq_type) for i in range(N_STEPS)]
-        assert em.relabel_with_sequence(tick, seq)[2].error_type == "repetition"
+        # only "transposition" is in `types`, so an omission/repetition verdict changes nothing
+        assert em.relabel_with_sequence(tick, seq)[2].error_type == "omission"
 
 
 def test_relabel_keeps_the_tick_type_when_the_sequence_test_is_silent():

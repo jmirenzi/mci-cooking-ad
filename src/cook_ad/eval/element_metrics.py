@@ -138,8 +138,18 @@ def from_sequence_verdicts(seq_verdicts, segments, steps):
 # evidence for a worse one.
 DEFAULT_RELABEL_TYPES = ("transposition",)
 
+# Which tick-arm label may be overwritten. `s_transition` collapses omission, transposition and
+# repetition onto one channel and CHANNEL_TO_TYPE resolves it to "omission", so "omission" IS the
+# signature of a mis-read transposition: measured on 419 real trials the tick arm labels a true
+# transposition "omission" on 0.862 of detections and "transposition" on 0.000. The other labels
+# come from channels that are not confusable with a swap and are already accurate -- substitution
+# 0.998, abandonment 0.921 -- so overwriting them can only lose. Restricting the SOURCE label as
+# well as the target is what keeps this from trading good type evidence for worse.
+DEFAULT_RELABEL_FROM = ("omission",)
 
-def relabel_with_sequence(tick_verdicts, seq_verdicts, types=DEFAULT_RELABEL_TYPES):
+
+def relabel_with_sequence(tick_verdicts, seq_verdicts, types=DEFAULT_RELABEL_TYPES,
+                          from_types=DEFAULT_RELABEL_FROM, scope="trial"):
     """Correct the TYPE of steps the tick channels already flagged, using the sequence tests --
     without letting the sequence tests raise any alarm of their own.
 
@@ -151,15 +161,36 @@ def relabel_with_sequence(tick_verdicts, seq_verdicts, types=DEFAULT_RELABEL_TYP
     to decide whether one should. Its swap test is nonetheless the only evidence in the package
     that can distinguish a transposition from an omission, so it is used for that and nothing else.
 
+    `scope` decides how a tick flag is matched to a sequence verdict:
+
+      "step"   the sequence test must have fired on the SAME step. Strict, and too strict in
+               practice -- a transposition's two swapped steps are often flagged by one detector
+               and named by the other, so the intersection is small.
+      "trial"  the sequence test named one of `types` anywhere in this trial (the default). Sound
+               here because the evaluation injects exactly ONE anomaly per trial, so a swap found
+               anywhere and a flag raised anywhere are almost certainly the same event. A stream
+               carrying several independent anomalies per trial would need "step" or a windowed
+               variant instead.
+
     Both arguments are StepVerdict lists over the SAME steps, index-aligned -- the tick arm from
     `step_verdicts_from_flags` and the sequence arm from `from_sequence_verdicts`.
     """
-    allowed = set(types)
+    allowed, overridable = set(types), set(from_types)
+    trial_type = None
+    if scope == "trial":
+        trial_type = next((sv.error_type for sv in seq_verdicts
+                           if sv.is_anomaly and sv.error_type in allowed), None)
+    elif scope != "step":
+        raise ValueError(f"scope must be 'step' or 'trial', got {scope!r}")
+
     out = []
     for tv, sv in zip(tick_verdicts, seq_verdicts):
         etype = tv.error_type
-        if tv.is_anomaly and sv.is_anomaly and sv.error_type in allowed:
-            etype = sv.error_type
+        if tv.is_anomaly and tv.error_type in overridable:
+            if scope == "trial":
+                etype = trial_type or etype
+            elif sv.is_anomaly and sv.error_type in allowed:
+                etype = sv.error_type
         out.append(StepVerdict(tv.step_index, tv.is_anomaly, etype, tv.correction,
                                tv.parse_ok, tv.raw))
     return out
