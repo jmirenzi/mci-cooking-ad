@@ -15,6 +15,10 @@ This is where the fitted model becomes a *detector*. The chain is:
 | `temporal.py` | the duration channels: live stall, retrospective two-sided, PIT calibration |
 | `quantile.py` | exact per-state $\alpha$-quantile thresholds over discrete supports |
 | `narrate.py` | template renderers turning flags into auditable questions |
+| `sequence.py` | retrospective segment-sequence detector: one verdict per junction, names the error type |
+
+`sequence.py` sits **beside** the tick pipeline rather than inside it (§6). It reads the decoded
+segment sequence, not the tick stream, so it shares no state with the seven channels.
 
 ---
 
@@ -137,6 +141,18 @@ duration always has *high* survival probability, hence *low* $s_{\text{temporal}
 early is invisible to a monotone survival ramp, by construction. It needs its own retrospective
 channel.
 
+> **Known limitation — the trial's own final segment.** `completed_segment_surprise` runs on every
+> segment, including the last one, whose duration is **right-censored**: observation stopped, the
+> activity did not. Scoring it against $P(D \le d)$ therefore asks a question the data cannot
+> answer, and on a state with a long fitted mean it reliably produces a spurious `left_early` flag
+> at the trial's final tick — rendered as *"idle only took 8 ticks — you usually spend about 186."*
+> The inflated means themselves have the same origin: a state that is disproportionately the final
+> segment of training trials has little uncensored duration data pinning it down. The live channel
+> already handles censoring correctly (survival, not pmf); the retrospective channel assumes every
+> segment it sees has genuinely closed, which is true of all but the last. Measured impact on
+> detection is small — one isolated tick at the very end — but the flag is spurious and the
+> narrated text it produces is misleading.
+
 **PIT — a model check, not a detector.** The mid-probability integral transform per segment:
 
 $$
@@ -218,6 +234,13 @@ $\alpha$ coverage never claimed.
 | `joint_quantile_threshold` | the $V \times N$ outer product per state | $s_{\text{emit}}$ |
 | `transition_quantile_threshold` | one transition row | $s_{\text{trans}}$, cascade $s_{\text{recipe}}$ |
 | `excess_quantile_threshold` | signed excess, null $i \sim A^{(\hat r)}(\cdot\mid j)$ | joint $s_{\text{recipe}}$ |
+| `sequence_thresholds` | an **empirical** sample of healthy-trial statistics | `sequence.py`'s swap / duration tests (§6) |
+
+The first four score a *fitted discrete distribution*; `sequence_thresholds` scores an empirical
+sample instead, weighting each observed value $1/N$ and passing it through the same
+`_tail_threshold`, so the resulting cut is the empirical $(1-\alpha)$ quantile under the identical
+strict-`>` convention. Every threshold in the package is therefore an $\alpha$-tail cut of *some*
+null, never a hand-set nat value.
 
 `joint_quantile_threshold` builds the full joint per state — using conditional independence,
 $-\log P(v,n\mid k) = -\log B^v_{kv} - \log B^n_{kn}$ — because the joint tail is *not* recoverable
@@ -259,10 +282,30 @@ An observation inside $z^*$'s own $\alpha$-quantile can then **never** be flagge
 alone. That is one-sided and provable, not heuristic — and it is tight only by the amount of
 *actual* dilution present at that tick.
 
-An earlier version used a flat floor (`max(threshold, 6.0/4.0/4.0)` nats). It was measured to sit
-**above** the maximum achievable quantile threshold on every state at both mini ($K{=}20$, max
-2.60/2.52 nats) and full scale ($K{=}64$, max 3.30/2.87), making the entire quantile calibration
-dead code. The commentary in `surprise.py` preserves that finding.
+*Why not a flat nat floor instead.* The maximum achievable quantile threshold is 2.60/2.52 nats at
+$K{=}20$ and 3.30/2.87 at $K{=}64$. Any floor set high enough to suppress dilution would therefore
+sit above **every** state's threshold, replacing the per-state calibration with a constant and
+making §3.1–§3.3 dead code. The correction has to be per-tick and derived, which is what the
+inequality above provides.
+
+**The bound is an equality in the common case, so flagging carries a numerical tolerance.** When
+$z^*$ is near-deterministic and the observed token *is* its mode, $s_{\text{pure}} \approx 0$ and
+the inequality closes: score and threshold become the same real number. They are nevertheless
+reached by two independent floating-point routes — the score through a `logsumexp` over the full
+mixture, the threshold through a direct $-\log\tilde\pi_t(z^*)$ — which disagree at the last bit
+(~$10^{-17}$, one ULP of float64 at these magnitudes). A bare `>` resolves that noise as
+"exceeded", and does so for *every* confidently-predicted tick, which is the modal tick of a
+well-fitting model. The three dilution-corrected channels are therefore gated as
+
+$$
+\texttt{flag} \;=\; s(t) \;>\; \tau_t + \varepsilon,
+\qquad \varepsilon = \texttt{EMISSION\_FLAG\_ATOL} = 10^{-6},
+$$
+
+which sits many orders of magnitude above the tie noise and many below the smallest surprise gap
+this repo ever treats as meaningful (hundredths of a nat), so it cannot mask a real anomaly. The
+other four channels compare against thresholds that are not derived from the score's own inputs,
+have no equality case, and use a plain `>`.
 
 ### 3.5 The $z^*$-indexing approximation, and its diagnostic
 
@@ -297,12 +340,14 @@ becomes the signed excess. Two placement helpers do the bookkeeping:
 ### Flag rules
 
 ```python
-flags[ch][t]  =  value[t] > threshold[t]
+flags[ch][t]  =  value[t] > threshold[t]                    # temporal, duration, transition
+flags[ch][t]  =  value[t] > threshold[t] + 1e-6             # s_emit, s_verb, s_noun  (§3.4)
 ```
 
 with `_base_flags` covering the six shared channels and each of `flag` / `flag_joint` adding its
 own $s_{\text{recipe}}$ variant (cascade indexes by `from_recipe`; joint by `from_state` under
-$\hat r$).
+$\hat r$). The tolerance on the three emission channels is required by the equality case of the
+dilution bound, not a sensitivity knob — see §3.4.
 
 Only the two duration channels accept a **scalar** override, via `DEFAULT_THRESHOLDS`. Passing a
 scalar for any of the five per-state channels raises `KeyError` with an explanatory message —
@@ -415,3 +460,68 @@ matrix as plain arguments), so the joint variant differs in exactly three places
 `threshold_tables_joint`, bridging over $A^{(\hat r)}$, and a `Lexicon` built from
 `joint_params.select_recipe(params, r̂)` so that quoted expected durations match the same
 per-recipe distribution the surprise was computed against — not a cross-recipe average.
+
+---
+
+## 6. `sequence.py` — the retrospective segment detector
+
+A second detector over the same trial, reading the **Viterbi segment sequence**
+$z_1 \dots z_J$ (`segments_from_z`) rather than the tick stream. It shares no state with the seven
+channels and is scored as its own arm.
+
+Two properties the tick pipeline cannot provide:
+
+- **One verdict per event.** Each junction and each segment is tested exactly once, so a single
+  structural error produces a single detection rather than a spread of tick flags whose extent has
+  to be reconciled against a ground-truth window.
+- **It names the error type.** $s_{\text{trans}}$ fires identically for omission, transposition and
+  repetition — the cascade genuinely cannot separate them ([`synthetic.md`](synthetic.md)). Three
+  separate local edit tests can, because each asks a different question of the same transition row.
+
+### The three tests
+
+The base score of an observed sequence is $\sum_j \log A_{z_j z_{j+1}}$. Each test proposes one
+local edit and measures what it would gain.
+
+| Test | Edit | Statistic | Threshold |
+|---|---|---|---|
+| **transposition** | swap $z_j, z_{j+1}$ | local score after − before | healthy $(1-\alpha)$ quantile |
+| **omission** | insert a bridging state $b$ between them | `narrate.missing_step`'s two-hop gain | `DEFAULT_MIN_BRIDGE_GAIN` $= 2$ nats |
+| **repetition** | — | segment duration ÷ `Lexicon.expected_duration` | healthy $(1-\alpha)$ quantile |
+
+"Local" for the swap test means the three transitions that actually change — into $z_j$, the
+junction itself, and out of $z_{j+1}$ — with the flanking terms dropped at the sequence ends:
+
+$$
+\text{gain}_j \;=\;
+\underbrace{\log A_{z_{j-1} z_{j+1}} + \log A_{z_{j+1} z_j} + \log A_{z_j z_{j+2}}}_{\text{swapped}}
+\;-\;
+\underbrace{\log A_{z_{j-1} z_j} + \log A_{z_j z_{j+1}} + \log A_{z_{j+1} z_{j+2}}}_{\text{observed}} .
+$$
+
+A positive gain means the recipe's own transition table prefers the swapped order to the one
+observed. The omission test reuses `narrate.missing_step` directly — the same
+$\arg\max_b \log A_{ab} + \log A_{bc}$ against the direct jump that `_order_queries` renders
+*"did you skip B?"* from — so a sequence verdict and a narrated card can never disagree about
+whether a step was skipped. The repetition test keys on duration because a duplicated segment
+adjacent to its original merges into one over-long run in the decode, the same behaviour
+[`synthetic.md`](synthetic.md) documents for the tick path.
+
+**Transposition wins ties.** Where both the swap and the bridge clear their thresholds at one
+junction, the junction is reported as a transposition and the omission test is skipped there: an
+ordering violation explains an odd local transition, not the reverse. This is the priority argument
+`element_metrics.CHANNEL_PRIORITY` applies to the tick channels, applied to the same evidence.
+
+### Calibration and cost
+
+The two magnitude thresholds are the $(1-\alpha)$ empirical quantile of each statistic's
+distribution over **healthy** trials, via `quantile.sequence_thresholds` (§3.3) — the same
+null-distribution discipline the per-tick channels use, with an empirical null in place of a fitted
+one. The bridging test needs no such table: it inherits `missing_step`'s fixed nat gate.
+
+The detector is **non-causal by construction**: the swap test at junction $j$ needs segment $j+1$
+to have closed, so a verdict lags by one segment. That is the same latency $s_{\text{dur2}}$
+already accepts, and it is the right trade for a retrospective *"did you mean to do that?"* prompt.
+
+Every verdict remains an argmax over a fitted transition row or a ratio against a fitted NB mean,
+so the auditability commitment of §1 holds here unchanged.

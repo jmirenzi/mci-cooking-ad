@@ -100,6 +100,49 @@ def gt_steps_for_window(steps, window):
     return [s.index for s in steps if s.tick_start <= t1 and s.tick_end > t0]
 
 
+def injection_touched_steps(steps, tick_map, edited_ticks, gt_steps):
+    """Degraded steps that exist, or take the tick range they have, only because of the
+    injection -- but are NOT themselves the ground-truth anomaly. Neither the injected anomaly
+    nor a clean normal step: debris, to be excluded from false-positive scoring rather than
+    counted either way (eval/element_metrics.py).
+
+    Two ways a step can be debris:
+      1. It borders an edited tick (is directly adjacent to, or contains, a tick in
+         `edited_ticks`). Substitution retags exactly one tick inside a run, splitting what was
+         one step into up to three; the two surviving fragments are shortened runs that exist
+         only because the edit forced an RLE break next to them, even though neither fragment's
+         own ticks were rewritten.
+      2. Its own tick range is glued from two non-contiguous original positions -- consecutive
+         degraded ticks i, i+1 inside the step with `tick_map[i+1] != tick_map[i] + 1`.
+         Repetition's duplicate is adjacent-identical to its original and merges into one
+         over-long run in the degraded RLE, spanning the splice.
+
+    Splices that fall exactly on an existing step boundary (abandonment/omission/transposition:
+    every splice a structural injector introduces lands where the RLE already breaks) are NOT
+    debris by either rule -- confirmed against each injector's index arithmetic in
+    synthetic/error_injection.py, and is why this function only ever flags something for the
+    substitution and repetition injectors in practice.
+    """
+    tick_map = np.asarray(tick_map)
+    edited = set(int(t) for t in edited_ticks)
+    gt = set(gt_steps)
+
+    touched = set()
+    for s in steps:
+        if s.index in gt:
+            continue
+        a, b = s.tick_start, s.tick_end
+        if any(t in edited for t in range(a, b)):
+            touched.add(s.index)
+            continue
+        if (a - 1) in edited or b in edited:
+            touched.add(s.index)
+            continue
+        if any(tick_map[t + 1] != tick_map[t] + 1 for t in range(a, b - 1)):
+            touched.add(s.index)
+    return touched
+
+
 def step_covering_tick(steps, tick):
     """The Step whose [tick_start, tick_end) contains `tick`, or None.
 

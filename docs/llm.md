@@ -11,9 +11,11 @@ and score its answers against the same injected errors the HSMM is scored on.
 | `llm/detect.py` | response grammar + parser, and the two protocol drivers |
 | `eval/element_metrics.py` | the step-level metric layer **both** detectors are scored through |
 | `render_llm_compare_png.py` | comparison figures from the report JSON (layout only, no inference) |
+| `render_llm_vs_hsmm_png.py` | one trial, all detectors, at their native resolutions |
 
-Driven by `run_llm_eval.py`. Nothing here touches `eval/metrics.py`, `run_evaluation.py`, or any
-tick-level figure — every number in [`eval.md`](eval.md) is exactly what it was.
+Driven by `run_llm_eval.py`. `eval/metrics.py` and `run_evaluation.py` keep their own tick-level
+path: `evaluate_steps` gained only optional arguments, so every number in [`eval.md`](eval.md) is
+unchanged.
 
 > `anomaly/narrate.py` opens by stating that routing the system's user-facing questions through a
 > language model would throw away their auditability. That still holds, and this module does not
@@ -24,41 +26,59 @@ tick-level figure — every number in [`eval.md`](eval.md) is exactly what it wa
 
 ## 0. Headline result
 
-Full corpus, 2026-08-18: **447 real** and **90 synthetic** trials x 5 injected errors,
-`gemma3:27b` served locally, prefix-only incremental protocol, joint HSMM.
+Full corpus: **447 real** and **90 synthetic** trials x 5 injected errors, `gemma3:27b` served
+locally, prefix-only incremental protocol, joint HSMM, scored through `evaluate_steps` (§5).
+
+> ⚠️ **The HSMM rows below are stale and are being re-measured.** They were produced before
+> `surprise.EMISSION_FLAG_ATOL` ([`anomaly.md`](anomaly.md) §3.4), which changes when
+> $s_{\text{emit}}$/$s_{\text{verb}}$/$s_{\text{noun}}$ fire and therefore every HSMM number on
+> this page. On healthy real trials that tolerance moves $s_{\text{emit}}$'s trial-level
+> false-positive rate from 0.995 to 0.081, so the corrected figures will differ substantially.
+> The LLM rows are unaffected — no HSMM channel participates in them.
 
 | arm | steps scored | chance precision | precision | recall | F1 | healthy FPR |
 |---|---|---|---|---|---|---|
-| **real / HSMM** | 19,253 | 0.139 | **0.897** | **0.790** | **0.840** | **0.087** |
-| real / LLM | 19,253 | 0.139 | 0.155 | 0.333 | 0.212 | 0.418 |
-| synthetic / HSMM | 4,299 | 0.147 | 0.842 | 0.735 | 0.785 | 0.078 |
-| synthetic / LLM | 4,299 | 0.147 | 0.168 | 0.552 | 0.257 | 0.767 |
+| real / HSMM ⚠️ | 17,950 | 0.125 | 0.894 | 0.888 | 0.891 | 0.087 |
+| real / LLM | 17,950 | 0.125 | 0.183 | 0.443 | 0.259 | 0.418 |
+| synthetic / HSMM ⚠️ | 3,939 | 0.114 | 0.829 | 0.907 | 0.866 | 0.078 |
+| synthetic / LLM | 3,939 | 0.114 | 0.150 | 0.644 | 0.244 | 0.767 |
 
-**The LLM's step-level precision is at chance** -- 1.12x on real, 1.14x on synthetic. It is not a
-usable detector for this task, and the HSMM beats it on recall *and* precision for all five error
-types. `parse_failure_rate` was 0.0039 over 11,645 requests, so this is a capability result, not a
-formatting artifact.
+**The LLM's step-level precision is at chance** — 1.46x the base rate on real trials, 1.32x on
+synthetic. It is not a usable detector for this task. `parse_failure_rate` is 0.0025 over 19,253
+real-arm requests, so this is a capability result, not a formatting artefact.
 
-The LLM is better at exactly two things, both cases where the HSMM is structurally blind:
-identifying a **transposition** (0.20 vs 0.00 on the confusion diagonal -- `s_transition` covers
-omission, transposition and repetition alike, so the HSMM can never name it) and a **repetition**
-(0.63 vs 0.41). It also proposes a better correction for **omission** (0.156 vs 0.025, the HSMM's
-near-zero being structural: `trace.expected_noun` is z*'s argmax, which after a deletion points at
-the step *after* the missing one). Everywhere else the HSMM wins, including correction accuracy on
-substitution (0.96 vs 0.37) and abandonment (0.89 vs 0.62).
+The LLM leads on exactly two things, both places the tick-level HSMM is structurally blind:
+naming a **transposition** (0.20 vs 0.00 on the confusion diagonal — $s_{\text{trans}}$ covers
+omission, transposition and repetition alike, so the tick channels cannot name it) and a
+**repetition** (0.63 vs 0.41). It also proposes a better correction for **omission** (0.156 vs
+0.025; the HSMM's near-zero is structural — `trace.expected_noun` is $z^*$'s argmax, which after a
+deletion points at the step *after* the missing one). Elsewhere the HSMM leads, including
+correction accuracy on substitution (0.96 vs 0.37) and abandonment (0.89 vs 0.62).
+
+`anomaly/sequence.py` ([`anomaly.md`](anomaly.md) §6) exists to close the transposition gap: it
+tests the swap hypothesis explicitly against the fitted transition row instead of inferring it from
+$s_{\text{trans}}$, and reports a named type per junction.
 
 > **The synthetic arm is not neutral ground for this comparison and should not be read as a second
-> opinion.** Synthetic trials are ancestral samples from the HSMM, so they flatter it -- which
-> [`eval.md`](eval.md) already says -- but they also actively *penalise* the LLM: healthy
+> opinion.** Synthetic trials are ancestral samples from the HSMM, so they flatter it — which
+> [`eval.md`](eval.md) already says — but they also actively *penalise* the LLM: healthy
 > false-positive rate 0.767 there against 0.418 on real trials. The samples are valid under the
 > model while containing (verb, noun) pairings and orderings no real cook would produce, so a
 > detector reasoning from real-world priors is correct to call them anomalous. **Report the real
 > arm.**
 
-An earlier n=10 pilot suggested the LLM identified the error type correctly on 5/5 types against
-the HSMM's 3/5. That did not survive scaling: it rested on the argmax of each confusion column, a
-weak statistic at n=10. On the confusion *diagonal* at n=447 the LLM leads on only the two types
-named above.
+### Reading the false-positive rate
+
+`healthy.false_positive_rate` is the fraction of healthy control trials with **any** flagged step.
+Both arms are held to that same bar — there is no persistence filter or run-length requirement on
+either side ([`eval.md`](eval.md) §2), so the two numbers are directly comparable and the figure
+and the table read the same mask.
+
+The arms do still differ in how many tests produce that flag: the HSMM makes ~150 per-tick tests
+per trial that collapse into ~7 step verdicts, while the LLM makes ~7 step tests directly. That
+asymmetry is real and is controlled where it belongs — at the threshold $\alpha$, which trades
+false alarms against recall along a curve `run_threshold_sweep.py` measures ([`eval.md`](eval.md)
+§6) — rather than by filtering one arm's output after the fact.
 
 ## 1. The unit problem, and the step
 
@@ -184,17 +204,17 @@ user:   1. stall kitchen for 2 seconds
 Cost: `len(steps)` requests per trial, ~7 on this corpus.
 
 **The model's own earlier answers are not fed back**, and that is deliberate. Causality — seeing
-only the prefix — is the property the comparison depends on. Conversational self-feedback is a
-*separate* property, and an earlier version of this module had it. Removing it bought two things:
+only the prefix — is the property the comparison depends on; conversational self-feedback is a
+*separate* property, which the `conversational` protocol below supplies and this one withholds.
+Withholding it buys two things:
 
-1. **No error cascade.** A false alarm at step 2 previously sat in context for steps 3–7 and could
-   bias them, so a miss at step 5 could not be distinguished from contamination by an earlier
-   mistake. Every step is now an independent test, which is what `element_metrics` already assumed
-   when it scored them as one test each.
-2. **The sweep became parallelisable.** Every request is now a pure function of `(trial, step
-   index)` instead of depending on a previous response. That is a precondition for issuing
-   requests concurrently, and for submitting the whole sweep to an async batch endpoint — neither
-   is possible when request *i+1* contains response *i*.
+1. **No error cascade.** Under self-feedback a false alarm at step 2 sits in context for steps 3–7
+   and can bias them, so a miss at step 5 cannot be distinguished from contamination by an earlier
+   mistake. Here every step is an independent test, which is what `element_metrics` assumes when it
+   scores them as one test each.
+2. **Parallelism.** Every request is a pure function of `(trial, step index)` rather than depending
+   on a previous response — a precondition for issuing requests concurrently, and for submitting a
+   sweep to an async batch endpoint. Neither is possible when request *i+1* contains response *i*.
 
 **Prompt layout is chosen for prefix caching.** One system turn plus one user turn that only ever
 grows by appending a line, so request *i*'s prompt is a strict token prefix of request *i+1*'s. A
@@ -207,11 +227,11 @@ universally accepted.
 > older conversational protocol will not be reused, and results from the two are not directly
 > comparable.
 
-### `conversational` (ablation)
+### `conversational`
 
-The original protocol: one request per step with the model's own earlier replies fed back as
-assistant turns. Superseded as the default by prefix-only, but **kept runnable because the two are
-not equivalent in behaviour**, and measurement contradicted the argument for the switch.
+One request per step, with the model's own earlier replies fed back as assistant turns. Not the
+default, but **kept runnable, because the two protocols are not equivalent in behaviour and the
+non-default one is more accurate on this model.**
 
 Same model, same 10 real trials, same seed, same prompt; only the protocol differs:
 
@@ -220,12 +240,12 @@ Same model, same 10 real trials, same seed, same prompt; only the protocol diffe
 | `incremental` (prefix-only) | 18 | 77 | 42 | 0.189 | 0.300 |
 | `conversational` | 22 | **47** | 38 | **0.319** | **0.367** |
 
-Self-feedback improves **both** precision and recall. The error-cascade argument above predicted
-the opposite. The assistant turns evidently act as a conservatism anchor -- a model that has just
-said "No Anomaly" five times is being shown five reasons to say it again -- which suppresses the
-prompt-length drift in section 0. The conversational arm even ran with the prompt written for
-prefix-only ("a numbered list ... judge only the last step"), which does not describe what it
-sees, and still won.
+Self-feedback improves **both** precision and recall — the opposite of what the error-cascade
+argument above predicts. The assistant turns act as a conservatism anchor: a model that has just
+said "No Anomaly" five times is being shown five reasons to say it again, which suppresses the
+prompt-length drift in section 0. This holds even though the conversational arm runs with the
+prompt written for prefix-only ("a numbered list … judge only the last step"), which does not
+describe what it actually sees.
 
 So the prefix-only default buys parallelism and clean independence at a real cost in accuracy on
 this model. That trade is worth restating whenever a number from either protocol is reported, and
@@ -337,22 +357,18 @@ one line instead of several minutes in.
 
 ## 5. `eval/element_metrics.py` — scoring both detectors identically
 
-### The HSMM adapter, and why it keeps two masks
+### The HSMM adapter
 
-`step_verdicts_from_flags` turns per-tick channel flags into one `StepVerdict` per step, carrying
-**both**:
+`step_verdicts_from_flags` turns per-tick channel flags into one `StepVerdict` per step: a step is
+`is_anomaly` if **any** tick inside it is flagged. That is the only mask — there is no persistence
+variant, here or in the tick layer ([`eval.md`](eval.md) §2), so both arms are scored through one
+rule and the two detectors' false-alarm numbers mean the same thing.
 
-- `is_anomaly` — any tick in the step is flagged;
-- `persistent` — any tick in the step belongs to a run of $\ge$ `min_run` consecutive flagged ticks.
-
-Keeping both is load-bearing. Collapsing an 11-tick step with a plain OR would re-run, per step,
-exactly the multiple-testing arithmetic `metrics._persistent_mask` exists to fix: at
-$\alpha = 0.05$ per tick, $1 - 0.95^{11} \approx 0.43$, so a step-level OR with no persistence
-requirement would report the HSMM as flagging almost every step of every healthy trial. So
-`persistent` drives false-positive determination and `is_anomaly` drives in-window detection —
-mirroring the tick layer's asymmetry ([`eval.md`](eval.md) §2) for the same reason. For the LLM
-the two are identical: it emits exactly one verdict per step, so there is no sub-step multiple
-testing to correct for.
+A step spans ~11 ticks, so the HSMM does carry more per-step exposure than the LLM's single
+verdict. That is handled at the threshold rather than by filtering the output: $\alpha$ moves
+false alarms and recall together along a curve `run_threshold_sweep.py` measures
+([`eval.md`](eval.md) §6), whereas a run-length filter would mute the structural channels
+(whose true signal is one tick wide) while sparing the duration channels.
 
 ### Channel → predicted type
 
@@ -404,7 +420,37 @@ Three additions the tick layer structurally cannot provide:
 | `correction_accuracy` | does the proposed correct move match the pre-injection step? Token match and duration match are reported **separately**, because abandonment leaves verb and noun untouched — a combined score would credit naming a step the detector never had to identify. |
 | `parse_failure_rate` | LLM arms only. |
 
-plus `step_level`, a pooled precision/recall over every step of every trial as one test each.
+plus `step_level`, a pooled precision / recall / chance-precision over every scoreable step.
+
+### What counts as one test — the `step_level` pool
+
+Two rules define the pool, and both apply identically to every arm.
+
+**One ground-truth window is one test.** A window can span several steps — a transposition spans
+the swapped pair, averaging 2.01 ground-truth steps per trial. Flagging either half is a complete
+detection of the one event that was injected, so the window contributes exactly one TP (any of its
+steps flagged) or one FN (none flagged), never one per step. Scoring per step would book a false
+negative for the unflagged sibling of a pair the detector had already found.
+
+**Injection debris is excluded entirely.** A degraded step is *injection-touched* if it contains or
+borders an edited tick, or if its own tick range spans a `tick_map` splice
+(`textify.injection_touched_steps`, using the provenance fields in
+[`synthetic.md`](synthetic.md) §2.1). A touched step that is **not** ground truth is neither the
+injected anomaly nor a clean normal step: it is an artefact of the edit, and it is dropped from the
+pool rather than counted either way.
+
+The clearest case is substitution. Retagging one tick inside a run splits that run into three
+steps, and the two surviving fragments have the durations they have *only* because of the
+injection. A detector that flags one — correctly recovering the original duration — is neither
+right nor wrong about anything the injector set out to test. Repetition produces the analogous case
+when its duplicate merges with its original across a splice.
+
+Both rules move the denominator, so `chance_precision` is computed from the same scoreable pool
+rather than from `tp + fp + fn` — that quantity varies with how much a given detector flags and
+would hand the two arms different baselines for identical data.
+
+`evaluate_steps` takes `artifact_steps` per degraded trial; omitting it disables the debris rule,
+which is what keeps `run_evaluation.py`'s tick-level path unchanged.
 
 ---
 
@@ -482,11 +528,10 @@ Nothing errors. The run just becomes CPU inference. Measured on n=10, 251 reques
 **4x from one environment variable** -- far more than concurrency ever contributed. The longest
 prompt this evaluation produces is 842 tokens (1476 with recipe descriptions), so 2048 is ample.
 
-An earlier version of this document blamed the slowdown on Gemma 3's sliding-window attention,
-having seen ollama churning ~250 MB KV checkpoints in its log (`n_swa = 1024`). That churn is real
-but it was not the bottleneck: the layer-offload lines above are, and `gemma3:4b` -- same SWA
-architecture -- scaled fine precisely because it fit on the GPU whole. Diagnosis by log-grepping
-found a true symptom and the wrong cause.
+Gemma 3's sliding-window attention is a red herring here. ollama does churn ~250 MB KV checkpoints
+in its log (`n_swa = 1024`) and that churn is real, but it is not the bottleneck — the layer-offload
+lines above are. `gemma3:4b` has the same SWA architecture and scales fine, precisely because it
+fits on the GPU whole. Read the offload count, not the SWA chatter.
 
 ### Model choice
 
@@ -558,7 +603,7 @@ components the fit actually uses — and more of them is measurably *worse*:
 | `joint_noun10` | noun histogram | 11 | 0.075 | 0.938 | 0.762 | 0.915 |
 | `joint_noun16` | noun histogram | 14 | 0.100 | 0.893 | 0.759 | 0.901 |
 
-(40 real trials, 5 injections each, `min_run=10`, scored through this file's own step layer.)
+(40 real trials, 5 injections each, scored through this file's own step layer.)
 
 Recall is flat — 0.880–0.910, no trend. Precision and healthy false-positive rate degrade
 monotonically as effective $K_R$ rises. The mechanism is the same over-parameterisation that makes

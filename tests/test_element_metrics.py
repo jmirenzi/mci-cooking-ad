@@ -62,49 +62,46 @@ def test_flag_beyond_tolerance_is_a_miss_and_a_false_positive():
     assert out_of_window is True
 
 
-def test_in_window_detection_ignores_persistence():
-    """Inside the window there IS an injected anomaly, so a single non-persistent flag still
-    counts -- otherwise genuine low-latency detections get delayed."""
-    verdicts = [em.StepVerdict(i, is_anomaly=(i == 2), persistent=False) for i in range(N_STEPS)]
+def test_a_single_in_window_flag_is_a_detection():
+    """No run-length requirement: one flagged step inside the window is a detection."""
+    verdicts = [em.StepVerdict(i, is_anomaly=(i == 2)) for i in range(N_STEPS)]
     detected, latency, out_of_window, _ = em.score_trial_steps(verdicts, [2])
     assert (detected, latency, out_of_window) == (True, 0, False)
 
 
-def test_out_of_window_requires_persistence():
-    verdicts = [em.StepVerdict(i, is_anomaly=(i == 4), persistent=False) for i in range(N_STEPS)]
+def test_a_single_out_of_window_flag_is_a_false_positive():
+    verdicts = [em.StepVerdict(i, is_anomaly=(i == 4)) for i in range(N_STEPS)]
     _, _, out_of_window, _ = em.score_trial_steps(verdicts, [0])
-    assert out_of_window is False
+    assert out_of_window is True
 
 
 # ---- HSMM adapter -----------------------------------------------------------------------------
 
-def test_scattered_tick_flags_are_detections_but_not_persistent():
-    """The reason step_verdicts_from_flags keeps two masks: a plain per-step OR over ~11 ticks at
-    alpha=0.05 would report the HSMM as flagging nearly every healthy step."""
+def test_any_flagged_tick_in_a_step_flags_that_step():
+    """A step is anomalous if any tick inside it is flagged -- no run-length requirement."""
     steps = _steps()
-    v = em.step_verdicts_from_flags(_flags([5, 25, 45]), steps, min_run=10)
+    v = em.step_verdicts_from_flags(_flags([5, 25, 45]), steps)
     assert [x.is_anomaly for x in v] == [True, False, True, False, True]
-    assert not any(x.persistent for x in v)
 
 
-def test_a_long_run_is_both_a_detection_and_persistent():
+def test_a_run_spanning_two_steps_flags_both():
     steps = _steps()
-    v = em.step_verdicts_from_flags(_flags(range(20, 32)), steps, min_run=10)
-    assert [x.persistent for x in v] == [False, False, True, True, False]
+    v = em.step_verdicts_from_flags(_flags(range(20, 32)), steps)
+    assert [x.is_anomaly for x in v] == [False, False, True, True, False]
 
 
 def test_predicted_type_prefers_specific_channels_over_s_emit():
     """s_emit fires on nearly every error type, so it must never name a type on its own."""
     steps = _steps()
     only_emit = _flags(range(20, 32), channel="s_emit")
-    v = em.step_verdicts_from_flags(only_emit, steps, min_run=10)
+    v = em.step_verdicts_from_flags(only_emit, steps)
     assert v[2].is_anomaly is True
     assert v[2].error_type is None            # detected, but no type claimed
 
     both = _flags(range(20, 32), channel="s_emit")
     for t in range(20, 32):
         both["s_transition"][t] = True
-    v = em.step_verdicts_from_flags(both, steps, min_run=10)
+    v = em.step_verdicts_from_flags(both, steps)
     assert v[2].error_type == "omission"
 
 
@@ -255,6 +252,216 @@ def test_chance_precision_is_a_property_of_the_data_not_the_detector():
     assert a["chance_precision"] == b["chance_precision"] == pytest.approx(1 / (2 * N_STEPS))
     # ...while the achieved precisions differ sharply, which is the point of having the baseline
     assert a["precision"] < b["precision"]
+
+
+# ---- from_sequence_verdicts (Phase 4 integration) ----------------------------------------------
+
+def test_from_sequence_verdicts_flags_the_steps_the_junction_spans():
+    from cook_ad.anomaly.sequence import SequenceVerdict
+    steps = _steps()  # 5 steps, each 10 ticks: [0,10) [10,20) [20,30) [30,40) [40,50)
+    segments = [(0, 0, 10), (1, 10, 20), (2, 20, 30), (3, 30, 40), (4, 40, 50)]
+    seq_verdicts = [SequenceVerdict(1, "transposition", 5.0)]  # junction between segments 1, 2
+    v = em.from_sequence_verdicts(seq_verdicts, segments, steps)
+    flagged = {x.step_index for x in v if x.is_anomaly}
+    assert flagged == {1, 2}
+    assert next(x for x in v if x.step_index == 1).error_type == "transposition"
+
+
+def test_from_sequence_verdicts_repetition_flags_only_its_own_segment():
+    from cook_ad.anomaly.sequence import SequenceVerdict
+    steps = _steps()
+    segments = [(0, 0, 10), (1, 10, 20), (2, 20, 30), (3, 30, 40), (4, 40, 50)]
+    seq_verdicts = [SequenceVerdict(2, "repetition", 2.4)]
+    v = em.from_sequence_verdicts(seq_verdicts, segments, steps)
+    flagged = {x.step_index for x in v if x.is_anomaly}
+    assert flagged == {2}
+
+
+def test_from_sequence_verdicts_no_verdicts_flags_nothing():
+    steps = _steps()
+    segments = [(0, 0, 10), (1, 10, 20), (2, 20, 30), (3, 30, 40), (4, 40, 50)]
+    v = em.from_sequence_verdicts([], segments, steps)
+    assert not any(x.is_anomaly for x in v)
+
+
+# ---- debris exclusion (Phase 1 A) --------------------------------------------------------------
+
+def test_debris_step_is_excluded_from_out_of_window_false_positive():
+    """A step the injection created (debris, not ground truth) must not count as an out-of-
+    window false positive even when flagged."""
+    verdicts = [em.StepVerdict(i, is_anomaly=(i == 4)) for i in range(N_STEPS)]
+    _, _, out_of_window, _ = em.score_trial_steps(verdicts, gt_steps=[0], debris_steps={4})
+    assert out_of_window is False
+    # without the debris exclusion the same flag would be a false positive
+    _, _, out_of_window_uncorrected, _ = em.score_trial_steps(verdicts, gt_steps=[0])
+    assert out_of_window_uncorrected is True
+
+
+def test_debris_step_excluded_from_step_level_pooling():
+    report = em.evaluate_steps(
+        healthy_verdicts=[_llm()],
+        degraded_by_type={"substitution": [(_llm(anomaly_at=(2, 4)), [2], None)]},
+        artifact_steps={"substitution": [{4}]},
+    )
+    sl = report["step_level"]
+    assert sl["tp"] == 1
+    assert sl["fp"] == 0        # step 4 was debris, not scored
+    assert sl["n_steps"] == 2 * N_STEPS - 1  # one fewer step scored (the debris one)
+
+
+def test_artifact_steps_absent_behaves_as_before():
+    kwargs = dict(healthy_verdicts=[_llm()],
+                  degraded_by_type={"substitution": [(_llm(anomaly_at=(2, 4)), [2], None)]})
+    without = em.evaluate_steps(**kwargs)
+    with_none = em.evaluate_steps(artifact_steps=None, **kwargs)
+    assert without["step_level"] == with_none["step_level"]
+
+
+# ---- one-window-one-event (Phase 1 B) ------------------------------------------------------
+
+def test_multi_step_window_scores_as_one_event_not_one_per_step():
+    """A transposition-shaped ground truth spans two steps; flagging just one of them is a
+    complete detection of the ONE event, and must not also book a false negative for its
+    unflagged sibling."""
+    verdicts = [em.StepVerdict(i, is_anomaly=(i == 2)) for i in range(N_STEPS)]
+    report = em.evaluate_steps(
+        healthy_verdicts=[],
+        degraded_by_type={"transposition": [(verdicts, [2, 3], None)]},
+    )
+    sl = report["step_level"]
+    assert sl["tp"] == 1
+    assert sl["fn"] == 0        # NOT 1 -- step 3 (the unflagged sibling) is not a separate test
+    assert report["per_type"]["transposition"]["recall"] == 1.0
+
+
+def test_multi_step_window_with_neither_step_flagged_is_one_false_negative():
+    verdicts = [em.StepVerdict(i, is_anomaly=False) for i in range(N_STEPS)]
+    report = em.evaluate_steps(
+        healthy_verdicts=[],
+        degraded_by_type={"transposition": [(verdicts, [2, 3], None)]},
+    )
+    sl = report["step_level"]
+    assert sl["tp"] == 0
+    assert sl["fn"] == 1        # one event, one miss -- not two
+
+
+# ---- flag-mask convention regression (Phase 1) ----------------------------------------------
+
+def test_debris_exclusion_does_not_change_in_window_detection():
+    """Debris is a third bucket -- excluded from FALSE-POSITIVE scoring only. It must never
+    suppress an in-window detection, and a non-debris out-of-window flag must still count."""
+    # in-window detection is unaffected by an unrelated debris step
+    verdicts = [em.StepVerdict(i, is_anomaly=(i == 2)) for i in range(N_STEPS)]
+    detected, _, _, _ = em.score_trial_steps(verdicts, gt_steps=[2], debris_steps={0})
+    assert detected is True
+
+    # out-of-window, not debris -> false positive
+    verdicts = [em.StepVerdict(i, is_anomaly=(i == 4)) for i in range(N_STEPS)]
+    _, _, out_of_window, _ = em.score_trial_steps(verdicts, gt_steps=[0], debris_steps=set())
+    assert out_of_window is True
+
+
+# ---- trial_located ----------------------------------------------------------------------------
+
+def test_trial_located_hit_anywhere_in_range_counts_and_debris_is_in_range():
+    """The positive range is gt UNION debris: a flag on a debris step is a hit, because the
+    injection genuinely moved that step."""
+    v_gt = [em.StepVerdict(i, is_anomaly=(i == 2)) for i in range(N_STEPS)]      # hits gt
+    v_debris = [em.StepVerdict(i, is_anomaly=(i == 3)) for i in range(N_STEPS)]  # hits debris
+    report = em.evaluate_steps(
+        healthy_verdicts=[],
+        degraded_by_type={"substitution": [(v_gt, [2], None), (v_debris, [2], None)]},
+        artifact_steps={"substitution": [{3}, {3}]},
+    )
+    tl = report["trial_located"]
+    assert tl["tp"] == 2 and tl["fn"] == 0
+    assert tl["recall"] == 1.0
+    assert tl["stray"] == 0          # neither flagged outside the range
+
+
+def test_trial_located_miss_is_a_false_negative():
+    verdicts = [em.StepVerdict(i, is_anomaly=False) for i in range(N_STEPS)]
+    report = em.evaluate_steps(
+        healthy_verdicts=[],
+        degraded_by_type={"substitution": [(verdicts, [2], None)]},
+    )
+    tl = report["trial_located"]
+    assert (tl["tp"], tl["fn"], tl["recall"]) == (0, 1, 0.0)
+
+
+def test_trial_located_charges_a_stray_even_when_the_trial_was_also_hit():
+    """Finding the anomaly must not buy absolution for also firing elsewhere -- that is the whole
+    point of counting the stray independently of the hit."""
+    verdicts = [em.StepVerdict(i, is_anomaly=(i in (2, 4))) for i in range(N_STEPS)]
+    report = em.evaluate_steps(
+        healthy_verdicts=[],
+        degraded_by_type={"substitution": [(verdicts, [2], None)]},
+    )
+    tl = report["trial_located"]
+    assert tl["tp"] == 1              # step 2 is in range
+    assert tl["stray"] == 1           # step 4 is not -- charged anyway
+    assert tl["recall"] == 1.0
+    assert tl["precision"] == pytest.approx(0.5)   # 1 TP against 1 stray
+
+
+def test_trial_located_pools_healthy_flags_into_precision_but_reports_rates_separately():
+    verdicts = [em.StepVerdict(i, is_anomaly=(i == 2)) for i in range(N_STEPS)]
+    report = em.evaluate_steps(
+        healthy_verdicts=[_llm(anomaly_at=(1,)), _llm()],
+        degraded_by_type={"substitution": [(verdicts, [2], None)]},
+    )
+    tl = report["trial_located"]
+    assert tl["tp"] == 1 and tl["stray"] == 0 and tl["healthy_fp"] == 1
+    assert tl["precision"] == pytest.approx(0.5)   # 1 TP against 1 healthy false alarm
+    assert tl["healthy_fpr"] == pytest.approx(0.5)  # 1 of 2 healthy trials
+    assert tl["stray_rate"] == 0.0                  # reported separately, not mixed in
+
+
+# ---- healthy FPR ------------------------------------------------------------------------------
+
+def test_healthy_false_positive_rate_counts_any_flagged_step():
+    """A healthy trial is a false positive if ANY of its steps was flagged -- no run-length bar."""
+    healthy = [
+        em.from_llm_verdicts([Verdict(i, False, None, None, "", True) for i in range(N_STEPS)]),
+        [em.StepVerdict(i, is_anomaly=(i == 2)) for i in range(N_STEPS)],
+    ]
+    report = em.evaluate_steps(healthy_verdicts=healthy, degraded_by_type={})
+    assert report["healthy"]["false_positive_rate"] == 0.5
+
+
+# ---- injection_touched_steps (textify) -------------------------------------------------------
+
+def test_injection_touched_steps_flags_substitution_fragments_not_the_edited_step():
+    """Substitution retags one tick inside a run, splitting it into [fragment, edited, fragment].
+    Both fragments are debris (their duration only exists because of the split); the edited step
+    itself is ground truth and must not be flagged as debris."""
+    verbs = [0, 0, 0, 0, 0, 1, 1, 1]  # one run of v0 (8 ticks), then v1
+    nouns = [0, 0, 0, 9, 0, 1, 1, 1]  # tick 3 retagged (noun 9), splitting the v0 run into 3
+    steps = textify.steps_from_ids(verbs, nouns, _Lex())
+    # steps: [0,3) v0/n0, [3,4) v0/n9 (edited), [4,5) v0/n0, [5,8) v1/n1
+    tick_map = np.arange(len(verbs))
+    edited_ticks = [3]
+    gt_steps = textify.gt_steps_for_window(steps, (3, 3))
+    assert gt_steps == [1]  # the edited step
+
+    touched = textify.injection_touched_steps(steps, tick_map, edited_ticks, gt_steps)
+    assert touched == {0, 2}  # both surviving fragments, not the edited step or the untouched v1 run
+
+
+def test_injection_touched_steps_flags_interior_splice_not_natural_boundary():
+    """A tick_map splice that lands exactly on an existing step boundary (the common case for
+    abandonment/omission/transposition) is not debris; a splice INSIDE one step's own tick range
+    (repetition's duplicate merging into an over-long run) is."""
+    verbs = [0, 0, 1, 1]
+    nouns = [0, 0, 1, 1]
+    steps = textify.steps_from_ids(verbs, nouns, _Lex())  # [0,2) v0/n0, [2,4) v1/n1
+    # splice lands exactly on the natural step boundary at tick 2 -- not debris
+    tick_map_boundary = np.array([0, 1, 5, 6])
+    assert textify.injection_touched_steps(steps, tick_map_boundary, [], []) == set()
+
+    # splice INSIDE the second step's own range (between ticks 2 and 3) -- debris
+    tick_map_interior = np.array([0, 1, 2, 9])
+    assert textify.injection_touched_steps(steps, tick_map_interior, [], []) == {1}
 
 
 def test_chance_precision_counts_healthy_steps_in_the_denominator():

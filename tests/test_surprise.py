@@ -75,6 +75,71 @@ def test_emission_thresholds_never_flag_the_dominant_token_under_dilution():
         )
 
 
+class _FakeBaseFlagsTrace(NamedTuple):
+    """Minimal stand-in for SurpriseTrace: _base_flags only reads these fields."""
+    s_emit: np.ndarray
+    s_verb: np.ndarray
+    s_noun: np.ndarray
+    s_temporal: np.ndarray
+    s_dur_two: np.ndarray
+    s_transition: np.ndarray
+    from_state: np.ndarray
+    z_star: np.ndarray
+    pi_at_zstar: np.ndarray
+
+
+def test_base_flags_never_flags_a_near_deterministic_states_own_mode():
+    """End-to-end regression for the bug run_threshold_sweep.py surfaced on the real corpus
+    (2026-08-18): s_emit fired on ~99% of HEALTHY real trials regardless of alpha, all the way
+    down to alpha=1e-10. Root cause, confirmed by direct inspection of flagged ticks: for a
+    near-deterministic state observed at its OWN dominant token, emission_thresholds' dilution
+    bound s_emit <= offset + s_pure is an EQUALITY (s_pure ~= 0), but s_emit (emission_surprise's
+    logsumexp mixture) and the threshold (emission_thresholds' direct -log(pi_at_zstar)) are
+    computed via independent numerical paths that land ~1 ULP apart (measured: 1e-17 to 4e-17),
+    and a bare `>` in _base_flags flagged that floating-point noise as "exceeded" essentially
+    every time. test_emission_thresholds_never_flag_the_dominant_token_under_dilution already
+    encoded the correct tolerance (`+ 1e-9`) in its own hand-rolled assertion, but that never
+    reached _base_flags itself, which is the actual code every real flag/flag_joint call runs --
+    this test closes that gap by calling _base_flags directly rather than re-deriving the bound.
+    """
+    # Mirrors a real fitted state after floor-clipping (hsmm/params.FLOOR = 1e-12): near-all
+    # mass on one token, everything else pinned at the floor. Crucially the OTHER state must
+    # ALSO floor its probability on z*'s dominant token (not just be "small but real", e.g. a
+    # random Dirichlet draw) -- that is what makes the mixture sum genuinely dominated by the
+    # z* term to full float64 precision, reproducing the real near-tie rather than a case with
+    # enough real margin to hide it.
+    v = 36
+    floor = 1e-12
+    dom = 2
+    p_star = np.full(v, floor)
+    p_star[dom] = 1.0 - floor * (v - 1)
+    p_other = np.full(v, floor)
+    p_other[5] = 1.0 - floor * (v - 1)
+    log_emit = jnp.log(jnp.array([p_star, p_other]))
+
+    for pi_zstar in (0.999, 0.95, 0.8, 0.5, 0.1, 0.016, 0.011, 0.006, 0.001):
+        pi_all = jnp.log(jnp.array([[pi_zstar, 1.0 - pi_zstar]]))
+        s_emit, s_verb, s_noun = surprise.emission_surprise(
+            pi_all, log_emit, log_emit, jnp.array([dom]), jnp.array([dom])
+        )
+        tables = quantile.ThresholdTables(
+            emit=quantile.joint_quantile_threshold(np.asarray(log_emit), np.asarray(log_emit), 0.05),
+            verb=quantile.categorical_quantile_threshold(np.asarray(log_emit), 0.05),
+            noun=quantile.categorical_quantile_threshold(np.asarray(log_emit), 0.05),
+            transition=np.array([9.0, 9.0]),
+            recipe=np.array([9.0, 9.0]),
+        )
+        trace = _FakeBaseFlagsTrace(
+            s_emit=np.asarray(s_emit), s_verb=np.asarray(s_verb), s_noun=np.asarray(s_noun),
+            s_temporal=np.array([0.0]), s_dur_two=np.array([0.0]), s_transition=np.array([0.0]),
+            from_state=np.array([-1]), z_star=np.array([0]), pi_at_zstar=np.array([pi_zstar]),
+        )
+        flags = surprise._base_flags(trace, tables, alpha=0.05, thresholds=None)
+        assert not bool(flags["s_emit"][0]), f"s_emit false-flagged at pi_zstar={pi_zstar}"
+        assert not bool(flags["s_verb"][0]), f"s_verb false-flagged at pi_zstar={pi_zstar}"
+        assert not bool(flags["s_noun"][0]), f"s_noun false-flagged at pi_zstar={pi_zstar}"
+
+
 @pytest.mark.parametrize(
     "t, k, d_max",
     [
@@ -285,13 +350,21 @@ def test_completed_segment_surprise_catches_both_tails():
     """A normally ~9-tick subtask (r=4,p=0.3): a 1-tick close is 'left_early' (only the
     retrospective left tail catches it; the live survival signal at d=1 is exactly 0), a
     40-tick close is 'stuck', and a ~9-tick close is unremarkable on both tails. (A 2-tick
-    close sits at a two-sided p of ~0.061, honestly just above alpha=0.05 and so left
-    unflagged -- the calibration is real, not tuned to always fire.)"""
+    close sits at a two-sided p of ~0.061, honestly just above alpha and so left unflagged --
+    the calibration is real, not tuned to always fire.)
+
+    Alpha is pinned at 0.05 rather than read from DEFAULT_ALPHA: the durations here are chosen
+    to straddle THAT threshold, so tracking the deployment default would silently turn this from
+    a calibration test into a test of whatever alpha happens to be shipping.
+
+    `final_censored=False` because this exercises the TAIL ARITHMETIC on every segment given,
+    including the last; the censoring policy is a separate concern with its own test below."""
+    alpha = 0.05
     dur_r = jnp.array([4.0])
     dur_p = jnp.array([0.3])
 
     s_long, s_short, s_two, attr = temporal.completed_segment_surprise(
-        [(0, 1), (0, 9), (0, 40)], dur_r, dur_p
+        [(0, 1), (0, 9), (0, 40)], dur_r, dur_p, final_censored=False
     )
 
     assert attr[0] == "left_early"
@@ -301,8 +374,41 @@ def test_completed_segment_surprise_catches_both_tails():
     assert s_two[1] < s_two[0] and s_two[1] < s_two[2]  # mid duration least surprising
 
     # single -log(alpha) threshold flags both extremes, not the middle
-    thresh = -np.log(surprise.DEFAULT_ALPHA)
+    thresh = -np.log(alpha)
     assert s_two[0] > thresh and s_two[2] > thresh and s_two[1] < thresh
+
+
+def test_completed_segment_surprise_leaves_the_censored_final_segment_unscored():
+    """The trial's last segment has not closed -- observation stopped, the activity did not --
+    so the two-sided completed-duration test does not apply to it. Asking "did this end too
+    early?" of a segment that has not ended fires on the final tick of any trial whose last
+    state has a long fitted mean; measured on 419 healthy real trials that single flag was ~62%
+    of the residual healthy trial-level false-positive rate at tight alpha.
+
+    The right tail would still be valid for a censored segment, but `live_stall_surprise`
+    already carries it, so nothing is lost by leaving this one unscored."""
+    alpha = 0.05   # pinned for the same reason as the test above
+    dur_r = jnp.array([4.0])
+    dur_p = jnp.array([0.3])
+    segments = [(0, 1), (0, 9), (0, 1)]  # last one would otherwise scream 'left_early'
+
+    s_long, s_short, s_two, attr = temporal.completed_segment_surprise(segments, dur_r, dur_p)
+
+    assert attr[-1] == "none"
+    assert s_long[-1] == 0.0 and s_short[-1] == 0.0 and s_two[-1] == 0.0
+    assert s_two[-1] < -np.log(alpha)   # cannot flag
+
+    # the identical duration EARLIER in the trial is still scored, so this suppresses the
+    # censored segment specifically -- not short durations in general
+    assert attr[0] == "left_early"
+    assert s_two[0] > -np.log(alpha)
+
+    # opting out restores the old behaviour exactly
+    _, _, s_two_all, attr_all = temporal.completed_segment_surprise(
+        segments, dur_r, dur_p, final_censored=False
+    )
+    assert attr_all[-1] == "left_early"
+    assert s_two_all[-1] == pytest.approx(s_two_all[0])
 
 
 def test_pit_uniform_for_well_fit_durations():

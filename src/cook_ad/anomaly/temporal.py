@@ -32,7 +32,7 @@ def live_stall_surprise(segments, log_dur_survival, d_max):
     return s_temporal
 
 
-def completed_segment_surprise(segments, dur_r, dur_p):
+def completed_segment_surprise(segments, dur_r, dur_p, final_censored=True):
     """Two-sided retrospective duration surprise, computed once a segment closes at its final
     observed duration d (no longer censored). Both tails are proper p-values, so they share a
     scale across states:
@@ -43,6 +43,21 @@ def completed_segment_surprise(segments, dur_r, dur_p):
       s_two   = -log( min(1, 2*min(P(D>=d), P(D<=d)) ) )   two-sided p-value surprise
     Returns per-segment arrays (s_long, s_short, s_two, attribution) where attribution is
     'stuck' if the right tail is the smaller (more surprising) one, else 'left_early'.
+
+    `final_censored` (default True) leaves the LAST segment unscored -- all three values 0,
+    attribution 'none'. That segment has not closed: observation stopped, the activity did not,
+    which is the same right-censoring the E-step already models with survival rather than pmf
+    (hsmm/durations.py, docs/README.md's cross-cutting conventions). Asking "did this end too
+    early?" of a segment that has not ended is not a question the data can answer, and answering
+    it anyway fires on the trial's final tick for any state whose fitted mean exceeds the
+    remaining recording -- measured on 419 healthy real trials, that single flag accounts for
+    ~62% of the residual healthy trial-level false-positive rate at tight alpha (0.100 -> 0.038).
+
+    The right tail alone would still be valid for a censored segment (it HAS lasted at least d),
+    but that is exactly what `live_stall_surprise` already computes, so there is nothing to
+    recover here -- the information is in s_temporal, not lost.
+
+    Pass False only when the last segment is known to have genuinely ended.
     """
     dur_r = np.asarray(dur_r)
     dur_p = np.asarray(dur_p)
@@ -52,7 +67,8 @@ def completed_segment_surprise(segments, dur_r, dur_p):
     s_two = np.zeros(n)
     attribution = np.full(n, "none", dtype=object)
 
-    for i, (state, d) in enumerate(segments):
+    scored = n - 1 if (final_censored and n > 0) else n
+    for i, (state, d) in enumerate(segments[:scored]):
         d_j = jnp.array(float(d))
         r_j, p_j = jnp.array(float(dur_r[state])), jnp.array(float(dur_p[state]))
         log_surv = float(durations.nb_log_survival(d_j, r_j, p_j))

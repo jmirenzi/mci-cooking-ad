@@ -78,6 +78,36 @@ def test_injection_structurally_correct(error_type):
         assert int(np.sum(deg["noun_ids"] != traj["noun_ids"])) == 1  # exactly one tick changed
 
 
+@pytest.mark.parametrize("error_type", error_injection.ERROR_TYPES)
+def test_injection_tick_map_round_trips(error_type):
+    """tick_map[i] must be the original tick degraded tick i came from, for every degraded tick
+    whose content was not itself rewritten (edited_ticks) -- verified directly against the
+    source trajectory's verb/noun ids, not against the injector's own index arithmetic."""
+    p = _peaked_params()
+    rng = np.random.default_rng(4)
+    traj = generate.sample_trajectory(p, rng, max_ticks=150, d_max=D_MAX)
+
+    deg = error_injection.inject(error_type, traj, rng, p)
+    tick_map = deg["tick_map"]
+    edited = set(deg["edited_ticks"].tolist())
+
+    assert len(tick_map) == len(deg["verb_ids"]) == len(deg["noun_ids"])
+    assert tick_map.min() >= 0
+    assert tick_map.max() < traj["verb_ids"].shape[0]
+
+    for i in range(len(tick_map)):
+        if i in edited:
+            continue
+        src = int(tick_map[i])
+        assert deg["verb_ids"][i] == traj["verb_ids"][src]
+        assert deg["noun_ids"][i] == traj["noun_ids"][src]
+
+    if error_type == "substitution":
+        assert edited == {int(deg["window"][0])}
+    else:
+        assert edited == set()
+
+
 def test_injection_raises_when_too_few_segments():
     tiny = {"verb_ids": np.zeros(3, np.int64), "noun_ids": np.zeros(3, np.int64),
             "segments": [(0, 3)], "subtask_per_tick": np.zeros(3, np.int64)}
@@ -132,10 +162,18 @@ def test_kl_sanity_nonzero_when_distributions_differ():
 
 def test_end_to_end_channel_isolation_on_generated_trials():
     """The detector's isolation claim on generated+injected trials: a substitution fires the
-    noun channel in-window; an abandonment fires the retrospective short-duration channel."""
+    noun channel in-window; an abandonment fires the retrospective short-duration channel.
+
+    Alpha is pinned at 0.05 rather than read from DEFAULT_ALPHA. This asserts WHICH CHANNEL
+    responds to which perturbation -- an isolation property of the cascade -- on a deliberately
+    small synthetic setup (6 seeds, K=5). The deployment default is tuned for the real corpus's
+    precision/false-alarm trade (see surprise.DEFAULT_ALPHA) and is strict enough that these few
+    tiny synthetic injections fall below it, which would turn a channel-isolation test into an
+    incidental sensitivity test at whatever alpha happens to be shipping."""
     from cook_ad.anomaly import surprise
     from cook_ad.recipe import recipe_hmm
 
+    alpha = 0.05
     p = _peaked_params()
     # trivial single-recipe HMM over the K subtask symbols (enough for compute_trace's recipe path)
     recipe_params = recipe_hmm.init_weak_limit_recipe_params(jax.random.PRNGKey(5), k_recipe=3, k_subtask=K)
@@ -153,13 +191,15 @@ def test_end_to_end_channel_isolation_on_generated_trials():
         sub_trace, sub_log_probs, sub_recipe_log_trans = surprise.compute_trace(
             p, recipe_params, sub["verb_ids"], sub["noun_ids"], D_MAX
         )
-        f = surprise.flag(sub_trace, sub_log_probs, sub_recipe_log_trans)
+        f = surprise.flag(sub_trace, sub_log_probs, sub_recipe_log_trans, alpha=alpha)
         _, _, _, hits = metrics.score_trial(f, sub["window"])
         sub_hits += "s_noun" in hits
 
         ab = error_injection.inject("abandonment", traj, rng, p)
         trace, log_probs, recipe_log_trans = surprise.compute_trace(p, recipe_params, ab["verb_ids"], ab["noun_ids"], D_MAX)
-        _, _, _, hits = metrics.score_trial(surprise.flag(trace, log_probs, recipe_log_trans), ab["window"], latency_tol=8)
+        _, _, _, hits = metrics.score_trial(
+            surprise.flag(trace, log_probs, recipe_log_trans, alpha=alpha), ab["window"], latency_tol=8
+        )
         aband_hits += "s_dur_two" in hits  # the calibrated duration channel actually flagged
         t0, t1 = ab["window"]
         left_early_hits += "left_early" in set(trace.temporal_attribution[t0 : t1 + 9])

@@ -73,10 +73,11 @@ These are the canonical failure modes of a person with MCI following a familiar 
 injector returns
 
 ```python
-{"verb_ids", "noun_ids", "window": (t0, t1), "error_type"}
+{"verb_ids", "noun_ids", "window": (t0, t1), "error_type", "tick_map", "edited_ticks"}
 ```
 
-where `window` is the ground-truth extent used by `eval.metrics.score_trial`.
+where `window` is the ground-truth extent used by `eval.metrics.score_trial`, and the last two
+fields record *what the injector actually changed* (§2.1).
 
 | Type | Perturbation | Window | Channel it should light up |
 |---|---|---|---|
@@ -102,6 +103,41 @@ creates an impossible $k \to k$ re-entry (caught by $s_{\text{trans}}$, since $A
 gets merged by Viterbi into one over-long segment (caught by $s_{\text{temporal}}$). Which one
 happens depends on the decode. Both are correct detections; the attribution matrix simply shows the
 split.
+
+### 2.1 `tick_map` and `edited_ticks` — provenance for every degraded tick
+
+`window` says *where* the anomaly is. It does not say which degraded ticks came from which original
+ticks, and after a deletion, insertion or swap the two index spaces no longer line up. Two
+additional fields carry that correspondence.
+
+**`tick_map`** is `int[T_degraded]`, mapping each degraded tick back to the original tick it came
+from. It is exactly the concatenation each injector already applies to `verb_ids`/`noun_ids`, run
+instead on `arange(T)`:
+
+| Injector | `tick_map` |
+|---|---|
+| substitution | `arange(T)` — identity; content changes, order does not |
+| abandonment | `concat(arange(0, cut_lo), arange(cut_hi, T))` |
+| omission | `concat(arange(0, start), arange(end, T))` |
+| transposition | `concat(arange(0,a_start), arange(b_start,b_end), arange(a_start,a_end), arange(b_end,T))` |
+| repetition | `concat(arange(0,end), arange(start,end), arange(end,T))` — many-to-one: the copy's ticks map to their originals |
+
+**`edited_ticks`** lists degraded indices whose *content* differs from the mapped original. Only
+substitution is non-empty (`[tick]`); the other four reorder, drop or duplicate ticks without
+rewriting any surviving one. Both fields are needed because neither implies the other: `tick_map`
+alone would assert substitution's retagged tick is unchanged, and `edited_ticks` alone says nothing
+about the four structural injectors.
+
+Two consumers depend on this:
+
+- `llm.textify.injection_touched_steps` uses it to identify **injection debris** — steps that exist,
+  or take the tick range they take, only because of the injection, and which are excluded from
+  false-positive scoring ([`llm.md`](llm.md) §5).
+- `eval.counterfactual` uses it to project a healthy trial's flags into the degraded trial's tick
+  space, so the two can be differenced ([`eval.md`](eval.md) §5).
+
+The schema change is additive, matching the precedent of `sample_trajectory_joint` adding
+`recipe_id`: consumers reading only `verb_ids`/`noun_ids`/`window` are unaffected.
 
 ### Interior constraints
 
@@ -159,6 +195,6 @@ fitted params
                                                   latency / attribution
 ```
 
-The healthy trials are run through the *same* trace-and-flag path with no injection, and any
-persistent flag they produce is a false positive. That shared pool is what makes precision
-meaningful — see [`eval.md`](eval.md) for why it is also reported with the healthy pool excluded.
+The healthy trials are run through the *same* trace-and-flag path with no injection, and any flag
+they produce is a false positive. That shared pool is what makes precision meaningful — see
+[`eval.md`](eval.md) for why it is also reported with the healthy pool excluded.

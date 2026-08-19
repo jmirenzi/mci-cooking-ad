@@ -72,20 +72,14 @@ CHANNEL_PRIORITY = (
 
 
 class StepVerdict:
-    """One detector's answer about one step.
+    """One detector's answer about one step."""
 
-    `is_anomaly` is the single-tick-sensitive answer, `persistent` the one that survives the
-    persistence rule. They differ only for the HSMM: see step_verdicts_from_flags.
-    """
+    __slots__ = ("step_index", "is_anomaly", "error_type", "correction", "parse_ok", "raw")
 
-    __slots__ = ("step_index", "is_anomaly", "persistent", "error_type", "correction",
-                 "parse_ok", "raw")
-
-    def __init__(self, step_index, is_anomaly, persistent=None, error_type=None,
+    def __init__(self, step_index, is_anomaly, error_type=None,
                  correction=None, parse_ok=True, raw=""):
         self.step_index = int(step_index)
         self.is_anomaly = bool(is_anomaly)
-        self.persistent = bool(is_anomaly if persistent is None else persistent)
         self.error_type = error_type
         self.correction = correction
         self.parse_ok = bool(parse_ok)
@@ -93,16 +87,45 @@ class StepVerdict:
 
     def __repr__(self):
         return (f"StepVerdict(step={self.step_index}, anomaly={self.is_anomaly}, "
-                f"persistent={self.persistent}, type={self.error_type!r})")
+                f"type={self.error_type!r})")
 
 
 def from_llm_verdicts(verdicts):
-    """llm.detect.Verdict -> StepVerdict. The LLM emits exactly one verdict per step, so there is
-    no sub-step multiple-testing to correct for and persistent == is_anomaly."""
+    """llm.detect.Verdict -> StepVerdict. The LLM emits exactly one verdict per step."""
     return [
-        StepVerdict(v.step_index, v.is_anomaly, v.is_anomaly, v.error_type, v.correction,
-                    v.parse_ok, v.raw)
+        StepVerdict(v.step_index, v.is_anomaly, v.error_type, v.correction, v.parse_ok, v.raw)
         for v in verdicts
+    ]
+
+
+def from_sequence_verdicts(seq_verdicts, segments, steps):
+    """anomaly.sequence.SequenceVerdict (Viterbi-segment-indexed) -> one StepVerdict per
+    llm/textify.Step -- the common unit the HSMM and LLM arms are already scored in
+    (llm/textify.py's run-length-encoded steps), so the sequence detector can be scored as a
+    THIRD arm through evaluate_steps unchanged, landing in the same tables and figures.
+
+    A textify step is flagged if its tick range overlaps the segment(s) a verdict implicates: the
+    two segments either side of the junction for transposition/omission (segments[j],
+    segments[j+1]), or the single named segment for repetition.
+    """
+    step_ticks = [(s.tick_start, s.tick_end) for s in steps]
+
+    def _overlapping(t0, t1):
+        return [i for i, (a, b) in enumerate(step_ticks) if a < t1 and b > t0]
+
+    flagged = {}
+    for v in seq_verdicts:
+        if v.error_type == "repetition":
+            _, start, end = segments[v.segment_index]
+        else:
+            _, start, _ = segments[v.segment_index]
+            _, _, end = segments[v.segment_index + 1]
+        for si in _overlapping(start, end):
+            flagged.setdefault(si, v.error_type)
+
+    return [
+        StepVerdict(s.index, s.index in flagged, flagged.get(s.index))
+        for s in steps
     ]
 
 
@@ -147,50 +170,45 @@ def _hsmm_correction(trace, steps, step, tick_slice, lexicon):
     return (verb, noun, duration)
 
 
-def step_verdicts_from_flags(flags, steps, trace=None, lexicon=None, channels=ALL_CHANNELS,
-                             min_run=1):
+def step_verdicts_from_flags(flags, steps, trace=None, lexicon=None, channels=ALL_CHANNELS):
     """HSMM adapter: per-tick channel flags -> one StepVerdict per step.
 
-    A step is `is_anomaly` if ANY tick inside it is flagged, and `persistent` if any tick inside it
-    belongs to a run of >= min_run consecutive flagged ticks.
-
-    Keeping both is the whole point. Collapsing 11 ticks into one step with a plain OR would
-    re-run, per step, exactly the multiple-testing arithmetic that metrics._persistent_mask exists
-    to fix: at alpha=0.05 per tick, a median 11-tick step flags spuriously ~43% of the time, so a
-    step-level OR with no persistence requirement would report the HSMM as flagging almost every
-    step of every healthy trial. `persistent` is therefore what false-positive determination uses,
-    exactly mirroring the tick layer's asymmetry (docs/eval.md 2), while `is_anomaly` keeps
-    in-window detection single-tick sensitive so genuine low-latency detections are not delayed.
+    A step is `is_anomaly` if ANY tick inside it is flagged. No run-length requirement is applied
+    -- see metrics.score_trial for why persistence filters by error type rather than by noise.
+    Tick-level false alarms are controlled at the threshold (alpha), not here.
     """
     union = None
     for ch in channels:
         union = flags[ch].copy() if union is None else (union | flags[ch])
-    persistent_mask = metrics._persistent_mask(flags, channels, min_run)
 
     verdicts = []
     for step in steps:
         sl = slice(step.tick_start, step.tick_end)
         fired = [ch for ch in channels if bool(np.any(flags[ch][sl]))]
         any_flag = bool(np.any(union[sl]))
-        pers = bool(np.any(persistent_mask[sl]))
         etype = _predicted_type(fired, trace, sl) if any_flag else None
         correction = _hsmm_correction(trace, steps, step, sl, lexicon) if any_flag else None
-        verdicts.append(StepVerdict(step.index, any_flag, pers, etype, correction,
+        verdicts.append(StepVerdict(step.index, any_flag, etype, correction,
                                     parse_ok=True, raw=",".join(fired)))
     return verdicts
 
 
-def score_trial_steps(verdicts, gt_steps, tol_steps=DEFAULT_STEP_TOL):
+def score_trial_steps(verdicts, gt_steps, tol_steps=DEFAULT_STEP_TOL, debris_steps=frozenset()):
     """(detected, latency_steps, flagged_out_of_window, predicted_type).
 
     `gt_steps` is the step-index list from textify.gt_steps_for_window. Detection is any
     `is_anomaly` verdict in [min(gt), max(gt) + tol_steps]; latency counts steps from min(gt).
-    Outside that range only `persistent` verdicts count as false positives -- the same asymmetry
-    the tick layer applies, for the same reason: inside the window there IS an injected anomaly,
-    outside it there is nothing to detect so persistence is the right bar.
+    Any `is_anomaly` verdict outside that range is a false positive.
+
+    `debris_steps` (textify.injection_touched_steps) are excluded from the out-of-window
+    false-positive check: they are steps the injection itself created or reshaped but which are
+    not the ground-truth anomaly, so a detector that flags them is neither wrong nor right about
+    anything the injector actually tests. Debris is a third bucket -- excluded from scoring
+    entirely, counted as neither a hit nor a false alarm.
     """
     if not gt_steps:
-        return False, None, any(v.persistent for v in verdicts), None
+        out_of_window = any(v.is_anomaly for v in verdicts if v.step_index not in debris_steps)
+        return False, None, out_of_window, None
     lo, hi = min(gt_steps), max(gt_steps) + tol_steps
 
     detected, latency, predicted = False, None, None
@@ -200,12 +218,15 @@ def score_trial_steps(verdicts, gt_steps, tol_steps=DEFAULT_STEP_TOL):
             latency = v.step_index - lo
             predicted = v.error_type
             break
-    out_of_window = any(v.persistent and not (lo <= v.step_index <= hi) for v in verdicts)
+    out_of_window = any(
+        v.is_anomaly and not (lo <= v.step_index <= hi) and v.step_index not in debris_steps
+        for v in verdicts
+    )
     return detected, latency, out_of_window, predicted
 
 
-def _any_persistent(verdicts):
-    return any(v.persistent for v in verdicts)
+def _any_flag(verdicts):
+    return any(v.is_anomaly for v in verdicts)
 
 
 def _correction_matches(predicted, truth):
@@ -221,18 +242,27 @@ def _correction_matches(predicted, truth):
 
 
 def evaluate_steps(healthy_verdicts, degraded_by_type, tol_steps=DEFAULT_STEP_TOL,
-                   error_types=None):
+                   error_types=None, artifact_steps=None):
     """healthy_verdicts: [[StepVerdict, ...], ...] for control trials with no injection.
     degraded_by_type: {error_type: [(verdicts, gt_steps, gt_correction), ...]}, where gt_correction
     is the pre-injection (verb, noun, duration) from textify.step_covering_tick, or None.
-
+    artifact_steps: optional {error_type: [debris_step_set, ...]}, index-aligned with each error
+    type's trial list in degraded_by_type -- textify.injection_touched_steps per trial. When
+    absent (the default), no steps are treated as debris and this behaves exactly as before this
+    parameter existed.
     Returns the same report shape as metrics.evaluate -- per_type / attribution / healthy -- so
     the two layers print through the same code, plus type_confusion, correction_accuracy,
-    step_level and parse_failure_rate.
+    step_level, trial_located and parse_failure_rate.
     """
     types = list(error_types or degraded_by_type.keys())
-    fp_healthy = sum(1 for v in healthy_verdicts if _any_persistent(v))
+    fp_healthy = sum(1 for v in healthy_verdicts if _any_flag(v))
     n_healthy = len(healthy_verdicts)
+
+    # trial_located: one verdict per trial, scored on WHERE the flag landed (docs/eval.md 6).
+    # The positive range is the whole injection-touched extent -- ground-truth window UNION
+    # debris -- because every step in it is one the injection actually moved.
+    loc_tp = loc_fn = loc_stray = 0
+    loc_by_type = {}
 
     per_type, type_confusion, correction_accuracy = {}, {}, {}
     tp_steps = fp_steps = fn_steps = 0
@@ -245,17 +275,31 @@ def evaluate_steps(healthy_verdicts, degraded_by_type, tol_steps=DEFAULT_STEP_TO
 
     for etype in types:
         trials = degraded_by_type.get(etype, [])
+        debris_per_trial = (artifact_steps or {}).get(etype, [])
         tp = fp_out = 0
         latencies = []
         confusion = dict.fromkeys([*types, "none"], 0)
         corr_total = corr_verb_noun = corr_duration = 0
+        et_tp = et_fn = et_stray = 0
 
-        for verdicts, gt_steps, gt_correction in trials:
+        for i, (verdicts, gt_steps, gt_correction) in enumerate(trials):
+            debris = debris_per_trial[i] if i < len(debris_per_trial) else frozenset()
             n_verdicts += len(verdicts)
             n_parsed += sum(1 for v in verdicts if v.parse_ok)
 
+            # trial_located. A flag inside the injection-touched range is a hit; a flag outside
+            # it is a stray, charged as a false positive INDEPENDENTLY of the hit, so finding the
+            # anomaly does not buy absolution for also firing elsewhere.
+            in_range = set(gt_steps) | set(debris)
+            hit = any(v.is_anomaly and v.step_index in in_range for v in verdicts)
+            stray = any(v.is_anomaly and v.step_index not in in_range for v in verdicts)
+            if in_range:
+                et_tp += int(hit)
+                et_fn += int(not hit)
+            et_stray += int(stray)
+
             detected, latency, out_of_window, predicted = score_trial_steps(
-                verdicts, gt_steps, tol_steps
+                verdicts, gt_steps, tol_steps, debris_steps=debris
             )
             if detected:
                 tp += 1
@@ -271,14 +315,19 @@ def evaluate_steps(healthy_verdicts, degraded_by_type, tol_steps=DEFAULT_STEP_TO
             elif out_of_window:
                 fp_out += 1
 
-            # Step-level pooling: every step of every degraded trial is one test.
+            # Step-level pooling: one ground-truth WINDOW is one test, not one per gt step -- a
+            # transposition's swapped pair is a single anomaly event (2.01 gt steps/trial
+            # measured), and flagging either half is a complete detection of it, not half of one.
+            # Debris steps (created/reshaped by the injection but not the anomaly itself) are
+            # excluded entirely rather than counted as either TP-eligible or FP-eligible.
             gt = set(gt_steps)
-            n_steps_total += len(verdicts)
-            for v in verdicts:
-                if v.step_index in gt:
-                    tp_steps += int(v.is_anomaly)
-                    fn_steps += int(not v.is_anomaly)
-                elif v.persistent:
+            scoreable = [v for v in verdicts if v.step_index not in gt and v.step_index not in debris]
+            n_steps_total += len(scoreable) + (1 if gt_steps else 0)
+            if gt_steps:
+                tp_steps += int(detected)
+                fn_steps += int(not detected)
+            for v in scoreable:
+                if v.is_anomaly:
                     fp_steps += 1
 
         n = len(trials)
@@ -302,12 +351,21 @@ def evaluate_steps(healthy_verdicts, degraded_by_type, tol_steps=DEFAULT_STEP_TO
             "verb_noun_accuracy": corr_verb_noun / corr_total if corr_total else float("nan"),
             "duration_accuracy": corr_duration / corr_total if corr_total else float("nan"),
         }
+        loc_tp += et_tp
+        loc_fn += et_fn
+        loc_stray += et_stray
+        loc_by_type[etype] = {
+            "n": n,
+            "recall": et_tp / (et_tp + et_fn) if (et_tp + et_fn) else 0.0,
+            "stray_rate": et_stray / n if n else 0.0,
+            "tp": et_tp, "fn": et_fn, "stray": et_stray,
+        }
 
     for verdicts in healthy_verdicts:
         n_steps_total += len(verdicts)
         n_verdicts += len(verdicts)
         n_parsed += sum(1 for v in verdicts if v.parse_ok)
-        fp_steps += sum(1 for v in verdicts if v.persistent)
+        fp_steps += sum(1 for v in verdicts if v.is_anomaly)
 
     return {
         "unit": "step",
@@ -317,8 +375,12 @@ def evaluate_steps(healthy_verdicts, degraded_by_type, tol_steps=DEFAULT_STEP_TO
         "attribution": type_confusion,
         "type_confusion": type_confusion,
         "correction_accuracy": correction_accuracy,
-        "healthy": {"n": n_healthy, "false_positive_trials": fp_healthy,
-                    "false_positive_rate": fp_healthy / n_healthy if n_healthy else 0.0},
+        "healthy": {
+            # A healthy trial is a false positive if ANY of its steps was flagged. Both arms are
+            # held to the same bar; there is no persistence correction on either side.
+            "n": n_healthy, "false_positive_trials": fp_healthy,
+            "false_positive_rate": fp_healthy / n_healthy if n_healthy else 0.0,
+        },
         "step_level": {
             "tp": tp_steps, "fp": fp_steps, "fn": fn_steps,
             "precision": tp_steps / (tp_steps + fp_steps) if (tp_steps + fp_steps) else 0.0,
@@ -327,6 +389,20 @@ def evaluate_steps(healthy_verdicts, degraded_by_type, tol_steps=DEFAULT_STEP_TO
             # Precision a detector would get by flagging steps at random: the base rate of
             # ground-truth anomalous steps. Identical for every arm scored on the same pool.
             "chance_precision": ((tp_steps + fn_steps) / n_steps_total) if n_steps_total else 0.0,
+        },
+        # One verdict per trial, scored on WHERE the flag landed. `fp` pools two distinct events
+        # -- a stray on a degraded trial and a flag on a healthy one -- so they are also reported
+        # separately: `stray_rate` is per degraded trial, `healthy.false_positive_rate` per
+        # healthy trial. FP/(FP+TN) is deliberately NOT reported, because a degraded trial can
+        # contribute both a TP and an FP and so is not a member of a well-defined negative class.
+        "trial_located": {
+            "tp": loc_tp, "fn": loc_fn, "stray": loc_stray, "healthy_fp": fp_healthy,
+            "precision": (loc_tp / (loc_tp + loc_stray + fp_healthy)
+                          if (loc_tp + loc_stray + fp_healthy) else 0.0),
+            "recall": loc_tp / (loc_tp + loc_fn) if (loc_tp + loc_fn) else 0.0,
+            "stray_rate": loc_stray / (loc_tp + loc_fn) if (loc_tp + loc_fn) else 0.0,
+            "healthy_fpr": fp_healthy / n_healthy if n_healthy else 0.0,
+            "per_type": loc_by_type,
         },
         "parse_failure_rate": 1.0 - (n_parsed / n_verdicts) if n_verdicts else 0.0,
         "channels": [*types, "none"],

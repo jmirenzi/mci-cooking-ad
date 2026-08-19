@@ -23,6 +23,7 @@ from matplotlib.patches import Rectangle  # noqa: E402
 
 UNALT_C, FED_C, HSMM_C = "#d9bda8", "#c1712c", "#2e7d72"
 HIT_C, FP_C, MISS_C, WIN_C = "#55a868", "#c44e52", "#dd8452", "#f6e3e3"
+DEBRIS_C = "#9e9e9e"
 SEV_C = {"low": "#55a868", "medium": "#dd8452", "high": "#c44e52"}
 ROW_H, LINE_H = 1.0, 0.205
 
@@ -42,10 +43,18 @@ def _bar(ax, y, steps, color, fontsize=7.0):
 
 
 def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path):
-    """hsmm: (flag_ticks_by_sev, queries) ; llm_arms: [(label, steps, verdicts, gt_steps)]"""
+    """hsmm: (flag_ticks_by_sev, queries)
+    llm_arms: [(label, steps, verdicts, gt_steps, debris_steps), ...]
+
+    `debris_steps` (textify.injection_touched_steps) are steps the injection itself created or
+    reshaped but which are not the ground-truth anomaly -- element_metrics excludes them from
+    false-positive scoring entirely (docs/llm.md, eval/element_metrics.py). Drawn as a distinct
+    grey "debris (excluded)" rather than red FALSE ALARM, so this figure and the corrected score
+    agree: a flag here is neither a hit nor a false alarm, it's not scored at all.
+    """
     t_max = fed[-1].tick_end
     rows = ["unaltered\n(what happened)", "observations\n(fed to detector)", "HSMM (joint)"]
-    rows += [lab for lab, _, _, _ in llm_arms]
+    rows += [lab for lab, _, _, _, _ in llm_arms]
     n = len(rows)
 
     cards = []
@@ -53,13 +62,20 @@ def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path):
         cards.append(f"{i}. [HSMM]  t={q['tick']}  {q['channel']}  {q['severity']}")
         cards += textwrap.wrap(q["text"], 104, initial_indent="     ", subsequent_indent="       ")
     k = len(hsmm[1])
-    for lab, steps, verdicts, gt_steps in llm_arms:
+    for lab, steps, verdicts, gt_steps, debris in llm_arms:
         for v in verdicts:
             if not v.is_anomaly and v.step_index not in gt_steps:
                 continue
             k += 1
             st = steps[v.step_index]
-            mark = ("HIT" if v.step_index in gt_steps else "FALSE ALARM") if v.is_anomaly else "MISSED"
+            if v.is_anomaly and v.step_index in gt_steps:
+                mark = "HIT"
+            elif v.is_anomaly and v.step_index in debris:
+                mark = "DEBRIS (excluded, not scored)"
+            elif v.is_anomaly:
+                mark = "FALSE ALARM"
+            else:
+                mark = "MISSED"
             cards.append(f"{k}. [{lab}]  step {v.step_index + 1} "
                          f"({st.verb} {st.noun}, {st.duration}s)  {mark}")
             cards += textwrap.wrap(v.raw.strip().replace("\n", " ") or "reported No Anomaly",
@@ -98,12 +114,16 @@ def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path):
         ax.text(q["tick"], yh - 0.60, str(i), ha="center", fontsize=7.5, fontweight="bold")
 
     # LLM rows: step-resolution verdicts
-    for lab, steps, verdicts, gt_steps in llm_arms:
+    for lab, steps, verdicts, gt_steps, debris in llm_arms:
         y = y_of[lab]
         for v in verdicts:
             st = steps[v.step_index]
-            if v.is_anomaly:
-                c = HIT_C if v.step_index in gt_steps else FP_C
+            if v.is_anomaly and v.step_index in gt_steps:
+                c = HIT_C
+            elif v.is_anomaly and v.step_index in debris:
+                c = DEBRIS_C
+            elif v.is_anomaly:
+                c = FP_C
             elif v.step_index in gt_steps:
                 c = MISS_C
             else:
@@ -121,12 +141,14 @@ def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path):
     for sp in ("top", "right", "left"):
         ax.spines[sp].set_visible(False)
     handles = [Rectangle((0, 0), 1, 1, color=WIN_C), Rectangle((0, 0), 1, 1, color=HIT_C),
-               Rectangle((0, 0), 1, 1, color=FP_C), Rectangle((0, 0), 1, 1, color=MISS_C),
+               Rectangle((0, 0), 1, 1, color=FP_C), Rectangle((0, 0), 1, 1, color=DEBRIS_C),
+               Rectangle((0, 0), 1, 1, color=MISS_C),
                plt.Line2D([], [], marker="v", ls="none", color="#888"),
                plt.Line2D([], [], marker="*", ls="none", color="#888", ms=11)]
     ax.legend(handles, ["injected window", "flagged (correct)", "flagged (false alarm)",
-                        "missed", "HSMM flagged tick", "HSMM query"],
-              loc="upper center", bbox_to_anchor=(0.5, 1.19), ncol=6, fontsize=7.6, frameon=False)
+                        "flagged (debris, excluded)", "missed", "HSMM flagged tick",
+                        "HSMM query"],
+              loc="upper center", bbox_to_anchor=(0.5, 1.19), ncol=4, fontsize=7.6, frameon=False)
     ax.set_title(title, fontsize=11.5, pad=34)
     cax.text(0, 1, "\n".join(cards), va="top", ha="left", family="monospace", fontsize=7.5)
     fig.savefig(out_path, dpi=150)
@@ -136,7 +158,8 @@ def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path):
 
 def _hsmm_bits(jp, vocab, v_ids, n_ids, d_max):
     """Exactly export_anomaly.py's _score_and_narrate_joint call sequence, so the HSMM row here is
-    the same computation the existing anomaly_*.png figures show, not a reimplementation."""
+    the same computation the existing anomaly_*.png figures show, not a reimplementation.
+    """
     from cook_ad.anomaly import narrate, quantile, surprise
     trace, jlp, r_hat, ltm, rho = surprise.compute_trace_joint(jp, v_ids, n_ids, d_max)
     flags = surprise.flag_joint(trace, jlp, r_hat, ltm)
@@ -208,21 +231,21 @@ def main():
         shortlist = []
         for idx, (traj_i, degraded) in enumerate(pool):
             deg = degraded[error_type]
-            steps, gt, _ = R.steps_and_truth(traj_i, deg, lex)
+            steps, gt, _, debris = R.steps_and_truth(traj_i, deg, lex)
             if not gt or len(steps) > args.max_steps:
                 continue
             arms, ok = [], True
             for lab, (client, sysp) in clients.items():
                 try:
                     arms.append((lab, steps, detect.run_trial(client, sysp, steps, vocab,
-                                                              args.protocol), set(gt)))
+                                                              args.protocol), set(gt), debris))
                 except Exception:
                     ok = False
                     break
             if not ok:
                 continue
             hits = sum(any(v.is_anomaly and v.step_index in set(gt) for v in vs)
-                       for _, _, vs, _ in arms)
+                       for _, _, vs, _, _ in arms)
             shortlist.append(((hits, -len(steps)), idx, traj_i, deg, steps, gt, arms))
         shortlist.sort(key=lambda r: r[0], reverse=True)
 

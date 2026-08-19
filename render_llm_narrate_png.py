@@ -161,7 +161,7 @@ def main():
     for error_type in error_injection.ERROR_TYPES:
         best = None
         for traj_i, degraded in pool:
-            steps, gt, _ = R.steps_and_truth(traj_i, degraded[error_type], lex)
+            steps, gt, _, _ = R.steps_and_truth(traj_i, degraded[error_type], lex)
             if not gt or len(steps) > 9:      # keep figures readable
                 continue
             arms, ok = [], True

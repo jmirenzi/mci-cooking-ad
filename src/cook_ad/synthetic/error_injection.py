@@ -21,12 +21,21 @@ def _seg_bounds(segments):
     return bounds
 
 
-def _result(verb_ids, noun_ids, t0, t1, error_type):
+def _result(verb_ids, noun_ids, t0, t1, error_type, tick_map, edited_ticks=()):
+    """`tick_map[i]` is the original-trial tick that degraded tick `i` came from -- the same
+    concatenation each injector below already applies to its own verb_ids/noun_ids, applied
+    instead to np.arange(T). `edited_ticks` lists degraded indices whose CONTENT differs from
+    tick_map's source tick; every injector but substitution reorders/copies/drops ticks without
+    rewriting any surviving one, so tick_map alone would otherwise imply their content is
+    unchanged everywhere, which is exactly true for those four and false for substitution's one
+    retagged tick."""
     return {
         "verb_ids": np.asarray(verb_ids, dtype=np.int64),
         "noun_ids": np.asarray(noun_ids, dtype=np.int64),
         "window": (int(t0), int(t1)),
         "error_type": error_type,
+        "tick_map": np.asarray(tick_map, dtype=np.int64),
+        "edited_ticks": np.asarray(list(edited_ticks), dtype=np.int64),
     }
 
 
@@ -37,6 +46,7 @@ def inject_substitution(traj, rng, hsmm_params, select="random"):
     verb_ids = np.array(traj["verb_ids"])
     noun_ids = np.array(traj["noun_ids"])
     bounds = _seg_bounds(traj["segments"])
+    T = len(verb_ids)
 
     _, _, _, log_emit_n = params.normalize_categoricals(hsmm_params)
     noun_prob = np.asarray(jnp.exp(log_emit_n))
@@ -48,7 +58,7 @@ def inject_substitution(traj, rng, hsmm_params, select="random"):
     if new_noun == noun_ids[tick]:
         new_noun = int(np.argsort(noun_prob[state])[1])
     noun_ids[tick] = new_noun
-    return _result(verb_ids, noun_ids, tick, tick, "substitution")
+    return _result(verb_ids, noun_ids, tick, tick, "substitution", np.arange(T), edited_ticks=[tick])
 
 
 def inject_abandonment(traj, rng, keep_ticks=1, select="random"):
@@ -57,6 +67,7 @@ def inject_abandonment(traj, rng, keep_ticks=1, select="random"):
     verb_ids = np.array(traj["verb_ids"])
     noun_ids = np.array(traj["noun_ids"])
     bounds = _seg_bounds(traj["segments"])
+    T = len(verb_ids)
 
     i = _pick_segment(rng, len(bounds), lo=1, hi=len(bounds), select=select)  # non-first (need context)
     start, end, _, d = bounds[i]
@@ -65,7 +76,8 @@ def inject_abandonment(traj, rng, keep_ticks=1, select="random"):
     verb_ids = np.delete(verb_ids, np.arange(cut_lo, cut_hi))
     noun_ids = np.delete(noun_ids, np.arange(cut_lo, cut_hi))
     onset = start + keep - 1  # the segment's premature end tick (unshifted; cuts are after it)
-    return _result(verb_ids, noun_ids, onset, onset, "abandonment")
+    tick_map = np.concatenate([np.arange(0, cut_lo), np.arange(cut_hi, T)])
+    return _result(verb_ids, noun_ids, onset, onset, "abandonment", tick_map)
 
 
 def inject_omission(traj, rng, select="random"):
@@ -74,12 +86,14 @@ def inject_omission(traj, rng, select="random"):
     verb_ids = np.array(traj["verb_ids"])
     noun_ids = np.array(traj["noun_ids"])
     bounds = _seg_bounds(traj["segments"])
+    T = len(verb_ids)
 
     i = _pick_segment(rng, len(bounds), lo=1, hi=len(bounds) - 1, select=select)  # interior
     start, end, _, _ = bounds[i]
     verb_ids = np.delete(verb_ids, np.arange(start, end))
     noun_ids = np.delete(noun_ids, np.arange(start, end))
-    return _result(verb_ids, noun_ids, start, start, "omission")  # boundary now at `start`
+    tick_map = np.concatenate([np.arange(0, start), np.arange(end, T)])
+    return _result(verb_ids, noun_ids, start, start, "omission", tick_map)  # boundary now at `start`
 
 
 def inject_transposition(traj, rng, select="random"):
@@ -88,6 +102,7 @@ def inject_transposition(traj, rng, select="random"):
     verb_ids = np.array(traj["verb_ids"])
     noun_ids = np.array(traj["noun_ids"])
     bounds = _seg_bounds(traj["segments"])
+    T = len(verb_ids)
 
     i = _pick_segment(rng, len(bounds), lo=1, hi=len(bounds) - 2, select=select)  # i and i+1 interior
     a_start, a_end, _, da = bounds[i]
@@ -98,7 +113,8 @@ def inject_transposition(traj, rng, select="random"):
 
     verb_ids = _swapped(verb_ids)
     noun_ids = _swapped(noun_ids)
-    return _result(verb_ids, noun_ids, a_start, a_start + da + db - 1, "transposition")
+    tick_map = _swapped(np.arange(T))
+    return _result(verb_ids, noun_ids, a_start, a_start + da + db - 1, "transposition", tick_map)
 
 
 def inject_repetition(traj, rng, select="random"):
@@ -107,6 +123,7 @@ def inject_repetition(traj, rng, select="random"):
     verb_ids = np.array(traj["verb_ids"])
     noun_ids = np.array(traj["noun_ids"])
     bounds = _seg_bounds(traj["segments"])
+    T = len(verb_ids)
 
     i = _pick_segment(rng, len(bounds), lo=1, hi=len(bounds) - 1, select=select)  # interior
     start, end, _, d = bounds[i]
@@ -116,7 +133,8 @@ def inject_repetition(traj, rng, select="random"):
 
     verb_ids = _duplicated(verb_ids)
     noun_ids = _duplicated(noun_ids)
-    return _result(verb_ids, noun_ids, end, end + d - 1, "repetition")  # the inserted copy
+    tick_map = _duplicated(np.arange(T))  # many-to-one: the copy's ticks map to their originals
+    return _result(verb_ids, noun_ids, end, end + d - 1, "repetition", tick_map)  # the inserted copy
 
 
 def _pick_segment(rng, n_segments, lo, hi, select):

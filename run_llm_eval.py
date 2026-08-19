@@ -55,7 +55,7 @@ jax.config.update("jax_enable_x64", True)
 # on a step boundary 95% of the time, for all six).
 #
 # It is chosen on measured detection through this file's own step layer (40 real trials, 5
-# injections each, min_run=10). The only axis that separates the available checkpoints is
+# injections each). The only axis that separates the available checkpoints is
 # EFFECTIVE K_recipe -- how many of the 16 nominal recipe components the fit actually uses -- and
 # more of them is measurably WORSE:
 #
@@ -107,13 +107,19 @@ def build_pool(trajectories, rng, inject_params):
 
 
 def steps_and_truth(traj, degraded, lexicon):
-    """Degraded steps, the ground-truth step indices, and the ground-truth correction."""
+    """Degraded steps, the ground-truth step indices, the ground-truth correction, and the
+    debris steps the injection created but which are not themselves ground truth
+    (textify.injection_touched_steps) -- excluded from false-positive scoring in
+    element_metrics.evaluate_steps rather than counted either way."""
     source_steps = textify.steps_from_trajectory(traj, lexicon)
     steps = textify.steps_from_trajectory(degraded, lexicon)
     gt_steps = textify.gt_steps_for_window(steps, degraded["window"])
     source = textify.step_covering_tick(source_steps, degraded["window"][0])
     correction = (source.verb, source.noun, source.duration) if source else None
-    return steps, gt_steps, correction
+    debris = textify.injection_touched_steps(
+        steps, degraded["tick_map"], degraded["edited_ticks"], gt_steps
+    )
+    return steps, gt_steps, correction, debris
 
 
 # --------------------------------------------------------------------------------------------
@@ -135,32 +141,37 @@ def _hsmm_flags(trials, model, chunk_size):
     return flags, traces
 
 
-def hsmm_arm(pool, model, lexicon, chunk_size, min_run):
+def hsmm_arm(pool, model, lexicon, chunk_size):
     """Score the HSMM through the step layer on the shared pool."""
     healthy = [t for t, _ in pool]
     healthy_flags, healthy_traces = _hsmm_flags(healthy, model, chunk_size)
     healthy_verdicts = [
         element_metrics.step_verdicts_from_flags(
-            f, textify.steps_from_trajectory(t, lexicon), trace, lexicon, min_run=min_run
+            f, textify.steps_from_trajectory(t, lexicon), trace, lexicon
         )
         for f, trace, t in zip(healthy_flags, healthy_traces, healthy)
     ]
 
     degraded_by_type = {}
+    artifact_steps = {}
     for error_type in error_injection.ERROR_TYPES:
         trials = [d[error_type] for _, d in pool]
         flags, traces = _hsmm_flags(trials, model, chunk_size)
         rows = []
+        debris_rows = []
         for (traj, degraded), f, trace in zip(pool, flags, traces):
-            steps, gt_steps, correction = steps_and_truth(traj, degraded[error_type], lexicon)
+            steps, gt_steps, correction, debris = steps_and_truth(traj, degraded[error_type], lexicon)
             verdicts = element_metrics.step_verdicts_from_flags(
-                f, steps, trace, lexicon, min_run=min_run
+                f, steps, trace, lexicon
             )
             rows.append((verdicts, gt_steps, correction))
+            debris_rows.append(debris)
         degraded_by_type[error_type] = rows
+        artifact_steps[error_type] = debris_rows
         print(f"  [hsmm/{model['kind']}] {error_type}: {len(rows)} degraded trials", flush=True)
 
-    return element_metrics.evaluate_steps(healthy_verdicts, degraded_by_type)
+    return element_metrics.evaluate_steps(healthy_verdicts, degraded_by_type,
+                                          artifact_steps=artifact_steps)
 
 
 # --------------------------------------------------------------------------------------------
@@ -177,17 +188,22 @@ def llm_arm(pool, lexicon, client, system_prompt, vocab, protocol, tag):
           f"({client.n_would_request} uncached requests so far)", flush=True)
 
     degraded_by_type = {}
+    artifact_steps = {}
     for error_type in error_injection.ERROR_TYPES:
         rows = []
+        debris_rows = []
         for traj, degraded in pool:
-            steps, gt_steps, correction = steps_and_truth(traj, degraded[error_type], lexicon)
+            steps, gt_steps, correction, debris = steps_and_truth(traj, degraded[error_type], lexicon)
             verdicts = detect.run_trial(client, system_prompt, steps, vocab, protocol)
             rows.append((element_metrics.from_llm_verdicts(verdicts), gt_steps, correction))
+            debris_rows.append(debris)
         degraded_by_type[error_type] = rows
+        artifact_steps[error_type] = debris_rows
         print(f"  [{tag}] {error_type}: {len(rows)} degraded trials "
               f"({client.n_would_request} uncached requests so far)", flush=True)
 
-    return element_metrics.evaluate_steps(healthy_verdicts, degraded_by_type)
+    return element_metrics.evaluate_steps(healthy_verdicts, degraded_by_type,
+                                          artifact_steps=artifact_steps)
 
 
 def pool_request_cost(pool, lexicon, protocol):
@@ -221,6 +237,13 @@ def print_report(report, tag, note=None):
     sl = report["step_level"]
     print(f"pooled step-level: precision {sl['precision']:.3f}  recall {sl['recall']:.3f}  "
           f"(tp {sl['tp']}, fp {sl['fp']}, fn {sl['fn']})")
+    tl = report.get("trial_located")
+    if tl:
+        f1 = (2 * tl["precision"] * tl["recall"] / (tl["precision"] + tl["recall"])
+              if (tl["precision"] + tl["recall"]) else 0.0)
+        print(f"TRIAL-LOCATED:     precision {tl['precision']:.3f}  recall {tl['recall']:.3f}  "
+              f"F1 {f1:.3f}   (stray {tl['stray_rate']:.3f}/degraded, "
+              f"healthy {tl['healthy_fpr']:.3f})")
     print(f"parse failure rate: {report['parse_failure_rate']:.3f}")
     print(f"\n{'error type':>14}  {'n':>4}  {'recall':>7}  {'precision':>9}  {'prec_excl_hlt':>13}  "
           f"{'lat(steps)':>10}  {'top pred type':>15}  {'corr v/n':>9}  {'corr dur':>9}")
@@ -253,7 +276,7 @@ BATCH_CAVEAT = (
 # trial pool depends on. --model/--variant/--protocol are deliberately absent -- comparing two
 # models or two prompt variants inside one report is the whole point of merging.
 POOL_DEFINING_ARGS = ("seed", "source", "n", "max_ticks", "max_real", "config", "sequences",
-                      "joint_params", "cascade", "params", "recipe_params", "min_run")
+                      "joint_params", "cascade", "params", "recipe_params")
 
 
 def _write_report(args, reports, incomplete=False):
@@ -468,7 +491,7 @@ def main():
     for name, pool in pools.items():
         if not args.skip_hsmm:
             print(f"\n[{name}] HSMM arm ({model['kind']})")
-            report = hsmm_arm(pool, model, lexicon, args.chunk_size, args.min_run)
+            report = hsmm_arm(pool, model, lexicon, args.chunk_size)
             reports[f"{name}/hsmm-{model['kind']}"] = report
             print_report(report, f"{name} / hsmm-{model['kind']}")
             plotting.save_step_figures(report, args.figures_dir, f"{name}_hsmm_{model['kind']}")

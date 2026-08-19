@@ -17,7 +17,16 @@ from cook_ad.recipe import recipe_hmm, segmentize
 # but computed exactly (quantile.py) rather than parametrically, since their support is a
 # finite, known vocab. Neither family is hand-tuned per state; that per-state calibration is
 # precisely the point of the tail-probability framing.
-DEFAULT_ALPHA = 0.05
+#
+# 5e-3 is the operating point, chosen from run_threshold_sweep.py on 419 real trials x (healthy +
+# 5 injections), scored per-trial on whether the flag landed inside the injection-touched range
+# (docs/eval.md 6). It sits on the shoulder of the trade: trial-level recall 0.453 at precision
+# 0.728 with 14.1% of healthy trials raising any alarm. Loosening to 0.05 buys 16 points of
+# recall for roughly triple the false-alarm rate (41.3%); tightening to 1e-3 gives back 4 points
+# of false alarms for 5 points of recall. Alpha is the ONLY sensitivity knob -- there is no
+# persistence or run-length filter anywhere downstream (docs/eval.md 2) -- so this single number
+# sets the detector's whole operating point.
+DEFAULT_ALPHA = 5e-3
 
 # Only the two duration channels keep a fixed-scalar threshold (already a tail-probability
 # cutoff, not a raw nat value). The five categorical/transition channels are recomputed as
@@ -340,6 +349,26 @@ def emission_thresholds(trace, tables):
     return tables.emit[z] + offset, tables.verb[z] + offset, tables.noun[z] + offset
 
 
+# Numerical tolerance for the three dilution-corrected emission channels (s_emit/s_verb/
+# s_noun) ONLY. For a near-deterministic state whose observed token IS the fitted mode,
+# emission_thresholds' bound s_emit <= offset + s_pure is tight (s_pure ~= 0), i.e. the flag
+# threshold and the score are mathematically the SAME value there -- but they are computed via
+# two independent numerical paths (a logsumexp mixture in emission_surprise vs a direct
+# -log(pi_at_zstar) in emission_thresholds), so at that exact equality they differ only by
+# floating-point noise. Measured directly on real trials: 1e-17 to 4e-17, i.e. ~1 ULP of
+# float64 at these magnitudes. A bare `>` flags that noise as "exceeded" on every well-
+# predicted, high-confidence tick, which is why s_emit alone was firing on ~99% of healthy real
+# trials regardless of alpha (run_threshold_sweep.py, 2026-08-18) -- not a calibration problem,
+# a missing tolerance. EMISSION_FLAG_ATOL sits many orders of magnitude above that noise floor
+# and many orders below any surprise gap ever reported as meaningful in this repo (the smallest
+# reported gaps are hundredths of a nat, not millionths), so it cannot mask a genuine anomaly.
+EMISSION_FLAG_ATOL = 1e-6
+
+
+def _exceeds(value, threshold, atol=EMISSION_FLAG_ATOL):
+    return np.asarray(value) > np.asarray(threshold) + atol
+
+
 def _base_flags(trace, tables, alpha, thresholds):
     """s_emit/s_verb/s_noun (z_star-indexed, dilution-corrected per tick -- see
     emission_thresholds), s_temporal/s_dur_two (duration-channel scalars), and s_transition
@@ -354,9 +383,9 @@ def _base_flags(trace, tables, alpha, thresholds):
     from_state_safe = np.where(from_state_valid, trace.from_state, 0)
 
     return {
-        "s_emit": trace.s_emit > emit_thresh,
-        "s_verb": trace.s_verb > verb_thresh,
-        "s_noun": trace.s_noun > noun_thresh,
+        "s_emit": _exceeds(trace.s_emit, emit_thresh),
+        "s_verb": _exceeds(trace.s_verb, verb_thresh),
+        "s_noun": _exceeds(trace.s_noun, noun_thresh),
         "s_temporal": np.asarray(trace.s_temporal) > resolved["s_temporal"],
         "s_dur_two": np.asarray(trace.s_dur_two) > resolved["s_dur_two"],
         # Boundary mask is load-bearing, not cosmetic: quantile thresholds are not guaranteed

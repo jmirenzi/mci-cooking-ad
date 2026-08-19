@@ -113,12 +113,12 @@ mci-cooking-ad/
 │   ├── data/       parsing, tick binning, label extraction
 │   ├── hsmm/       the model: durations, emissions, messages, EM, joint EM
 │   ├── recipe/     Viterbi segmentation, recipe HMM, cascade→joint warm start
-│   ├── anomaly/    surprise channels, quantile thresholds, narration
+│   ├── anomaly/    surprise channels, quantile thresholds, narration, sequence detector
 │   ├── lifecycle/  frozen/live dual model, online updates, drift detection
-│   ├── eval/       batched trace computation, detection metrics, plots
+│   ├── eval/       batched traces, tick/step/counterfactual metrics, plots
 │   ├── synthetic/  ancestral sampling + the five injected error types
 │   └── llm/        trial-as-text rendering + the LLM comparison baseline
-├── tests/          13 pytest modules, one per src module of substance
+├── tests/          one pytest module per src module of substance
 └── *.py            top-level runner / export / render scripts (see below)
 ```
 
@@ -202,13 +202,20 @@ resumable checkpoints every 5 iterations. → `joint_params.npz` + `.meta.json`.
 
 ```bash
 python run_anomaly.py    --inject-noun --plot   # single-trial channel trace
-python run_evaluation.py --min-run 10           # full 5-error precision/recall/latency sweep
+python run_evaluation.py                        # full 5-error precision/recall/latency sweep
 python run_lifecycle.py                         # frozen/live dual-model demo
 python run_rollout_demo.py --scenario all       # per-user calibrated rollout
 python run_llm_eval.py --dry-run                # LLM baseline: cost the sweep before sending
 python run_llm_eval.py --skip-llm               # ...or score just the HSMM at step level
 python render_llm_compare_png.py                # HSMM vs LLM figures from the report JSON
+python run_threshold_sweep.py                   # accuracy vs alpha, per granularity
 ```
+
+`run_threshold_sweep.py` is the calibration diagnostic: it computes traces once and re-flags them
+across an $\alpha$ grid, reporting precision/recall/FPR at tick, step and trial granularity.
+Reach for it before adding any filtering rule — a channel whose false-positive rate is flat in
+$\alpha$ is not being gated by its threshold, and no amount of downstream filtering fixes that
+(see [`eval.md`](eval.md) §6).
 
 `run_llm_eval.py` is the odd one out: it scores an **LLM reading each trial as text** against the
 HSMM on a shared unit (one run-length-encoded step), on byte-identical injected errors. It is a

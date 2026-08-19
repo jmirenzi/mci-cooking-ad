@@ -26,8 +26,7 @@ def _usable(trajectories):
     return [t for t in trajectories if len(t["segments"]) >= error_injection.MIN_SEGMENTS]
 
 
-def evaluate_source(trajectories, hsmm_params, recipe_params, d_max, rng, tag, n_nouns, chunk_size=16,
-                     min_run=1):
+def evaluate_source(trajectories, hsmm_params, recipe_params, d_max, rng, tag, n_nouns, chunk_size=16):
     """Run the full 5-error evaluation for one healthy source (synthetic or real)."""
     trajectories = _usable(trajectories)
     print(f"\n[{tag}] {len(trajectories)} usable trajectories (>= {error_injection.MIN_SEGMENTS} segments)",
@@ -46,7 +45,7 @@ def evaluate_source(trajectories, hsmm_params, recipe_params, d_max, rng, tag, n
         degraded_traj_pool.extend(degraded)
         print(f"  [{tag}] {error_type}: evaluated {len(degraded)} degraded trials", flush=True)
 
-    report = metrics.evaluate(healthy_flags, degraded_by_type, min_run=min_run)
+    report = metrics.evaluate(healthy_flags, degraded_by_type)
     report["kl_sanity"] = metrics.kl_sanity(trajectories, degraded_traj_pool, n_nouns)
     pooled, per_trial = surprise.belief_diagnostic(all_traces)
     report["belief_diagnostic"] = {"pooled_frac_below_0.8": pooled, "mean_per_trial_frac_below_0.8": per_trial}
@@ -65,7 +64,7 @@ def _flags_for_all_joint(sequences, joint_hsmm_params, d_max, chunk_size):
 
 
 def evaluate_source_joint(trajectories, joint_hsmm_params, marginal_hsmm_params, d_max, rng, tag, n_nouns,
-                          chunk_size=16, min_run=1):
+                          chunk_size=16):
     """Joint-model analogue of evaluate_source. error_injection is unchanged and recipe-
     agnostic by construction (it only reads emissions), so it's handed the pi-weighted
     marginal collapse of the joint params (joint_params.collapse_to_marginal) rather than a
@@ -89,7 +88,7 @@ def evaluate_source_joint(trajectories, joint_hsmm_params, marginal_hsmm_params,
         degraded_traj_pool.extend(degraded)
         print(f"  [{tag}] {error_type}: evaluated {len(degraded)} degraded trials", flush=True)
 
-    report = metrics.evaluate(healthy_flags, degraded_by_type, min_run=min_run)
+    report = metrics.evaluate(healthy_flags, degraded_by_type)
     report["kl_sanity"] = metrics.kl_sanity(trajectories, degraded_traj_pool, n_nouns)
     pooled, per_trial = surprise.belief_diagnostic(all_traces)
     report["belief_diagnostic"] = {"pooled_frac_below_0.8": pooled, "mean_per_trial_frac_below_0.8": per_trial}
@@ -123,7 +122,7 @@ def _run_cascade(args, config, d_max, n_nouns):
 
     synthetic = generate.generate_healthy(hsmm_params, args.n, rng, args.max_ticks, d_max)
     syn_report = evaluate_source(synthetic, hsmm_params, recipe_params, d_max, rng, "cascade/synthetic", n_nouns,
-                                  chunk_size=args.chunk_size, min_run=args.min_run)
+                                  chunk_size=args.chunk_size)
     _print_report(syn_report, "cascade/synthetic")
     plotting.save_figures(syn_report, args.figures_dir, "cascade_synthetic")
 
@@ -134,7 +133,7 @@ def _run_cascade(args, config, d_max, n_nouns):
         for s in sequences[: args.max_real]
     ]
     real_report = evaluate_source(real, hsmm_params, recipe_params, d_max, rng, "cascade/real", n_nouns,
-                                   chunk_size=args.chunk_size, min_run=args.min_run)
+                                   chunk_size=args.chunk_size)
     _print_report(real_report, "cascade/real")
     plotting.save_figures(real_report, args.figures_dir, "cascade_real")
 
@@ -149,7 +148,7 @@ def _run_joint(args, config, d_max, n_nouns):
     synthetic = generate.generate_healthy_joint(joint_hsmm_params, args.n, rng, args.max_ticks, d_max)
     syn_report = evaluate_source_joint(
         synthetic, joint_hsmm_params, marginal_hsmm_params, d_max, rng, "joint/synthetic", n_nouns,
-        chunk_size=args.chunk_size, min_run=args.min_run,
+        chunk_size=args.chunk_size,
     )
     _print_report(syn_report, "joint/synthetic")
     plotting.save_figures(syn_report, args.figures_dir, "joint_synthetic")
@@ -162,7 +161,7 @@ def _run_joint(args, config, d_max, n_nouns):
     ]
     real_report = evaluate_source_joint(
         real, joint_hsmm_params, marginal_hsmm_params, d_max, rng, "joint/real", n_nouns,
-        chunk_size=args.chunk_size, min_run=args.min_run,
+        chunk_size=args.chunk_size,
     )
     _print_report(real_report, "joint/real")
     plotting.save_figures(real_report, args.figures_dir, "joint_real")
@@ -193,15 +192,6 @@ def main():
     parser.add_argument("--chunk-size", type=int, default=16,
                         help="batch chunk size for eval.batch.compute_traces[_joint]; lower this "
                              "at full scale (K=64, D_max=200, T_max~650) to bound peak memory")
-    parser.add_argument("--min-run", type=int, default=10,
-                        help="minimum run of CONSECUTIVE flagged ticks required for a false-"
-                             "positive determination (healthy trials, and degraded trials outside "
-                             "their injection window); in-window detection stays single-tick "
-                             "sensitive regardless. Default 10 chosen by sweeping healthy full-"
-                             "scale trials' longest-flagged-run distribution: min_run=1 (any "
-                             "single flagged tick) gives ~100%% healthy false-positive rate purely "
-                             "from alpha=0.05-per-tick arithmetic over ~150-tick trials, for both "
-                             "cascade and joint; min_run=10 brings both to ~6-10%%.")
     args = parser.parse_args()
 
     config = load_config(args.config)

@@ -108,6 +108,35 @@ def excess_quantile_threshold(log_trans_r, log_trans_marginal, alpha):
     return np.array([_tail_threshold(scores[i], probs[i], alpha) for i in range(k)])
 
 
+class SequenceThresholds(NamedTuple):
+    transposition: float  # nats
+    repetition: float     # duration ratio
+
+
+def sequence_thresholds(transposition_gains, repetition_ratios, alpha):
+    """Empirical (1 - alpha) quantile thresholds for anomaly/sequence.py's two magnitude tests,
+    calibrated the same way every other channel is: collect the statistic's distribution over
+    HEALTHY trials and take the largest achievable tail mass <= alpha (_tail_threshold) -- here
+    over an EMPIRICAL sample rather than a fitted discrete distribution, so each observed value
+    gets equal mass 1/N. `_tail_threshold` then returns the empirical (1 - alpha) quantile under
+    the same strict '>' flag convention used everywhere else in this module.
+
+    The omission test has no threshold here: it reuses `narrate.missing_step`'s own fixed
+    `min_gain` bridging-gain gate directly, not a healthy-trial quantile (anomaly/sequence.py).
+    """
+    def _empirical(values):
+        values = np.asarray(values, dtype=np.float64)
+        if values.size == 0:
+            return float("inf")
+        probs = np.full(values.shape, 1.0 / values.size)
+        return _tail_threshold(values, probs, alpha)
+
+    return SequenceThresholds(
+        transposition=_empirical(transposition_gains),
+        repetition=_empirical(repetition_ratios),
+    )
+
+
 class ThresholdTables(NamedTuple):
     emit: np.ndarray        # (K,)
     verb: np.ndarray        # (K,)
