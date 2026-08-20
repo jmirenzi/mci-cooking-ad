@@ -237,10 +237,18 @@ coherent value rather than the winning one. Do not "fix" it without re-measuring
   A recipe assignment built causally from the trial prefix — which is what a live deployment
   would have anyway — sidesteps it without touching the transition rows, and is the obvious next
   thing to try.
-- The duration channels are at their own ceiling, not below it: `tools_duration_power.py` on the
-  final model puts the 1-tick (abandonment) ceiling at 0.699 and the 2x (repetition) ceiling at
-  0.235 for alpha = 2e-2, against observed 0.67 and 0.37.
-- Repetition sits at 0.39 against a duration-limited ceiling near 0.5.
+- **`s_dur_two` is already delivering what the fitted durations allow.**
+  `tools_duration_power.py` re-scores every healthy segment at 1 tick (what abandonment
+  truncates to) and at 2x (what repetition collapses to, since banned self-transitions force
+  Viterbi to merge the duplicated run), against that (recipe, state) cell's own fitted NB. At
+  alpha = 2e-2 on the final model that predicts 0.699 and 0.235; `s_dur_two` observed 0.661 and
+  0.259. Read it as a prediction for **that one channel**, not a bound on the error type:
+  abandonment's union recall is 0.669 and `s_dur_two` supplies 0.661 of it, so there the two
+  coincide — but repetition's union is 0.365, of which the live survival channel `s_temporal`
+  (which this diagnostic does not model) carries 0.341. The number moves only when the duration
+  fit's spread moves, which is why the `refit_durations.py` CV 0.63 -> 0.42 shows up here.
+- Repetition is the weakest type at 0.37, and both channels that catch it are duration-driven,
+  so it moves only with the duration fit's spread.
 
 ---
 
