@@ -47,6 +47,7 @@ jax.config.update("jax_enable_x64", True)
 
 from cook_ad.anomaly import narrate, surprise
 from cook_ad.data.config import load_config
+from cook_ad.data import split as split_mod
 from cook_ad.eval import batch
 from cook_ad.hsmm import joint_params
 from cook_ad.llm import textify
@@ -95,6 +96,10 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--chunk-size", type=int, default=8)
     ap.add_argument("--out", default="dataset/processed/breakfast/threshold_sweep.json")
+    ap.add_argument("--split-file", default=None,
+                    help="path to a split.json from split_dataset.py; if given, the real trial "
+                         "pool is restricted to --split-part before the --max-real cap")
+    ap.add_argument("--split-part", choices=["train", "test"], default=None)
     args = ap.parse_args()
 
     d_max = load_config(args.config)["duration"]["d_max_ticks"]
@@ -103,7 +108,13 @@ def main():
     marg = joint_params.collapse_to_marginal(jp)
     lexicon = narrate.Lexicon(vocab, marg)
 
-    seqs = json.load(open(args.sequences))[: args.max_real]
+    seqs = json.load(open(args.sequences))
+    if args.split_file:
+        if args.split_part is None:
+            ap.error("--split-part is required when --split-file is given")
+        split = split_mod.load_split(args.split_file)
+        seqs = split_mod.filter_sequences(seqs, split, args.split_part)
+    seqs = seqs[: args.max_real]
     traj = [generate.trajectory_from_real_joint(jp, s["verb_ids"], s["noun_ids"], d_max) for s in seqs]
     usable = [t for t in traj if len(t["segments"]) >= error_injection.MIN_SEGMENTS]
     print(f"{len(usable)} usable real trials", flush=True)
@@ -143,10 +154,15 @@ def main():
         reverse=True,
     )
 
+    buckets = ("raw", *CHANNELS)
+
     results = []
     for alpha in alphas:
-        counts = {"raw": {"tick": [0, 0, 0, 0], "step": [0, 0, 0, 0],
-                          "trial": [0, 0, 0, 0], "trial_loc": [0, 0, 0, 0]}}
+        counts = {
+            bucket: {"tick": [0, 0, 0, 0], "step": [0, 0, 0, 0],
+                     "trial": [0, 0, 0, 0], "trial_loc": [0, 0, 0, 0]}
+            for bucket in buckets
+        }
         # each [tp, tn, fp, fn]
 
         def _accumulate(mask, static, gt_trial_positive, bucket):
@@ -201,6 +217,12 @@ def main():
                 flags = surprise.flag_joint(trace, log_probs, rh, log_trans_marginal, alpha=alpha)
                 raw_mask = _union_mask(flags, CHANNELS)
                 _accumulate(raw_mask, static, gt_trial_positive, "raw")
+                # Same cheap re-flagging, but each channel scored ALONE rather than unioned --
+                # the diagnostic for whether channels have different natural alpha/FPR curves
+                # and would benefit from separate thresholds, as opposed to the single shared
+                # alpha the union above uses.
+                for ch in CHANNELS:
+                    _accumulate(flags[ch], static, gt_trial_positive, ch)
 
         def _acc(c):
             tp, tn, fp, fn = c
@@ -214,8 +236,9 @@ def main():
             }
 
         row = {"alpha": alpha}
-        for level in ("tick", "step", "trial", "trial_loc"):
-            row[f"raw_{level}"] = _acc(counts["raw"][level])
+        for bucket in buckets:
+            for level in ("tick", "step", "trial", "trial_loc"):
+                row[f"{bucket}_{level}"] = _acc(counts[bucket][level])
         results.append(row)
         print(
             f"alpha={alpha:.2e}  "
