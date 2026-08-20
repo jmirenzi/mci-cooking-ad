@@ -241,3 +241,29 @@ coherent value rather than the winning one. Do not "fix" it without re-measuring
   final model puts the 1-tick (abandonment) ceiling at 0.699 and the 2x (repetition) ceiling at
   0.235 for alpha = 2e-2, against observed 0.67 and 0.37.
 - Repetition sits at 0.39 against a duration-limited ceiling near 0.5.
+
+---
+
+## 7. Axes already swept, so you don't sweep them again
+
+Every one of these was measured on train-split `trial_loc` accuracy against the §5 pipeline;
+none of them beat it.
+
+| axis | tried | best |
+|---|---|---|
+| warm start | cascade, lexical | lexical |
+| iteration-0 prior scale | 0.0, 1.0 | **0.0** (see §5) |
+| $K$ (subtask) | 48, 64 | 64 — 48 costs 0.008 |
+| $K_R$ (recipe) | 8, 10, 12, 16, 24, 32 | 16 |
+| soft-EM iterations before hard EM | 10, 20, 30, 40, 54–60 | 54–60; 10–40 all sit at 0.518 |
+| hard EM | off, 5, 20 iterations | 5 |
+| hard-EM `alpha_trans` | 0.1, 0.5, 2.0 | flat at 0.554–0.556 |
+| hard-EM `kappa` | 1, 5, 20 | flat at 0.556 |
+| emission anchor | 50, frozen | 50 — freezing costs 2.4 points of recall |
+| transition shift $s$ | 0.3, 0.5, 0.7, 0.9, 1.0, 2, 4 | 0.7; 0.3–0.9 within 0.007 |
+| pooled backoff $\tau$ | 0, 1, 2, 3, 4, 5, 10, 30 | 2; 0–5 within 0.006 |
+| unigram backoff $\tau$ | 1, 3, 10, 20, 50, 100 | none — see §6 |
+| duration refit `kappa` | 0.001, 1, 20, 100 | 0.001 |
+
+The plateau across the last four rows is worth reading on its own: the result is not perched on
+a tuned operating point.
