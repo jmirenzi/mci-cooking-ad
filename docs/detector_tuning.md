@@ -61,6 +61,19 @@ training data never contains, through the decode, to the flag:
 | ...junction still present in the decode | **0.135** | 0.413 |
 | ...and the transition channel fires there | 0.114 | 0.161 |
 
+After the §4 changes the same measurement reads:
+
+| | omission | transposition |
+|---|---|---|
+| trials with a never-seen created junction | 0.222 | 0.534 |
+| ...junction still present in the decode | 0.204 (**92%** of them) | 0.505 (**95%**) |
+| ...and the transition channel fires there | 0.198 (**97%** of survivors) | 0.505 (**100%**) |
+
+The channel is now essentially perfectly efficient on what reaches it; what limits it is how much
+reaches it, which is §2's data ceiling and the recipe flip. (The *fraction* of trials with a
+never-seen junction drops because the baseline's duplicate states inflate the bigram inventory
+with spurious novelty — pairs of duplicate states that stand for one real transition.)
+
 **70% of omission anomalies are re-explained away by the decoder before any channel sees them.**
 The cause is duplicate states: 10 of the 48 distinct (verb,noun) pairs are split across two to
 four states (`stall/kitchen` across four), and a duplicate state is a legal alternative route
@@ -166,6 +179,15 @@ Reproduce:
   perfect (recipe ARI 0.937, matched accuracy 0.908) but does not improve detection — consistent
   with the earlier finding that recipe ARI and detection are decoupled.
 - Transition backoff to the recipe's own state-occupancy unigram (`smooth_params.py
-  --unigram-tau`) was built to decouple "wrong recipe" from "wrong order"; measured, it does not
-  beat the plain shift.
+  --unigram-tau`) was built to decouple "wrong recipe" from "wrong order". Measured across
+  tau = 1 … 100 it never beats the plain shift, and at the taus large enough to actually lift a
+  wrong-order transition off the floor it destroys the signal it was meant to preserve (omission
+  recall 0.37 → 0.04 at tau = 100). The tension looks structural: the cells that give the recipe
+  posterior its escape hatch are exactly the cells `s_recipe_transition` needs to be sharp on.
+  A recipe assignment built causally from the trial prefix — which is what a live deployment
+  would have anyway — sidesteps it without touching the transition rows, and is the obvious next
+  thing to try.
+- The duration channels are at their own ceiling, not below it: `tools_duration_power.py` on the
+  final model puts the 1-tick (abandonment) ceiling at 0.699 and the 2x (repetition) ceiling at
+  0.235 for alpha = 2e-2, against observed 0.67 and 0.37.
 - Repetition sits at 0.39 against a duration-limited ceiling near 0.5.
