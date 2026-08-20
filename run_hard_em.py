@@ -1,33 +1,24 @@
-"""Viterbi (hard-assignment) EM for the joint model, as an alternative to `joint_em`'s soft EM.
+"""Viterbi (hard-assignment) EM for the joint model -- an alternative optimiser to `joint_em`'s
+soft EM, maximising over the MAP segmentation rather than marginalising it out.
 
-Why bother, when soft EM is the principled one
-----------------------------------------------
-Soft EM maximises the marginal likelihood, and on this data that objective is measurably not
-the thing the detector needs. Two direct observations on the 402-trial train split:
+    max_theta max_z log P_theta(o, z)   in place of   max_theta log sum_z P_theta(o, z)
 
-* the lexical warm start begins at a HIGHER objective (-12948) than the cascade-warm-started fit
-  ever CONVERGES to (-14245), so likelihood does not rank the two initialisations the way
-  detection does;
-* running soft EM from that warm start then *lowers* the objective for a stretch while degrading
-  per-tick subtask ARI from 0.999 to 0.940 -- the fit gets blurrier in exactly the way that lets
-  Viterbi re-explain an injected anomaly through an alternative state path.
+Hard EM is the wrong estimator if you want calibrated posterior uncertainty. It is the right one
+here because every surprise channel scores against `z_star`: the detector reads the MAP
+segmentation, so the counts the model is fit from and the decode the detector reads become the
+same object.
 
-Hard EM optimises the joint likelihood of parameters AND the MAP segmentation instead. It is the
-wrong estimator if you want calibrated posterior uncertainty; it is the right one if what you
-need is that the decode the detector reads and the counts the model was fit from are the SAME
-object. Every surprise channel scores against `z_star`, so the model may as well be fit to
-`z_star`.
-
-Each iteration is: recipe-conditioned Viterbi decode of every trial -> hard init/transition
-counts and duration histograms per (recipe, state) -> Dirichlet-MAP renormalisation and a
-shrunk NB duration fit. The trial's final segment is right-censored and goes into the censoring
-histogram, imputed by `durations.impute_censored_histogram` exactly as the soft M-step does;
-treating it as exactly observed would bias every duration short.
+Each iteration is a recipe-conditioned Viterbi decode of every trial -> hard init/transition
+counts and per-(recipe, state) duration histograms -> the same Dirichlet-MAP renormalisation and
+shrunk NB duration fit the soft M-step uses. Each trial's final segment is right-censored and
+goes into the censoring histogram, imputed by `durations.impute_censored_histogram` exactly as
+the soft M-step does; treating it as exactly observed would bias every duration short.
 
 Emissions stay pinned to the lexical anchor throughout (--anchor), since the (verb,noun) pair
-inventory is what defines the states and is not in question.
+inventory is what defines the states and is not in question. Full treatment in docs/hsmm.md 7,
+including why the objective is not what these fits are selected on.
 
-    ./py run_hard_em.py --split-part train --out runs/joint_hard.npz --iters 8
+    ./py run_hard_em.py --split-part train --out runs/joint_hard.npz --iters 5
 """
 import argparse
 import json

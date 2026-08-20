@@ -26,7 +26,6 @@ the design constraint the rest of the architecture serves.
 | [`eval.md`](eval.md) | `src/cook_ad/eval/` | batched trace computation, precision/recall/latency metrics, figures |
 | [`synthetic.md`](synthetic.md) | `src/cook_ad/synthetic/` | ancestral sampling and the five canonical injected errors |
 | [`llm.md`](llm.md) | `src/cook_ad/llm/`, `eval/element_metrics.py` | the LLM comparison baseline and the step-level metrics that make it comparable |
-| [`detector_tuning.md`](detector_tuning.md) | `recipe/lexical_init.py`, `run_hard_em.py`, `smooth_params.py`, `refit_durations.py` | where trial_loc accuracy actually leaks, and the training-side changes that move it |
 
 ---
 
@@ -199,18 +198,30 @@ python run_joint.py --config configs/breakfast.yaml   # add --resume to continue
 Warm-starts from the two cascade artifacts, then runs a single deterministic joint EM with
 resumable checkpoints every 5 iterations. → `joint_params.npz` + `.meta.json`.
 
-There is a second, measurably better route to the same artifact that skips the cascade entirely
-— a warm start built from the observed (verb,noun) inventory, a Viterbi-EM polish, and two
-post-fit re-parameterisations. It is documented, with the measurements that motivate each step,
-in [`detector_tuning.md`](detector_tuning.md):
+**4b — Or fit the joint model without the cascade**
+
+The same artifact, from a warm start built out of the observation stream instead of steps 2–3,
+then a Viterbi-EM polish and two post-fit re-parameterisations. This is the route that fits the
+better detector; steps 2–3 are still the reference implementation of the cascade.
 
 ```bash
-python run_joint_lexical.py --split-part train --out runs/joint_lex.npz --anchor 50 --max-iters 60
+python run_joint_lexical.py --split-part train --out runs/joint_lex.npz \
+    --anchor 50 --max-iters 60 --init-prior-scale 0.0
 python run_hard_em.py --split-part train --out runs/joint_sh.npz \
     --init-from runs/joint_lex.npz --keep-init-emissions --iters 5
 python smooth_params.py    --in runs/joint_sh.npz  --out runs/joint_sh_s.npz --strength 0.7 --backoff-tau 2
 python refit_durations.py  --in runs/joint_sh_s.npz --out runs/joint_final.npz --kappa 0.001
 ```
+
+| Step | What it does | Documented in |
+|---|---|---|
+| `run_joint_lexical.py` | one subtask state per observed (verb,noun) pair; recipes seeded by bag-of-pairs k-means; emissions held by a per-state anchor prior | [`recipe.md`](recipe.md) §4 |
+| `run_hard_em.py` | Viterbi EM — fits the model to the MAP segmentation the detector actually reads | [`hsmm.md`](hsmm.md) §7 |
+| `smooth_params.py` | restores the singleton transitions the Dirichlet-MAP mode erases | [`hsmm.md`](hsmm.md) §3 |
+| `refit_durations.py` | hard-assignment duration M-step, sweepable in `kappa` without a full EM run | [`hsmm.md`](hsmm.md) §2.5 |
+
+`--init-prior-scale 0.0` is deliberate and is *not* the default — see [`recipe.md`](recipe.md) §4
+before changing it.
 
 **5 — Analyse / evaluate / demo**
 
@@ -228,13 +239,13 @@ python run_sequence_eval.py                     # segment-sequence detector vs t
 python run_detect_eval.py --split-part train    # one trial_loc scorecard: alpha curve x error type x channel
 ```
 
-`run_detect_eval.py` is the scorecard the training-side work in [`detector_tuning.md`](detector_tuning.md)
-is selected on. It reports the same `trial_loc` metric `run_threshold_sweep.py` defines, on the
-same ground-truth convention, but adds the per-error-type and per-channel breakdown in one pass
-and builds its healthy pool with the batched `generate.trajectories_from_real_joint`, so a full
-402-trial sweep is minutes rather than most of an hour. **Read accuracy, not F1**: with a
-1-healthy : 5-degraded pool the trivial always-flag detector scores F1 0.625
-([`detector_tuning.md`](detector_tuning.md) §0).
+`run_detect_eval.py` reports the same `trial_loc` metric `run_threshold_sweep.py` defines, on the
+same ground-truth convention, plus the per-error-type and per-channel breakdown — and fast enough
+to be used as a *selection* criterion between fits rather than only as a final report
+([`eval.md`](eval.md) §7). **Read accuracy, not F1**: with a 1-healthy : 5-degraded pool the
+trivial always-flag detector already scores F1 0.625, and `report_final.py` is what fixes
+$\alpha$ on train before quoting test. The `tools_*.py` scripts ([`eval.md`](eval.md) §8) answer
+one question each about a fitted model, for localising a loss the scorecard surfaces.
 
 `run_counterfactual.py` scores each degraded trial against its own healthy counterfactual, which
 supplies the matched null a raw recall number lacks ([`eval.md`](eval.md) §5) — reach for it before

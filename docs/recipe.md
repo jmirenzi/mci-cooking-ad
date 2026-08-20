@@ -5,7 +5,7 @@
 | `segmentize.py` | max-product (Viterbi) decoding of the HSMM → segments |
 | `recipe_hmm.py` | the cascade's stage-2 discrete HMM over segment symbols, + clustering metrics |
 | `warm_start.py` | cascade artifacts → the joint model's iteration-0 parameters |
-| `lexical_init.py` | an alternative iteration-0 state that needs no cascade at all: one subtask state per observed (verb,noun) pair, recipes seeded by bag-of-pairs k-means, emissions held by a per-state anchor prior — see [`detector_tuning.md`](detector_tuning.md) |
+| `lexical_init.py` | the observation-derived alternative to `warm_start.py`: one subtask state per observed (verb,noun) pair, recipes seeded by bag-of-pairs k-means |
 
 This package sits between "a fitted HSMM" and "a per-trial interpretation of what happened".
 
@@ -272,3 +272,83 @@ softens everything on iteration 1.
 differ in state, because the underlying HSMM's transition matrix already had $A_{kk} = -\infty$ at
 segmentation time. The final `* (1 - I)` in `cascade_to_joint` is belt-and-braces, and matters only
 for the fallback path where `fallback_trans` is copied wholesale.
+
+---
+
+## 4. `lexical_init.py` — the observation-derived warm start
+
+`warm_start.cascade_to_joint` (§3) builds iteration 0 from a fitted cascade.
+`lexical_init.lexical_to_joint` builds it from the observation stream directly, and needs no
+cascade artifacts at all. Both return a `JointHSMMParams`; they are interchangeable at the call
+site (`run_joint.py` versus `run_joint_lexical.py`).
+
+### Why the observations already contain the state inventory
+
+The tick stream is coarse action labels, one per second, constant within an annotated action
+(see [`data.md`](data.md)). A maximal run of constant $(v,n)$ is therefore exactly one action
+instance, and the set of distinct observed pairs is the action inventory — 48 of them on the
+full corpus, recoverable from `sequences.json` alone. `labels.json` is not read here and must
+not be.
+
+The cascade route spends its EM budget rediscovering that inventory and does not quite arrive:
+its fitted emissions are near-deterministic (occupancy-weighted purity 0.986) and its boundaries
+agree with the $(v,n)$ run structure (boundary F1 0.975), but 10 of the 48 pairs end up **split
+across two to four states**. That splitting is what the structural surprise channels lose to:
+
+- one action's transition mass is divided across its duplicate states, so a bigram observed 40
+  times is estimated from four rows of ~10 — flattening $A^{(r)}$ exactly where
+  `anomaly/quantile.transition_quantile_threshold` reads it;
+- a duplicate state is a **legal alternative path**, so Viterbi can re-explain an anomalous
+  transition by routing through the duplicate instead of paying the ~30 nats the real one costs.
+  Measured on injected omissions, only 30% of never-before-seen junctions survive the decode
+  under a cascade-started fit, against 92% under this one.
+
+### The construction
+
+1. `observed_pairs` — distinct $(v,n)$ pairs, most frequent first, keeping those covering at
+   least `MIN_PAIR_TICKS = 5` ticks. State $k$ *is* pair $k$.
+2. `anchored_emission_counts` — $(K,V)$ / $(K,N)$ Dirichlet pseudocounts with `ANCHOR_MASS = 50`
+   on state $k$'s own two tokens and `BACKGROUND_MASS = 1` spread uniformly over the rest of each
+   vocabulary. Near-deterministic but never exactly zero: the emission channels need a finite,
+   calibratable surprise for an off-pair observation, not $-\infty$. Weak-limit headroom states
+   beyond `len(pairs)` get a flat row.
+3. `hard_segments` — run-length-encode each trial over those pairs. A run whose pair fell below
+   `min_ticks` is folded into a neighbour rather than dropped, so the segmentation still tiles
+   the trial exactly; every downstream consumer assumes $\sum_j d_j = T$.
+4. `cluster_recipes` — spherical k-means on L1-normalised bag-of-pair histograms. A recipe is
+   characterised by *which actions it contains*, and a trial's bag of pair frequencies states
+   that directly, whereas the mixture has to infer it through a $K_R$-way comparison of full HSMM
+   likelihoods. Empty clusters are re-seeded at the trial furthest from its own centroid, so the
+   weak-limit prior — not this function — is what is allowed to kill a recipe off.
+5. Per-recipe hard init/transition counts and per-$(r,k)$ duration histograms from (3) and (4),
+   with the duration fit shrunk toward the pooled-over-recipes per-state shape (`kappa`), exactly
+   as §3 does.
+
+Because (2) makes the decode near-deterministic and (3) is that same decode, iteration 0 is
+self-consistent: the counts describe exactly the segmentation the iteration-0 emissions imply.
+
+### Keeping the anchor across EM — `emit_prior_v` / `emit_prior_n`
+
+A flat emission prior says every state's emission is a priori the same, which is right when the
+states are anonymous and wrong once the initialisation has given state $k$ a meaning. The
+anchor matrices from (2) are returned in `info` and passed to `joint_em.run_joint_em` as
+`emit_prior_v`/`emit_prior_n`, replacing the flat $\alpha_{\text{emit}}/\text{width}$ term in
+the M-step ([`hsmm.md`](hsmm.md) §6). `freeze_emissions=True` is the hard limit of the same idea.
+
+### `init_prior_scale`
+
+Scales the Dirichlet prior added to the **iteration-0** init/transition/$\pi$ counts; the
+M-step's own prior is unaffected. The coherent value is 1.0 and it is the default, for the same
+reason [`hsmm.md`](hsmm.md) §3 gives: without it, `params._row_normalize`'s
+$\max(c-1,\varepsilon)$ sends a bigram observed exactly once to the floor, and roughly half the
+bigrams in a 25-trial recipe cluster are singletons.
+
+0.0 nonetheless fits a measurably better detector, and the difference is not marginal. With the
+prior on, soft EM converges, ends at a higher objective ($-12594$ against $-12931$) and holds
+per-tick subtask ARI at 0.999 instead of drifting to 0.94; with it off, `trial_loc` train
+accuracy is 0.556 against 0.518. The finished models differ in transition sparsity — median row
+entropy 0.470 against 0.518 — which is the quantity $s_{\text{transition}}$ actually reads;
+running the first E-step against an almost-hard transition structure appears to keep the
+responsibilities concentrated. That is an observation, not a derivation. The knob exists so the
+choice is explicit rather than accidental, and it defaults to the coherent value, not the
+winning one.
