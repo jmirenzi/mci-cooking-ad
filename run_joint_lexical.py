@@ -54,6 +54,11 @@ def main():
                     help="Dirichlet concentration for the per-recipe transition rows; alpha/K "
                          "per cell, so smaller = sparser A and a sharper s_transition null")
     ap.add_argument("--kappa", type=float, default=None, help="override duration.shrinkage_kappa")
+    ap.add_argument("--init-prior-scale", type=float, default=1.0,
+                    help="scale on the Dirichlet prior added to the ITERATION-0 init/trans/pi "
+                         "counts (the M-step's own prior is unaffected). 0.0 is what the best "
+                         "measured model uses -- see lexical_init.lexical_to_joint's docstring "
+                         "for the measurement and why it is not the default")
     ap.add_argument("--snapshot-every", type=int, default=0,
                     help="also write <out>.iterNN.npz every N iterations. EM's objective is a "
                          "poor proxy for detection here -- the lexical init starts at a better "
@@ -89,6 +94,7 @@ def main():
         kappa, seed=args.seed, min_ticks=args.min_pair_ticks,
         anchor=args.anchor, background=args.background,
         alpha_init=args.alpha_init, alpha_trans=args.alpha_trans, alpha_pi=alpha_pi,
+        init_prior_scale=args.init_prior_scale,
     )
     print(f"lexical warm start: {time.time() - t0:.1f}s, "
           f"{len(info['pairs'])} (verb,noun) states used of K={k_subtask}", flush=True)

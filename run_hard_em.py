@@ -114,13 +114,21 @@ def main():
     joined = [labels[s["trial_id"]] for s in sequences]
     print(f"trials: {len(sequences)}  K={k_subtask} K_R={k_recipe}", flush=True)
 
+    if args.init_from:
+        # K / K_R come from the checkpoint, not the config: --init-from is usually pointed at a
+        # fit whose state count differs from configs/breakfast.yaml's nominal weak limit, and
+        # silently mixing the two shapes surfaces much later as an einsum size mismatch inside
+        # the duration M-step.
+        loaded = joint_params.load_params(args.init_from)
+        k_recipe, k_subtask = loaded.init_counts.shape
+        print(f"init-from {args.init_from}: K={k_subtask} K_R={k_recipe}", flush=True)
+
     p, info = lexical_init.lexical_to_joint(
         sequences, k_subtask, k_recipe, d_max, cfg["vocab"]["verbs"], cfg["vocab"]["nouns"],
         kappa, anchor=args.anchor, background=args.background,
         alpha_init=args.alpha_init, alpha_trans=args.alpha_trans, alpha_pi=alpha_pi,
     )
     if args.init_from:
-        loaded = joint_params.load_params(args.init_from)
         p = loaded if args.keep_init_emissions else loaded._replace(
             verb_counts=p.verb_counts, noun_counts=p.noun_counts
         )

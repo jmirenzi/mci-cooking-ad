@@ -195,7 +195,8 @@ def _init_trans_dur_counts(segments_by_trial, assign, k_subtask, k_recipe, d_max
 
 def lexical_to_joint(sequences, k_subtask, k_recipe, d_max, vocab_verbs, vocab_nouns, kappa,
                      seed=0, min_ticks=MIN_PAIR_TICKS, anchor=ANCHOR_MASS,
-                     background=BACKGROUND_MASS, alpha_init=0.5, alpha_trans=0.5, alpha_pi=1.0):
+                     background=BACKGROUND_MASS, alpha_init=0.5, alpha_trans=0.5, alpha_pi=1.0,
+                     init_prior_scale=1.0):
     """Build a `JointHSMMParams` whose states are the observed (v,n) pairs and whose per-recipe
     dynamics come from the bag-of-pairs clustering. Drop-in replacement for
     `warm_start.cascade_to_joint` -- same return type, and it needs no cascade artifacts at all.
@@ -227,9 +228,9 @@ def lexical_to_joint(sequences, k_subtask, k_recipe, d_max, vocab_verbs, vocab_n
     # the prior off does not merely start EM slightly off: it declares half the model's own
     # legal transitions impossible, which shows up directly as an s_transition false-positive
     # rate that no longer responds to alpha (docs/eval.md 6's signature of an ungated channel).
-    init_counts = init_counts + alpha_init / k_subtask
-    trans_counts = trans_counts + alpha_trans / k_subtask
-    pi_counts = pi_counts + alpha_pi / k_recipe
+    init_counts = init_counts + init_prior_scale * alpha_init / k_subtask
+    trans_counts = trans_counts + init_prior_scale * alpha_trans / k_subtask
+    pi_counts = pi_counts + init_prior_scale * alpha_pi / k_recipe
 
     # Pooled-over-recipes per-state duration shape, used as the shrinkage target exactly the
     # way warm_start.cascade_to_joint uses the cascade's own global fit: a (r,k) cell with two

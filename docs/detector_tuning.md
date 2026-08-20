@@ -190,13 +190,35 @@ improvement is in the detector, not in a friendlier injection set.
 Reproduce:
 
 ```bash
-./py run_joint_lexical.py --split-part train --out runs/joint_lex_a50.npz --anchor 50 --max-iters 60
-./py run_hard_em.py --split-part train --out runs/joint_softhard.npz \
-    --init-from runs/joint_lex_a50.npz --keep-init-emissions --iters 5
-./py smooth_params.py --in runs/joint_softhard.npz --out runs/joint_sh_s07t2.npz --strength 0.7 --backoff-tau 2
-./py refit_durations.py --in runs/joint_sh_s07t2.npz --out runs/joint_sh_k0.npz --kappa 0.001
-./py run_detect_eval.py --joint-params runs/joint_sh_k0.npz --split-part test --tag sh_k0
+./py run_joint_lexical.py --split-part train --out runs/joint_lex.npz \
+    --anchor 50 --max-iters 60 --init-prior-scale 0.0
+./py run_hard_em.py --split-part train --out runs/joint_sh.npz \
+    --init-from runs/joint_lex.npz --keep-init-emissions --iters 5
+./py smooth_params.py   --in runs/joint_sh.npz   --out runs/joint_sh_s.npz --strength 0.7 --backoff-tau 2
+./py refit_durations.py --in runs/joint_sh_s.npz --out runs/joint_final.npz --kappa 0.001
+./py run_detect_eval.py --joint-params runs/joint_final.npz --split-part test --tag final
 ```
+
+Run end to end from a clean tree this reproduces train 0.556 / test 0.517 exactly (seed 0).
+
+### `--init-prior-scale 0.0` is load-bearing, and uncomfortable
+
+The Dirichlet prior belongs on the iteration-0 transition counts — without it,
+`params._row_normalize`'s `max(c-1, floor)` sends a bigram seen once to the floor, which is the
+same defect §4's third change exists to undo. Adding it (`--init-prior-scale 1.0`, the default)
+does everything you would expect: soft EM **converges** rather than running out its budget, the
+objective ends higher (−12594 against −12931), and per-tick subtask ARI stays at 0.9991 instead
+of degrading to 0.94.
+
+Detection prefers the other basin, by a lot: **train `trial_loc` accuracy 0.556 against 0.518**,
+far outside the ±0.008 injection-seed noise. The measurable difference in the finished models is
+transition sparsity — median row entropy 0.470 against 0.518 — which is exactly the quantity
+`s_transition` reads. Running the first E-step against an almost-hard transition structure
+appears to keep the responsibilities concentrated and the final $A^{(r)}$ sharper; that is an
+observation, not a proven mechanism.
+
+This is the same disagreement as §3, and it is the reason the flag exists and defaults to the
+coherent value rather than the winning one. Do not "fix" it without re-measuring.
 
 ---
 
