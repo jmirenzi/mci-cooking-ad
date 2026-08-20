@@ -159,6 +159,22 @@ Operating point $\alpha$ chosen on **train** by `trial_loc` accuracy, then appli
 Per-error-type test recall moves from `subs 0.97 / aban 0.49 / omis 0.37 / tran 0.57 / repe 0.39`
 to `subs 1.00 / aban 0.62 / omis 0.39 / tran 0.71 / repe 0.39`.
 
+### The comparison is not an artifact of who placed the injections
+
+`synthetic/error_injection.py` injects into whatever segmentation the **scoring model itself**
+decoded, so two models are normally graded on two different (though closely related) sets of
+degraded streams — and the models here differ precisely in their segmentation. That is a real
+confound, so `run_detect_eval.py --traj-params` exists to point every model at one common
+source. Train split, alpha = 2e-2:
+
+| scoring model | injections from the cascade fit's decode | injections from the final model's decode |
+|---|---|---|
+| cascade warm start (before) | 0.496 | 0.501 |
+| final | **0.540** | **0.556** |
+
+The gap survives in both columns, and the baseline barely moves between them — so the
+improvement is in the detector, not in a friendlier injection set.
+
 Reproduce:
 
 ```bash

@@ -61,6 +61,13 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--chunk-size", type=int, default=8)
     ap.add_argument("--max", type=int, default=10_000)
+    ap.add_argument("--traj-params", default=None,
+                    help="decode the healthy pool and place the injections with THIS model "
+                         "instead of --joint-params. The harness injects into whatever "
+                         "segmentation the scoring model itself decoded, so two models are "
+                         "normally graded on two different (though closely related) sets of "
+                         "degraded streams; pointing every model at one common source makes the "
+                         "comparison exact. Scoring always uses --joint-params.")
     ap.add_argument("--tag", default="eval")
     ap.add_argument("--out-dir", default="runs")
     args = ap.parse_args()
@@ -76,7 +83,9 @@ def main():
         seqs = split_mod.filter_sequences(seqs, split_mod.load_split(args.split_file), args.split_part)
     seqs = seqs[: args.max]
 
-    traj = generate.trajectories_from_real_joint(jp, seqs, d_max, chunk_size=args.chunk_size)
+    traj_jp = joint_params.load_params(args.traj_params) if args.traj_params else jp
+    traj_marg = joint_params.collapse_to_marginal(traj_jp) if args.traj_params else marg
+    traj = generate.trajectories_from_real_joint(traj_jp, seqs, d_max, chunk_size=args.chunk_size)
     usable = [t for t in traj if len(t["segments"]) >= error_injection.MIN_SEGMENTS]
     print(f"[{args.tag}/{args.split_part}] {len(usable)}/{len(seqs)} usable trials", flush=True)
 
@@ -91,7 +100,7 @@ def main():
         (t, int(r), np.zeros(len(u["verb_ids"]), dtype=bool)) for t, r, u in zip(traces, r_hat, usable)
     ]
     for et in error_injection.ERROR_TYPES:
-        deg = [error_injection.inject(et, t, rng, marg) for t in usable]
+        deg = [error_injection.inject(et, t, rng, traj_marg) for t in usable]
         tr, lp2, rh, ltm = batch.compute_traces_joint(jp, deg, d_max, chunk_size=args.chunk_size)
         groups[et] = [(t, int(r), positive_ticks(d, lexicon)) for t, r, d in zip(tr, rh, deg)]
         # every group is scored against the SAME tables it was traced with
