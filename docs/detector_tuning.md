@@ -150,6 +150,18 @@ channels without moving the healthy false-alarm rate.
 Operating point $\alpha$ chosen on **train** by `trial_loc` accuracy, then applied unchanged to
 **test** (`report_final.py`). Both at $\alpha = 2\times10^{-2}$.
 
+**Quote the seed-averaged numbers.** `error_injection` draws which segment each injector
+perturbs, and that draw moves a single run by a few points. Over four injection seeds at
+$\alpha = 2\times10^{-2}$:
+
+| | train acc | train P | train R | **test acc** | **test P** | **test R** |
+|---|---|---|---|---|---|---|
+| cascade warm start (before) | 0.502 ± 0.004 | 0.675 ± 0.004 | 0.559 ± 0.007 | 0.468 ± 0.009 | 0.601 ± 0.009 | 0.578 ± 0.011 |
+| final | **0.552 ± 0.008** | **0.735 ± 0.005** | **0.594 ± 0.012** | **0.508 ± 0.008** | **0.636 ± 0.010** | **0.619 ± 0.006** |
+
+The per-seed test gap runs +3.0 to +6.4 accuracy points and is positive on every seed; the
+single-seed table below is seed 0, the most favourable of the four. Read the averages.
+
 | | train acc | train P | train R | **test acc** | **test P** | **test R** |
 |---|---|---|---|---|---|---|
 | always-flag reference | 0.455 | 0.455 | 1.000 | 0.455 | 0.455 | 1.000 |
