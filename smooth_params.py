@@ -11,7 +11,9 @@ transitions are singletons and the mode files them next to ones that never happe
 still floors and stays maximally surprising. s = 1 is the full posterior mean and is measurably
 worse -- it lifts never-seen transitions from ~32 nats to ~9 and the structural channels lose
 their top end. `--backoff-tau` additionally mixes each recipe's rows toward the pooled-over-
-recipes row for that state, the transition analogue of `kappa` for durations.
+recipes row for that state, the transition analogue of `kappa` for durations. Both are
+regularisation, so select them on held-out data -- picking them in-sample systematically picks
+too little of each (docs/eval.md 7).
 
 Emissions are deliberately not touched: their prior is alpha_emit = vocab width, i.e. exactly 1
 per category, so the mode is already the plain data frequency, and adding another count would
@@ -23,7 +25,7 @@ expected counts), so the shift cannot accumulate or perturb a fit; it changes wh
 reads, nothing else. Full treatment in docs/hsmm.md 3.
 
     ./py smooth_params.py --in runs/joint_sh.npz --out runs/joint_sh_s.npz \
-        --strength 0.7 --backoff-tau 2
+        --strength 0.7 --backoff-tau 30
 """
 import argparse
 

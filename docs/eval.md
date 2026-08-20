@@ -424,6 +424,39 @@ improvement only alongside the step-level check, and to select an operating poin
 granularity that matches the failure mode you care about. For an assistant whose failure mode is
 nagging, that is the step layer.
 
+### Selecting the operating point on the step layer
+
+Because the two layers can disagree, which one the operating point is chosen on is a real
+decision, not a formality. `run_step_sweep.py` is `run_threshold_sweep.py`'s step-layer
+counterpart — same trace-once-sweep-cheaply structure, scored through `evaluate_steps`.
+
+Two things had to change to make the lexical+hard-EM fit win at this layer as well:
+
+**Select regularisation out of sample.** `smooth_params.py`'s `--strength` and `--backoff-tau`
+are regularisation; their whole job is generalisation, so choosing them on the split the model
+was fit to systematically chooses too little. On the train split the pooled backoff looks best at
+$\tau = 2$; on a nested held-out fold (`make_dev_split.py`, 322 fit / 80 dev out of the 402
+outer-train trials) $\tau = 30$ is clearly better and $\tau = 2$ is the worst of the grid. The
+shift strength is unaffected — $s = 0.7$ wins on both, and $s \ge 1.5$ loses on both.
+
+**The symptom of getting it wrong is a train/dev gap in healthy false alarms**, which is the
+cheapest thing to monitor:
+
+| flagged healthy steps, at matched recall | train | test |
+|---|---|---|
+| cascade fit | 3.2% (85/2692) | 3.4% (22/649) |
+| lexical+hard-EM, $\tau = 2$ (selected in-sample) | 0.8% (22/2692) | 4.3% (28/649) |
+| lexical+hard-EM, $\tau = 30$ (selected on dev) | — | 2.9% (19/649) |
+
+A 4× train/test gap is the transition table behaving as a lookup of the training bigrams: a legal
+transition that merely did not occur in those 402 trials costs ~32 nats out of sample. Backing
+off to the pooled row is exactly what covers it, and $\tau$ is how much.
+
+With $\tau = 30$ the fit dominates the cascade at both layers on test — step precision 0.691
+against 0.626 at matched recall 0.511, with 19 flagged healthy steps against 27; `trial_loc`
+accuracy 0.509 against 0.453 at equal recall, with the healthy false-alarm rate roughly halved
+(0.196 against 0.351).
+
 ### The healthy false-alarm floor $\alpha$ cannot reach
 
 Splitting those healthy steps per channel shows the same pathology in both fits — the one §6
@@ -460,6 +493,10 @@ scorecard shows can be localised to a stage instead of guessed at. All are read-
 | `tools_duration_power.py` | re-scores every healthy segment at 1 tick (abandonment) and $2\times$ (repetition) against its own fitted NB — what $s_{\text{dur two}}$ can deliver at the current duration spread. It predicts **that one channel**, not the error type: $s_{\text{temporal}}$ is not modelled here and carries most of repetition |
 | `tools_pace.py` | how much of the duration spread is between-trial (a participant's pace) rather than within-trial |
 | `tools_alarm_load.py` | how many alarms are actually raised behind each false positive `trial_loc` charges, and what fraction of all alarms land in range |
+
+`run_step_sweep.py` (the step-layer analogue of `run_threshold_sweep.py`) and `make_dev_split.py`
+(a nested fit/dev split for selecting regularisation without touching the outer test split) are
+the two runners the §7 protocol needs.
 
 `tools_launder.py` and `tools_oracle_recipe.py` are the two that most often move a decision:
 the first says whether a channel is failing to fire or never being shown the evidence, and the

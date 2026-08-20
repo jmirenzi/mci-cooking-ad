@@ -209,7 +209,7 @@ python run_joint_lexical.py --split-part train --out runs/joint_lex.npz \
     --anchor 50 --max-iters 60 --init-prior-scale 0.0
 python run_hard_em.py --split-part train --out runs/joint_sh.npz \
     --init-from runs/joint_lex.npz --keep-init-emissions --iters 5
-python smooth_params.py    --in runs/joint_sh.npz  --out runs/joint_sh_s.npz --strength 0.7 --backoff-tau 2
+python smooth_params.py    --in runs/joint_sh.npz  --out runs/joint_sh_s.npz --strength 0.7 --backoff-tau 30
 python refit_durations.py  --in runs/joint_sh_s.npz --out runs/joint_final.npz --kappa 0.001
 ```
 
@@ -221,7 +221,9 @@ python refit_durations.py  --in runs/joint_sh_s.npz --out runs/joint_final.npz -
 | `refit_durations.py` | hard-assignment duration M-step, sweepable in `kappa` without a full EM run | [`hsmm.md`](hsmm.md) §2.5 |
 
 `--init-prior-scale 0.0` is deliberate and is *not* the default — see [`recipe.md`](recipe.md) §4
-before changing it.
+before changing it. `--strength` and `--backoff-tau` are regularisation and are selected on a
+**nested dev fold** (`make_dev_split.py`), not on the training split — [`eval.md`](eval.md) §7
+has the measurement showing what in-sample selection of those two costs.
 
 **5 — Analyse / evaluate / demo**
 
