@@ -244,7 +244,9 @@ same ground-truth convention, plus the per-error-type and per-channel breakdown 
 to be used as a *selection* criterion between fits rather than only as a final report
 ([`eval.md`](eval.md) §7). **Read accuracy, not F1**: with a 1-healthy : 5-degraded pool the
 trivial always-flag detector already scores F1 0.625, and `report_final.py` is what fixes
-$\alpha$ on train before quoting test. The `tools_*.py` scripts ([`eval.md`](eval.md) §8) answer
+$\alpha$ on train before quoting test. **And never quote a `trial_loc` gain on its own** — it
+charges at most one false positive per trial, so a detector can improve on it while raising more
+alarms; [`eval.md`](eval.md) §7 has the cross-check and the measured case where that happens. The `tools_*.py` scripts ([`eval.md`](eval.md) §8) answer
 one question each about a fitted model, for localising a loss the scorecard surfaces.
 
 `run_counterfactual.py` scores each degraded trial against its own healthy counterfactual, which

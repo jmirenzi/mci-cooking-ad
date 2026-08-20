@@ -127,25 +127,25 @@ def steps_and_truth(traj, degraded, lexicon):
 # the HSMM arm
 # --------------------------------------------------------------------------------------------
 
-def _hsmm_flags(trials, model, chunk_size):
+def _hsmm_flags(trials, model, chunk_size, alpha=surprise.DEFAULT_ALPHA):
     """(flags, traces) for a list of trajectory-shaped dicts, cascade or joint."""
     if model["kind"] == "cascade":
         traces, log_probs, recipe_log_trans = batch.compute_traces(
             model["hsmm"], model["recipe"], trials, model["d_max"], chunk_size=chunk_size
         )
-        return [surprise.flag(t, log_probs, recipe_log_trans) for t in traces], traces
+        return [surprise.flag(t, log_probs, recipe_log_trans, alpha=alpha) for t in traces], traces
     traces, log_probs, r_hat, log_trans_marginal = batch.compute_traces_joint(
         model["joint"], trials, model["d_max"], chunk_size=chunk_size
     )
-    flags = [surprise.flag_joint(t, log_probs, int(r_hat[i]), log_trans_marginal)
+    flags = [surprise.flag_joint(t, log_probs, int(r_hat[i]), log_trans_marginal, alpha=alpha)
              for i, t in enumerate(traces)]
     return flags, traces
 
 
-def hsmm_arm(pool, model, lexicon, chunk_size):
+def hsmm_arm(pool, model, lexicon, chunk_size, alpha=surprise.DEFAULT_ALPHA):
     """Score the HSMM through the step layer on the shared pool."""
     healthy = [t for t, _ in pool]
-    healthy_flags, healthy_traces = _hsmm_flags(healthy, model, chunk_size)
+    healthy_flags, healthy_traces = _hsmm_flags(healthy, model, chunk_size, alpha)
     healthy_verdicts = [
         element_metrics.step_verdicts_from_flags(
             f, textify.steps_from_trajectory(t, lexicon), trace, lexicon
@@ -157,7 +157,7 @@ def hsmm_arm(pool, model, lexicon, chunk_size):
     artifact_steps = {}
     for error_type in error_injection.ERROR_TYPES:
         trials = [d[error_type] for _, d in pool]
-        flags, traces = _hsmm_flags(trials, model, chunk_size)
+        flags, traces = _hsmm_flags(trials, model, chunk_size, alpha)
         rows = []
         debris_rows = []
         for (traj, degraded), f, trace in zip(pool, flags, traces):
@@ -391,6 +391,11 @@ def main():
                              "trial pool is restricted to --split-part before the --max-real cap")
     parser.add_argument("--split-part", choices=["train", "test"], default=None)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--alpha", type=float, default=surprise.DEFAULT_ALPHA,
+                        help="HSMM arm's flag threshold. The LLM arm has no threshold to sweep, "
+                             "so comparing the two at one alpha compares them at whatever point "
+                             "that alpha happens to put the HSMM on ITS OWN curve -- match a "
+                             "recall or a false-alarm rate before reading a precision gap")
     parser.add_argument("--chunk-size", type=int, default=16)
     parser.add_argument("--min-run", type=int, default=10,
                         help="tick-level persistence requirement applied BEFORE collapsing HSMM "
@@ -453,11 +458,16 @@ def main():
                 parser.error("--split-part is required when --split-file is given")
             split = split_mod.load_split(args.split_file)
             sequences = split_mod.filter_sequences(sequences, split, args.split_part)
-        adapt = (generate.trajectory_from_real_joint if model["kind"] == "joint"
-                 else generate.trajectory_from_real)
-        base = model["joint"] if model["kind"] == "joint" else inject_params
-        traj = [adapt(base, s["verb_ids"], s["noun_ids"], d_max)
-                for s in sequences[: args.max_real]]
+        chosen = sequences[: args.max_real]
+        if model["kind"] == "joint":
+            # batched: the per-trial adapter is a static-shape JAX call, so a loop recompiles
+            # the recipe-inference and Viterbi kernels once per distinct trial length
+            traj = generate.trajectories_from_real_joint(
+                model["joint"], chosen, d_max, chunk_size=args.chunk_size
+            )
+        else:
+            traj = [generate.trajectory_from_real(inject_params, s["verb_ids"], s["noun_ids"], d_max)
+                    for s in chosen]
         pools["real"] = build_pool(traj, rng, inject_params)
 
     # Report cache state before spending anything: the difference between "this costs 400
@@ -502,7 +512,7 @@ def main():
     for name, pool in pools.items():
         if not args.skip_hsmm:
             print(f"\n[{name}] HSMM arm ({model['kind']})")
-            report = hsmm_arm(pool, model, lexicon, args.chunk_size)
+            report = hsmm_arm(pool, model, lexicon, args.chunk_size, args.alpha)
             reports[f"{name}/hsmm-{model['kind']}"] = report
             print_report(report, f"{name} / hsmm-{model['kind']}")
             plotting.save_step_figures(report, args.figures_dir, f"{name}_hsmm_{model['kind']}")

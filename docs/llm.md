@@ -455,6 +455,16 @@ transposition → `omission` (both are `s_transition`; the cascade cannot separa
 repetition split between `repetition` and `substitution` (its ambiguity is stated outright in
 [`synthetic.md`](synthetic.md)).
 
+### Why the step unit, and not the trial verdict
+
+`trial_located` is reported alongside, but the step layer is the one that makes the two arms
+comparable on false alarms, because it counts every flagged step instead of collapsing a trial's
+strays into one ([`eval.md`](eval.md) §7). The difference is not cosmetic here: on the test split
+the LLM raises about **3.2 alarms for every false positive `trial_located` charges it**, against
+about 1.1–1.4 for the HSMM arm, so the trial verdict understates the LLM's chattiness by roughly
+a factor of three relative to the HSMM's. Measured at step level over 3684 steps, the LLM arm
+produces 734 false positives against the HSMM's 120–206 while detecting fewer anomalies.
+
 ### What is reported
 
 `evaluate_steps` returns the same `per_type` / `attribution` / `healthy` shape as

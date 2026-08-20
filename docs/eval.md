@@ -389,6 +389,60 @@ points on a single run. Quote a mean over several `--seed` values, not the best 
 per split would report a number no deployment could reproduce, since $\alpha$ has to be fixed
 before the test trials are seen.
 
+### `trial_loc` caps false positives at one per trial — cross-check at step level
+
+The stray is charged as a boolean: `fp += bool((~pos & mask).any())`. A trial that flags once
+outside the range and one that flags five times cost the same single false positive, and a
+healthy trial that flags twenty times also costs one. Total FP is bounded by the trial count —
+which is exactly the quantity a nagging assistant is *not* bounded by. Charging the stray
+independently of the hit (§6) separates "found it and also fired elsewhere" from "found it
+cleanly"; it does not separate "fired elsewhere once" from "fired elsewhere five times".
+
+`tools_alarm_load.py` measures what that collapses, counting contiguous runs of the unioned flag
+mask — the closest tick-level proxy for one Query card. On the test split the ratio of alarms
+actually raised to false positives charged is roughly **1.1–1.4× for the HSMM and 3.2× for the
+LLM arm**, so the cap flatters the chattier detector, and the LLM is much the chattier one.
+
+That cap can invert a comparison. Two HSMM fits whose `trial_loc` accuracy differs by 5 points
+in one direction can differ in the other at step level, where every flagged step is counted:
+
+| test split | `trial_loc` acc | step precision | step recall | flagged steps on **healthy** trials |
+|---|---|---|---|---|
+| cascade fit, $\alpha = 5\!\times\!10^{-3}$ | 0.453 | 0.676 | 0.515 | 22 / 649 |
+| lexical+hard-EM fit, $\alpha = 5\!\times\!10^{-3}$ | 0.517 | 0.580 | 0.588 | 35 / 649 |
+| lexical+hard-EM fit, $\alpha = 5\!\times\!10^{-4}$ (recall matched) | — | 0.577 | 0.509 | 28 / 649 |
+
+The healthy column settles what the two conventions could otherwise argue about: healthy trials
+contain no injection and therefore no debris, so no difference in ground-truth convention
+explains it. **At matched recall the second fit raises ~27% more false alarms on normal
+behaviour**, and `trial_loc` cannot see it because those extra alarms land on trials already
+charged their one false positive.
+
+Neither granularity is wrong; they answer different questions ("did it bother the user about the
+right trial" versus "how often did it bother the user"). The rule is to quote a `trial_loc`
+improvement only alongside the step-level check, and to select an operating point on the
+granularity that matches the failure mode you care about. For an assistant whose failure mode is
+nagging, that is the step layer.
+
+### The healthy false-alarm floor $\alpha$ cannot reach
+
+Splitting those healthy steps per channel shows the same pathology in both fits — the one §6
+names, a false-positive rate flat across orders of magnitude of $\alpha$:
+
+| flagged healthy steps | $5\!\times\!10^{-3}$ | $5\!\times\!10^{-4}$ | $10^{-4}$ |
+|---|---|---|---|
+| `s_transition` | 19 → 24 | 19 → 22 | 19 → 22 |
+| `s_recipe_transition` | 19 → 19 | 19 → 16 | 19 → 16 |
+| `s_temporal` | 4 → 12 | 3 → 8 | 2 → 7 |
+| `s_dur_two` | 4 → 12 | 2 → 7 | 2 → 7 |
+
+(cascade fit → lexical+hard-EM fit). The two transition channels are ungated in **both**: their
+count is unmoved from $5\times10^{-3}$ to $10^{-4}$, so no threshold choice removes them. The
+duration channels *are* gated, and their floor roughly tripled — the cost of
+`refit_durations.py` tightening the duration fit, which buys abandonment and repetition recall
+and pays for it here. `run_threshold_sweep_coordinate.py` is the instrument for spending that
+budget per channel rather than through one shared $\alpha$.
+
 ---
 
 ## 8. Single-question diagnostics — `tools_*.py`
@@ -405,6 +459,7 @@ scorecard shows can be localised to a stage instead of guessed at. All are read-
 | `tools_oracle_recipe.py` | how much recall is lost to the MAP recipe being re-inferred from the degraded stream, by re-scoring with $\hat r$ pinned to the healthy decode's value |
 | `tools_duration_power.py` | re-scores every healthy segment at 1 tick (abandonment) and $2\times$ (repetition) against its own fitted NB — what $s_{\text{dur two}}$ can deliver at the current duration spread. It predicts **that one channel**, not the error type: $s_{\text{temporal}}$ is not modelled here and carries most of repetition |
 | `tools_pace.py` | how much of the duration spread is between-trial (a participant's pace) rather than within-trial |
+| `tools_alarm_load.py` | how many alarms are actually raised behind each false positive `trial_loc` charges, and what fraction of all alarms land in range |
 
 `tools_launder.py` and `tools_oracle_recipe.py` are the two that most often move a decision:
 the first says whether a channel is failing to fire or never being shown the evidence, and the
