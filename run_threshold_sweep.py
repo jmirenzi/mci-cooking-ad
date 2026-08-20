@@ -115,7 +115,7 @@ def main():
         split = split_mod.load_split(args.split_file)
         seqs = split_mod.filter_sequences(seqs, split, args.split_part)
     seqs = seqs[: args.max_real]
-    traj = [generate.trajectory_from_real_joint(jp, s["verb_ids"], s["noun_ids"], d_max) for s in seqs]
+    traj = generate.trajectories_from_real_joint(jp, seqs, d_max, chunk_size=8)
     usable = [t for t in traj if len(t["segments"]) >= error_injection.MIN_SEGMENTS]
     print(f"{len(usable)} usable real trials", flush=True)
 

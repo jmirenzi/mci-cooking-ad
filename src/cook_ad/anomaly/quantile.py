@@ -168,3 +168,50 @@ def threshold_tables_joint(joint_log_probs, r_hat, log_trans_marginal, alpha):
     transition = transition_quantile_threshold(log_trans_r, alpha)
     recipe = excess_quantile_threshold(log_trans_r, log_trans_marginal, alpha)
     return ThresholdTables(emit, verb, noun, transition, recipe)
+
+
+class JointThresholdCache:
+    """Memoised `threshold_tables_joint` for sweeps that re-flag the same model many times.
+
+    The three emission tables (emit/verb/noun) depend only on (alpha, the shared emission
+    matrices) -- NOT on r_hat -- yet `threshold_tables_joint` rebuilds all five on every call,
+    and `joint_quantile_threshold` alone sorts a V*N support K times per call. A sweep over A
+    alphas x N trials x G source groups therefore pays that cost A*N*G times when only A
+    distinct values exist. The two recipe-conditioned tables genuinely vary with r_hat, so they
+    are cached per (alpha, r_hat) -- at most A*K_R distinct values, against A*N*G calls.
+
+    Construct one per fitted model; the cache key is (alpha, r_hat) only, so reusing an instance
+    across DIFFERENT `joint_log_probs` would silently serve another model's thresholds. Callers
+    that refit must build a new cache (assert-guarded below on the object identity of the tables
+    handed in, which is exactly the reuse pattern eval/sweep code has).
+    """
+
+    def __init__(self, joint_log_probs, log_trans_marginal):
+        self._lp = joint_log_probs
+        self._ltm = log_trans_marginal
+        self._emission = {}   # alpha -> (emit, verb, noun)
+        self._recipe = {}     # (alpha, r_hat) -> (transition, recipe)
+
+    def tables(self, joint_log_probs, r_hat, log_trans_marginal, alpha):
+        if joint_log_probs is not self._lp or log_trans_marginal is not self._ltm:
+            raise ValueError(
+                "JointThresholdCache was built for a different model's tables; build a new "
+                "cache per fitted model rather than reusing one across refits."
+            )
+        r_hat = int(r_hat)
+        if alpha not in self._emission:
+            self._emission[alpha] = (
+                joint_quantile_threshold(joint_log_probs.log_emit_v, joint_log_probs.log_emit_n, alpha),
+                categorical_quantile_threshold(joint_log_probs.log_emit_v, alpha),
+                categorical_quantile_threshold(joint_log_probs.log_emit_n, alpha),
+            )
+        key = (alpha, r_hat)
+        if key not in self._recipe:
+            log_trans_r = joint_log_probs.log_trans[r_hat]
+            self._recipe[key] = (
+                transition_quantile_threshold(log_trans_r, alpha),
+                excess_quantile_threshold(log_trans_r, log_trans_marginal, alpha),
+            )
+        emit, verb, noun = self._emission[alpha]
+        transition, recipe = self._recipe[key]
+        return ThresholdTables(emit, verb, noun, transition, recipe)

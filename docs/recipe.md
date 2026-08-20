@@ -5,6 +5,7 @@
 | `segmentize.py` | max-product (Viterbi) decoding of the HSMM → segments |
 | `recipe_hmm.py` | the cascade's stage-2 discrete HMM over segment symbols, + clustering metrics |
 | `warm_start.py` | cascade artifacts → the joint model's iteration-0 parameters |
+| `lexical_init.py` | an alternative iteration-0 state that needs no cascade at all: one subtask state per observed (verb,noun) pair, recipes seeded by bag-of-pairs k-means, emissions held by a per-state anchor prior — see [`detector_tuning.md`](detector_tuning.md) |
 
 This package sits between "a fitted HSMM" and "a per-trial interpretation of what happened".
 

@@ -26,6 +26,7 @@ the design constraint the rest of the architecture serves.
 | [`eval.md`](eval.md) | `src/cook_ad/eval/` | batched trace computation, precision/recall/latency metrics, figures |
 | [`synthetic.md`](synthetic.md) | `src/cook_ad/synthetic/` | ancestral sampling and the five canonical injected errors |
 | [`llm.md`](llm.md) | `src/cook_ad/llm/`, `eval/element_metrics.py` | the LLM comparison baseline and the step-level metrics that make it comparable |
+| [`detector_tuning.md`](detector_tuning.md) | `recipe/lexical_init.py`, `run_hard_em.py`, `smooth_params.py`, `refit_durations.py` | where trial_loc accuracy actually leaks, and the training-side changes that move it |
 
 ---
 
@@ -198,6 +199,19 @@ python run_joint.py --config configs/breakfast.yaml   # add --resume to continue
 Warm-starts from the two cascade artifacts, then runs a single deterministic joint EM with
 resumable checkpoints every 5 iterations. → `joint_params.npz` + `.meta.json`.
 
+There is a second, measurably better route to the same artifact that skips the cascade entirely
+— a warm start built from the observed (verb,noun) inventory, a Viterbi-EM polish, and two
+post-fit re-parameterisations. It is documented, with the measurements that motivate each step,
+in [`detector_tuning.md`](detector_tuning.md):
+
+```bash
+python run_joint_lexical.py --split-part train --out runs/joint_lex.npz --anchor 50 --max-iters 60
+python run_hard_em.py --split-part train --out runs/joint_sh.npz \
+    --init-from runs/joint_lex.npz --keep-init-emissions --iters 5
+python smooth_params.py    --in runs/joint_sh.npz  --out runs/joint_sh_s.npz --strength 0.7 --backoff-tau 2
+python refit_durations.py  --in runs/joint_sh_s.npz --out runs/joint_final.npz --kappa 0.001
+```
+
 **5 — Analyse / evaluate / demo**
 
 ```bash
@@ -211,7 +225,16 @@ python render_llm_compare_png.py                # HSMM vs LLM figures from the r
 python run_threshold_sweep.py                   # accuracy vs alpha, per granularity
 python run_counterfactual.py                    # is detection attributable to the injection?
 python run_sequence_eval.py                     # segment-sequence detector vs the tick channels
+python run_detect_eval.py --split-part train    # one trial_loc scorecard: alpha curve x error type x channel
 ```
+
+`run_detect_eval.py` is the scorecard the training-side work in [`detector_tuning.md`](detector_tuning.md)
+is selected on. It reports the same `trial_loc` metric `run_threshold_sweep.py` defines, on the
+same ground-truth convention, but adds the per-error-type and per-channel breakdown in one pass
+and builds its healthy pool with the batched `generate.trajectories_from_real_joint`, so a full
+402-trial sweep is minutes rather than most of an hour. **Read accuracy, not F1**: with a
+1-healthy : 5-degraded pool the trivial always-flag detector scores F1 0.625
+([`detector_tuning.md`](detector_tuning.md) §0).
 
 `run_counterfactual.py` scores each degraded trial against its own healthy counterfactual, which
 supplies the matched null a raw recall number lacks ([`eval.md`](eval.md) §5) — reach for it before
