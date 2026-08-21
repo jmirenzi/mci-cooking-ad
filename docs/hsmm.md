@@ -304,6 +304,36 @@ normalisation mass from the $K-1$ real entries.
 `to_log_probs` bundles the four normalised log-tables plus the two duration tables into
 `HSMMLogProbs`. Everything downstream consumes `HSMMLogProbs`, never raw counts.
 
+### What the mode does to rare transitions
+
+Subtracting a whole count is a rounding error when a cell holds hundreds and an erasure when it
+holds one. With $\alpha_{\text{trans}}/K = 0.0078$, a bigram observed **exactly once** has
+$c - 1 = 0.0078$ and floors; one observed twice has $c - 1 = 1.008$. Benign for the emission rows
+(prior $\alpha_{\text{emit}} = \text{width}$, i.e. 1 per category, so the mode is the plain data
+frequency), not benign for the joint model's transition rows: at $K_R = 16$ there are ~150
+observed transitions per recipe over a $64 \times 63$ grid, so a large share of the model's
+*legal* transitions are singletons.
+
+The result is an $s_{\text{transition}}$ miscalibrated in both directions at once. Rare but legal
+transitions score like impossible ones, and since the per-state $\alpha$-quantile threshold is
+computed against that same distorted row, the threshold rises to cover them — which is then what
+stops genuinely impossible transitions clearing it.
+
+`smooth_params.py` undoes this post-fit, with no inference change: storing $c + s$ makes
+`_row_normalize`'s numerator $c - 1 + s$.
+
+| $s$ | a singleton | a never-observed cell |
+|---|---|---|
+| $0$ | at the floor | at the floor |
+| $0 < s < 1$ | at $s$, off the floor | at the floor, ~32 nats |
+| $1$ | the posterior mean | ~9 nats |
+
+$s \approx 0.7$ measures best; $s = 1$, the principled predictive distribution, is worse because
+it also lifts never-observed transitions to ~9 nats and the structural channels lose their top
+end. `--backoff-tau` additionally mixes each recipe's rows toward the pooled-over-recipes row —
+the transition analogue of $\kappa$ in §2.5, and the only pooling those rows otherwise get. Both
+are regularisation: select them on held-out data ([`eval.md`](eval.md) §7).
+
 ---
 
 ## 4. `messages.py` — inference
@@ -573,6 +603,15 @@ M-step**, $\mathcal L$ can dip slightly; `run_joint_em` therefore *warns* rather
 the objective decreases by more than `tol`. (The saved full-scale history shows exactly this:
 a rise to about $-16431$, then sub-nat oscillation.)
 
+### Per-state emission priors — `emit_prior_v` / `emit_prior_n`
+
+The shared emission M-step's $\alpha_{\text{emit}}/\text{width}$ term is a *flat* prior: right
+when the states are anonymous, wrong once the initialisation has given state $k$ a meaning
+(`recipe/lexical_init.py` anchors state $k$ on one observed $(v,n)$ pair), since a flat prior lets
+EM relicense that state onto whatever the responsibilities hand it. `m_step` therefore accepts
+$(K,V)$ / $(K,N)$ prior **matrices** in place of the scalar. Default `None` leaves the flat-prior
+behaviour unchanged.
+
 ### Restarts, checkpoints, convergence
 
 `run_joint_em` is a **single deterministic run** from `init_params` — no restart loop, because the
@@ -612,3 +651,41 @@ Three ways to get a single-recipe view out of the joint model, each with a disti
 The last distinction matters for honesty of output: a `narrate.Lexicon` built from
 `select_recipe` reports expected durations consistent with the surprise actually computed for
 that trial, whereas one built from the marginal would quote a cross-recipe average.
+
+---
+
+## 7. Viterbi EM — `run_hard_em.py`
+
+An alternative optimiser for the same joint model, replacing §6's soft E-step with the MAP
+segmentation:
+
+$$
+\max_{\theta}\ \max_{z}\ \log P_\theta(o, z)
+\qquad\text{in place of}\qquad
+\max_{\theta}\ \log \sum_{z} P_\theta(o, z)
+$$
+
+The wrong estimator if you want calibrated posterior uncertainty, the right one here because
+**every surprise channel scores against `z_star`** — so the counts the model is fit from and the
+decode the detector reads become the same object.
+
+One iteration: `infer_recipe` → `segment_all_conditioned` → hard init/transition counts and
+per-$(r,k)$ duration histograms → the same Dirichlet-MAP renormalisation and `fit_durations_shrunk`
+the soft M-step uses. Right-censoring is handled as in §2.3. Emissions stay at the lexical anchor
+([`recipe.md`](recipe.md) §4). It converges in ~5 iterations at ~15 s each against soft EM's 60 at
+~45 s, holds per-tick subtask ARI at 0.999, and reaches a higher marginal likelihood than the soft
+run it started from. `--init-from` takes $K$ and $K_R$ from the checkpoint, not the config.
+
+### The objective is not the selection criterion
+
+Three measurements on the train split, all disagreeing with the likelihood ranking:
+
+- the lexical warm start *begins* at $-12948$, above what a cascade-warm-started joint EM
+  *converges* to ($-14245$);
+- soft EM from it lowers the objective for a stretch while per-tick subtask ARI degrades from
+  0.999 to 0.940;
+- the highest-likelihood fit available ($-11863$) has subtask ARI 0.935 and is beaten on detection
+  by fits a thousand nats below it.
+
+Model selection between fitting routes therefore runs through `run_detect_eval.py` and
+`run_step_sweep.py` ([`eval.md`](eval.md) §7), never through `history[-1]`.

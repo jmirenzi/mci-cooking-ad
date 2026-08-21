@@ -68,15 +68,19 @@ def completed_segment_surprise(segments, dur_r, dur_p, final_censored=True):
     attribution = np.full(n, "none", dtype=object)
 
     scored = n - 1 if (final_censored and n > 0) else n
-    for i, (state, d) in enumerate(segments[:scored]):
-        d_j = jnp.array(float(d))
-        r_j, p_j = jnp.array(float(dur_r[state])), jnp.array(float(dur_p[state]))
-        log_surv = float(durations.nb_log_survival(d_j, r_j, p_j))
-        log_cdf = float(durations.nb_log_cdf(d_j, r_j, p_j))
-        s_long[i] = -log_surv
-        s_short[i] = -log_cdf
-        s_two[i] = max(0.0, -(LOG2 + min(log_surv, log_cdf)))
-        attribution[i] = "stuck" if log_surv < log_cdf else "left_early"
+    if scored > 0:
+        # One vectorised call per tail: the tails are elementwise, and a per-segment loop pays a
+        # JAX dispatch per scalar (see durations.nb_*_np).
+        states = np.array([state for state, _ in segments[:scored]], dtype=np.int64)
+        ds = np.array([float(d) for _, d in segments[:scored]], dtype=np.float64)
+        r_j = dur_r[states].astype(np.float64)
+        p_j = dur_p[states].astype(np.float64)
+        log_surv = durations.nb_log_survival_np(ds, r_j, p_j)
+        log_cdf = durations.nb_log_cdf_np(ds, r_j, p_j)
+        s_long[:scored] = -log_surv
+        s_short[:scored] = -log_cdf
+        s_two[:scored] = np.maximum(0.0, -(LOG2 + np.minimum(log_surv, log_cdf)))
+        attribution[:scored] = np.where(log_surv < log_cdf, "stuck", "left_early")
 
     return s_long, s_short, s_two, attribution
 
@@ -91,11 +95,18 @@ def pit_coordinate(segments, dur_r, dur_p):
     dur_r = np.asarray(dur_r)
     dur_p = np.asarray(dur_p)
     pit = np.zeros(len(segments))
+    if not segments:
+        return pit
 
-    for i, (state, d) in enumerate(segments):
-        r_j, p_j = jnp.array(float(dur_r[state])), jnp.array(float(dur_p[state]))
-        cdf_below = 0.0 if d <= 1 else float(jnp.exp(durations.nb_log_cdf(jnp.array(float(d - 1)), r_j, p_j)))
-        pmf_here = float(jnp.exp(durations.nb_log_pmf(jnp.array(float(d)), r_j, p_j)))
-        pit[i] = cdf_below + 0.5 * pmf_here
-
+    states = np.array([state for state, _ in segments], dtype=np.int64)
+    d_np = np.array([float(d) for _, d in segments], dtype=np.float64)
+    r_j = dur_r[states].astype(np.float64)
+    p_j = dur_p[states].astype(np.float64)
+    # nb_log_cdf's second beta shape arg must stay >= 1, so d=1 segments (whose F(d-1) is 0 by
+    # definition) are evaluated at a safe dummy and masked out afterwards rather than passed in.
+    d_below = np.maximum(d_np - 1.0, 1.0)
+    cdf_below = np.exp(durations.nb_log_cdf_np(d_below, r_j, p_j))
+    cdf_below = np.where(d_np <= 1.0, 0.0, cdf_below)
+    pmf_here = np.exp(durations.nb_log_pmf_np(d_np, r_j, p_j))
+    pit[:] = cdf_below + 0.5 * pmf_here
     return pit

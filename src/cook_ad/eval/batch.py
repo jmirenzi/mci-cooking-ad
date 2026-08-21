@@ -101,7 +101,7 @@ def compute_traces(hsmm_params, recipe_params, sequences, d_max, chunk_size=16):
     return traces, log_probs, rlog_trans
 
 
-def compute_traces_joint(joint_hsmm_params, sequences, d_max, chunk_size=16):
+def compute_traces_joint(joint_hsmm_params, sequences, d_max, chunk_size=16, r_hat=None):
     """Joint-model analogue of compute_traces. Recipe inference is now a direct EM readout
     (joint_em.infer_recipe) rather than a second forward-backward pass over segment symbols,
     so it's computed once for the whole dataset up front -- it's cheap (forward-pass only, see
@@ -113,12 +113,21 @@ def compute_traces_joint(joint_hsmm_params, sequences, d_max, chunk_size=16):
     with `sequences`, the JointHSMMLogProbs, the whole-dataset r_hat array (index per trial),
     and the pi-weighted marginal transition matrix -- all four are what surprise.flag_joint()
     needs per trial and would otherwise have to be rebuilt.
+
+    `r_hat`: optionally supply the per-trial recipe assignment instead of inferring it. Only an
+    oracle analysis should (tools_oracle_recipe.py); the detector has to read the recipe off the
+    trial in front of it.
     """
     log_probs = joint_params.to_log_probs_joint(joint_hsmm_params, d_max)
     t_max = max(len(s["verb_ids"]) for s in sequences)
 
     verb_all, noun_all, mask_all = _pad(sequences, t_max)
-    r_hat, _, _ = joint_em.infer_recipe(joint_hsmm_params, verb_all, noun_all, mask_all, d_max, chunk_size=chunk_size)
+    if r_hat is None:
+        r_hat, _, _ = joint_em.infer_recipe(
+            joint_hsmm_params, verb_all, noun_all, mask_all, d_max, chunk_size=chunk_size
+        )
+    else:
+        r_hat = jnp.asarray(r_hat)
     log_trans_marginal = joint_params.marginal_log_trans(log_probs)
 
     traces = []

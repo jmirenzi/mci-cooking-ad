@@ -243,3 +243,55 @@ def fit_durations_shrunk(xi_dur_acc, cens_acc, dur_r_old, dur_p_old, d_max, kapp
     dur_p = p_over_r(n_hat_total, s_hat, dur_r)
 
     return dur_r, dur_p, r_global, p_global
+
+
+# ---------------------------------------------------------------------------------------------
+# numpy/scipy duplicates of the three NB tail functions above. The jax versions are what EM
+# needs (jitted, vmapped M-steps); anomaly/temporal.py is pure numpy scoring a handful of
+# segments per trial, and there jax.scipy.special.betainc costs ~0.1s PER CALL on a float64 GPU
+# regardless of array size -- ~90% of every evaluation sweep's wall time. scipy's betainc is the
+# same I_x(a,b) and the reference these docstrings already cite; agreement is asserted in
+# tests/test_temporal.py.
+# ---------------------------------------------------------------------------------------------
+
+
+def nb_log_survival_np(d, r, p):
+    """numpy `nb_log_survival`."""
+    import numpy as _np
+    from scipy.special import betainc as _betainc
+
+    d = _np.asarray(d, dtype=_np.float64)
+    r = _np.asarray(r, dtype=_np.float64)
+    p = _np.asarray(p, dtype=_np.float64)
+    d_safe = _np.maximum(d, 2.0)
+    cdf_part = _betainc(r, d_safe - 1.0, p)
+    with _np.errstate(divide="ignore"):
+        out = _np.log1p(-cdf_part)
+    return _np.where(d <= 1.0, 0.0, out)
+
+
+def nb_log_cdf_np(d, r, p):
+    """numpy `nb_log_cdf`."""
+    import numpy as _np
+    from scipy.special import betainc as _betainc
+
+    d = _np.asarray(d, dtype=_np.float64)
+    r = _np.asarray(r, dtype=_np.float64)
+    p = _np.asarray(p, dtype=_np.float64)
+    with _np.errstate(divide="ignore"):
+        return _np.log(_betainc(r, d, p))
+
+
+def nb_log_pmf_np(d, r, p):
+    """numpy `nb_log_pmf`."""
+    import numpy as _np
+    from scipy.special import gammaln as _gammaln, xlog1py as _xlog1py
+
+    d = _np.asarray(d, dtype=_np.float64)
+    r = _np.asarray(r, dtype=_np.float64)
+    p = _np.asarray(p, dtype=_np.float64)
+    with _np.errstate(divide="ignore"):
+        return (
+            _gammaln(d - 1.0 + r) - _gammaln(r) - _gammaln(d)
+            + r * _np.log(p) + _xlog1py(d - 1.0, -p)
+        )

@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.scipy.special import logsumexp
+from scipy.special import logsumexp as _np_logsumexp
 
 from cook_ad.anomaly import quantile, temporal
 from cook_ad.hsmm import emissions, joint_em, joint_params, messages, params
@@ -93,12 +94,18 @@ def emission_surprise(pi_all, log_emit_v, log_emit_n, verb_ids, noun_ids):
     Marginalizes verb, noun, and the joint under the SAME predictive weighting pi_all, which
     is what keeps S_verb/S_noun on a shared scale and makes the item-vs-action attribution
     meaningful (Model_descript.md's Product Model / conditional-independence argument).
+
+    numpy rather than jax on purpose: this runs per trial outside any jit and T varies per
+    trial, so eager jax re-compiles every primitive for each distinct sequence length.
     """
-    term_v = log_emit_v[:, verb_ids].T  # (T,K)
-    term_n = log_emit_n[:, noun_ids].T  # (T,K)
-    s_emit = -logsumexp(pi_all + term_v + term_n, axis=-1)
-    s_verb = -logsumexp(pi_all + term_v, axis=-1)
-    s_noun = -logsumexp(pi_all + term_n, axis=-1)
+    pi_all = np.asarray(pi_all)
+    log_emit_v = np.asarray(log_emit_v)
+    log_emit_n = np.asarray(log_emit_n)
+    term_v = log_emit_v[:, np.asarray(verb_ids)].T  # (T,K)
+    term_n = log_emit_n[:, np.asarray(noun_ids)].T  # (T,K)
+    s_emit = -_np_logsumexp(pi_all + term_v + term_n, axis=-1)
+    s_verb = -_np_logsumexp(pi_all + term_v, axis=-1)
+    s_noun = -_np_logsumexp(pi_all + term_n, axis=-1)
     return s_emit, s_verb, s_noun
 
 
@@ -690,3 +697,18 @@ def compute_trace_joint(joint_hsmm_params, verb_ids, noun_ids, d_max):
         joint_hsmm_params, joint_log_probs, r_hat, log_trans_marginal, pi_all, verb_ids, noun_ids, seg_result
     )
     return trace, joint_log_probs, r_hat, log_trans_marginal, rho
+
+
+def flag_joint_cached(cache, trace, joint_log_probs, r_hat, log_trans_marginal,
+                       alpha=DEFAULT_ALPHA, thresholds=None):
+    """`flag_joint` with its quantile tables served from a `quantile.JointThresholdCache`.
+    Identical output."""
+    tables = cache.tables(joint_log_probs, r_hat, log_trans_marginal, alpha)
+    flags = _base_flags(trace, tables, alpha, thresholds)
+
+    from_state_valid = trace.from_state != -1
+    from_state_safe = np.where(from_state_valid, trace.from_state, 0)
+    flags["s_recipe_transition"] = from_state_valid & (
+        trace.s_recipe_transition > tables.recipe[from_state_safe]
+    )
+    return flags

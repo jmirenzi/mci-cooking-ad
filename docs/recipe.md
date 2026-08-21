@@ -5,6 +5,7 @@
 | `segmentize.py` | max-product (Viterbi) decoding of the HSMM → segments |
 | `recipe_hmm.py` | the cascade's stage-2 discrete HMM over segment symbols, + clustering metrics |
 | `warm_start.py` | cascade artifacts → the joint model's iteration-0 parameters |
+| `lexical_init.py` | the observation-derived alternative to `warm_start.py`: one subtask state per observed (verb,noun) pair, recipes seeded by bag-of-pairs k-means |
 
 This package sits between "a fitted HSMM" and "a per-trial interpretation of what happened".
 
@@ -271,3 +272,58 @@ softens everything on iteration 1.
 differ in state, because the underlying HSMM's transition matrix already had $A_{kk} = -\infty$ at
 segmentation time. The final `* (1 - I)` in `cascade_to_joint` is belt-and-braces, and matters only
 for the fallback path where `fallback_trans` is copied wholesale.
+
+---
+
+## 4. `lexical_init.py` — the observation-derived warm start
+
+`warm_start.cascade_to_joint` (§3) builds iteration 0 from a fitted cascade;
+`lexical_init.lexical_to_joint` builds it from the observation stream and needs no cascade
+artifacts. Both return a `JointHSMMParams` and are interchangeable at the call site
+(`run_joint.py` vs `run_joint_lexical.py`).
+
+### Why the observations already contain the state inventory
+
+The tick stream is coarse action labels, constant within an annotated action, so a maximal run of
+constant $(v,n)$ is exactly one action instance and the distinct pairs are the action inventory —
+48 on the full corpus, from `sequences.json` alone. `labels.json` is not read here.
+
+The cascade route spends its EM budget rediscovering that and does not quite arrive: emissions
+are near-deterministic (occupancy-weighted purity 0.986) and boundaries agree with the $(v,n)$ run
+structure (boundary F1 0.975), but **10 of the 48 pairs end up split across two to four states**.
+That splitting is what the structural channels lose to: it divides one action's transition mass
+across duplicates, flattening $A^{(r)}$ where the per-state quantile threshold reads it; and a
+duplicate state is a legal alternative path, so Viterbi can re-explain an anomalous transition by
+routing through it. Measured on injected omissions, 30% of never-seen junctions survive the decode
+under a cascade-started fit against 92% under this one (`tools_launder.py`).
+
+### The construction
+
+1. `observed_pairs` — distinct $(v,n)$ pairs covering at least `MIN_PAIR_TICKS` ticks. State $k$
+   *is* pair $k$.
+2. `anchored_emission_counts` — `ANCHOR_MASS` on state $k$'s own two tokens, `BACKGROUND_MASS`
+   spread over the rest of each vocabulary. Near-deterministic but never zero: the emission
+   channels need a finite, calibratable surprise for an off-pair observation, not $-\infty$.
+3. `hard_segments` — run-length-encode each trial over those pairs.
+4. `cluster_recipes` — spherical k-means on bag-of-pair histograms. A recipe is characterised by
+   which actions it contains, which the bag states directly.
+5. Per-recipe hard init/transition counts and per-$(r,k)$ duration histograms from (3) and (4),
+   duration fit shrunk toward the pooled per-state shape (`kappa`) as in §3.
+
+Because (2) makes the decode near-deterministic and (3) is that same decode, iteration 0 is
+self-consistent. The anchor matrices are returned in `info` and passed to `joint_em.run_joint_em`
+as `emit_prior_v`/`emit_prior_n`, so EM's flat emission prior cannot relicense a state
+([`hsmm.md`](hsmm.md) §6).
+
+### `init_prior_scale`
+
+Scales the Dirichlet prior on the **iteration-0** counts only. 1.0 is the coherent value and the
+default, for the reason [`hsmm.md`](hsmm.md) §3 gives — without it a bigram observed once floors,
+and roughly half the bigrams in a 25-trial recipe cluster are singletons.
+
+0.0 nonetheless fits a measurably better detector. With the prior on, soft EM converges, ends at a
+higher objective ($-12594$ vs $-12931$) and holds per-tick subtask ARI at 0.999 instead of drifting
+to 0.94; with it off, `trial_loc` train accuracy is **0.556 against 0.518**. The finished models
+differ in transition sparsity (median row entropy 0.470 vs 0.518), the quantity
+$s_{\text{transition}}$ reads. That is an observation, not a derivation. The knob exists so the
+choice is explicit; it defaults to the coherent value, not the winning one.
