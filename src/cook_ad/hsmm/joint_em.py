@@ -92,10 +92,10 @@ def e_step(joint_hsmm_params, verb_ids, noun_ids, mask, d_max, temperature=1.0, 
     return total_stats, total_trial_ll
 
 
-@functools.partial(jax.jit, static_argnames=("d_max", "global_damping", "freeze_emissions"))
+@functools.partial(jax.jit, static_argnames=("d_max", "global_damping"))
 def m_step(joint_hsmm_params, stats, alpha_pi, alpha_init, alpha_trans, alpha_emit_v, alpha_emit_n, kappa, d_max,
            prev_global_r=None, prev_global_p=None, global_damping=0.0,
-           emit_prior_v=None, emit_prior_n=None, freeze_emissions=False):
+           emit_prior_v=None, emit_prior_n=None):
     """Dirichlet MAP per recipe for init/trans + pi, shared Dirichlet MAP for emissions (as
     today), plus the shrinkage duration fit (durations.fit_durations_shrunk) in place of
     em.py's plain censoring-imputation + Newton.
@@ -107,17 +107,9 @@ def m_step(joint_hsmm_params, stats, alpha_pi, alpha_init, alpha_trans, alpha_em
     just params -- the caller (run_joint_em) threads global_r/global_p back in as
     prev_global_r/prev_global_p on the next call to continue the EMA.
 
-    `emit_prior_v`/`emit_prior_n`: optional (K,V)/(K,N) Dirichlet pseudocount MATRICES replacing
-    the flat `alpha_emit_*/width` prior. A flat prior says every state's emission is a priori
-    the same, which is the right thing to say when the states are anonymous -- but not when the
-    initialisation has already given state k a meaning (recipe/lexical_init.py anchors state k
-    on one observed (verb,noun) pair). A per-state prior is what keeps that meaning attached
-    across EM iterations instead of letting a state drift onto whatever the responsibilities
-    happen to hand it.
-
-    `freeze_emissions`: hold verb/noun emissions at their incoming value and update only
-    init/trans/pi/durations. The strong-anchor limit of the above, useful when the emission
-    inventory is taken as given and EM's whole budget should go to the dynamics.
+    `emit_prior_v`/`emit_prior_n`: optional (K,V)/(K,N) Dirichlet pseudocount matrices replacing
+    the flat `alpha_emit_*/width` prior -- needed when the initialisation has already given each
+    state a meaning to keep (recipe/lexical_init.py).
     """
     k_r = joint_hsmm_params.pi_counts.shape[0]
     k = joint_hsmm_params.init_counts.shape[1]
@@ -127,14 +119,10 @@ def m_step(joint_hsmm_params, stats, alpha_pi, alpha_init, alpha_trans, alpha_em
     new_pi_counts = alpha_pi / k_r + stats["pi_counts"]
     new_init_counts = alpha_init / k + stats["init_counts"]
     new_trans_counts = (alpha_trans / k + stats["trans_counts"]) * (1.0 - jnp.eye(k))[None, :, :]
-    if freeze_emissions:
-        new_verb_counts = joint_hsmm_params.verb_counts
-        new_noun_counts = joint_hsmm_params.noun_counts
-    else:
-        prior_v = alpha_emit_v / n_verb if emit_prior_v is None else emit_prior_v
-        prior_n = alpha_emit_n / n_noun if emit_prior_n is None else emit_prior_n
-        new_verb_counts = prior_v + stats["verb_counts"]
-        new_noun_counts = prior_n + stats["noun_counts"]
+    prior_v = alpha_emit_v / n_verb if emit_prior_v is None else emit_prior_v
+    prior_n = alpha_emit_n / n_noun if emit_prior_n is None else emit_prior_n
+    new_verb_counts = prior_v + stats["verb_counts"]
+    new_noun_counts = prior_n + stats["noun_counts"]
 
     dur_r, dur_p, global_r, global_p = durations.fit_durations_shrunk(
         stats["xi_dur"], stats["cens"], joint_hsmm_params.dur_r, joint_hsmm_params.dur_p, d_max, kappa,
@@ -169,7 +157,6 @@ def run_joint_em(
     global_damping=0.0,
     emit_prior_v=None,
     emit_prior_n=None,
-    freeze_emissions=False,
 ):
     """Single deterministic EM run from `init_params` (the cascade warm start, per spec --
     no restart loop here; random-init fallback restarts are the runner's concern, mirroring
@@ -196,10 +183,7 @@ def run_joint_em(
     body never executes and this returns immediately with `converged=False` and `history`/`p`
     unchanged from the input -- cheap and safe to call unconditionally.
 
-    `emit_prior_v`/`emit_prior_n`/`freeze_emissions`: passed straight through to `m_step` --
-    see its docstring. They are the knob that lets an initialisation which already assigns
-    states a meaning (recipe/lexical_init.py) keep it, rather than having EM's flat emission
-    prior quietly relicense every state on the first M-step.
+    `emit_prior_v`/`emit_prior_n`: passed through to `m_step` -- see its docstring.
 
     `global_damping`: EMA damping factor (0 = off, the default) for the duration M-step's
     pooled global per-state fit -- see fit_durations_shrunk's docstring for why a near-empty
@@ -243,7 +227,7 @@ def run_joint_em(
         p, prev_global_r, prev_global_p = m_step(
             p, stats, alpha_pi, alpha_init, alpha_trans, alpha_emit_v, alpha_emit_n, kappa, d_max,
             prev_global_r=prev_global_r, prev_global_p=prev_global_p, global_damping=global_damping,
-            emit_prior_v=emit_prior_v, emit_prior_n=emit_prior_n, freeze_emissions=freeze_emissions,
+            emit_prior_v=emit_prior_v, emit_prior_n=emit_prior_n,
         )
         if on_checkpoint is not None and ((iteration + 1) % checkpoint_every == 0 or converged):
             on_checkpoint(iteration + 1, p, history)

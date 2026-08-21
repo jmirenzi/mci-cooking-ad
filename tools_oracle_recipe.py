@@ -1,13 +1,9 @@
-"""How much detection is lost to the MAP recipe flipping on the degraded trial?
+"""How much recall is lost to the MAP recipe being re-inferred from the degraded stream?
 
-The detector infers r_hat from the trial it is handed, degraded and all. On a transposition
-that assignment moves to a different cluster 40-60% of the time (tools_launder.py) -- and the
+On a transposition the assignment moves to a different cluster 40-60% of the time -- and the
 cluster it moves to is, by selection, one whose transition matrix finds the new ordering
-ordinary. The anomaly is then scored against a model that expects it.
-
-This re-scores every degraded trial twice: once as the detector really does, and once with
-r_hat PINNED to the recipe the healthy version of the same trial decodes to. The gap is the
-size of the prize for making recipe assignment robust; it is an oracle, not a detector.
+ordinary. Re-scores every degraded trial with r_hat pinned to the healthy decode's value. An
+oracle, not a detector.
 """
 import argparse
 import json

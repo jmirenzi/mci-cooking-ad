@@ -1,12 +1,9 @@
-"""How much duration signal a fitted model actually has, without running the full detector.
+"""What the fitted duration model can deliver, without running the detector.
 
-For every healthy decoded segment (recipe r, state k, duration d) this scores the SAME
-two-sided duration surprise s_dur_two the detector uses, at three durations: the observed d
-(healthy -- any flag is a false alarm), 2d (what a repetition collapses to, since A_kk = 0
-forces Viterbi to merge the duplicated run into one segment), and 1 (what an abandonment
-truncates to). The gap between the healthy flag rate and the 2d / 1-tick flag rates is the
-duration channels' ceiling under this fit -- reachable only if the decode behaves, but never
-exceeded.
+Re-scores every healthy segment's `s_dur_two` at three durations: its own d (any flag is a false
+alarm), 2d (what a repetition collapses to, since banned self-transitions force Viterbi to merge
+the duplicated run) and 1 (what an abandonment truncates to). Predicts THAT CHANNEL's recall, not
+the error type's -- `s_temporal` is not modelled here and carries most of repetition.
 """
 import argparse
 import json

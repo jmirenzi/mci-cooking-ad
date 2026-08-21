@@ -1,20 +1,17 @@
-"""Refit only the duration parameters of a fitted joint model, from its own Viterbi decode, at
-a chosen pooling strength -- a hard-assignment duration M-step, swept over `kappa`.
+"""Refit only the duration parameters of a fitted joint model from its own Viterbi decode -- a
+hard-assignment duration M-step, sweepable in `kappa` without a full EM run.
 
 `kappa` is the pseudocount budget of the pooled per-state duration shape injected into every
-(recipe, state) cell (`durations.fit_durations_shrunk`). It is the one knob that sets how tight
-P(D | state, recipe) is, and both retrospective duration channels' power is a direct function of
-that tightness: at the fitted CV of ~0.66 a doubled segment -- what a repetition collapses to --
-clears the alpha tail only ~28% of the time. Sweeping it through a full EM run costs ~45 minutes
-per value; sweeping it here costs seconds, because durations given a segmentation do not depend
-on anything else in the model.
+(recipe, state) cell (`durations.fit_durations_shrunk`), and it sets how tight P(D | state,
+recipe) is -- which is what both retrospective duration channels' power is a function of.
+Sweeping it through EM costs ~45 min per value; here it costs seconds, because durations given a
+segmentation depend on nothing else.
 
-The decode's last segment per trial is right-censored (observation stopped, the activity did
-not) and is imputed the same way the real M-step does, via
-`durations.impute_censored_histogram` under the model's current (r,p) -- dropping it instead
-would bias every duration short, which is the failure mode docs/README.md warns about.
+The last segment of each trial is right-censored and imputed via
+`durations.impute_censored_histogram`, as the real M-step does; dropping it would bias every
+duration short.
 
-    ./py refit_durations.py --in runs/joint_la_s05t1.npz --out runs/joint_x.npz --kappa 50
+    ./py refit_durations.py --in runs/joint_sh_s.npz --out runs/joint_final.npz --kappa 0.001
 """
 import argparse
 import functools

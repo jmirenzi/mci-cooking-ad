@@ -1,17 +1,9 @@
 """How much false-positive mass does `trial_loc` collapse away?
 
-`trial_loc` charges a trial ONE false positive if it flags outside the injection-touched range,
-whether it does so once or fifty times, and one for a healthy trial that flags at all. Total FP
-is therefore capped at (number of trials), which is exactly the quantity a nagging assistant is
-not bounded by.
-
-This counts what the trial-level verdict throws away: contiguous runs of the unioned flag mask,
-which is the closest tick-level proxy for "one alarm the user would actually be shown"
-(anomaly/narrate.py renders a run of flagged ticks as one Query card, not one per tick).
-
-Reports, per model and per source group: the trial-level stray rate `trial_loc` charges, the
-mean number of stray ALARMS behind it, and an event-level precision -- of every alarm this
-detector raises anywhere, what fraction lands inside an injection-touched range.
+`trial_loc` charges a trial one false positive whether it flags outside the range once or fifty
+times, so total FP is capped at the trial count -- not what bounds a nagging assistant. This
+counts contiguous runs of the unioned flag mask instead, the closest tick-level proxy for one
+Query card, and reports an event-level precision alongside the trial-level stray rate.
 """
 import argparse
 import json

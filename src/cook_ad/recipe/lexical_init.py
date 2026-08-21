@@ -1,32 +1,12 @@
-"""An alternative iteration-0 state for the joint model: **one subtask state per distinct
-observed (verb, noun) pair**, with recipes clustered from trial-level noun histograms.
+"""Iteration-0 parameters for the joint model built from the observations alone: one subtask
+state per distinct observed (verb, noun) pair, recipes seeded by bag-of-pairs k-means.
 
-Why this exists
----------------
-`warm_start.cascade_to_joint` starts the joint model from the cascade's own unsupervised fit.
-Measured on the full-scale train split, that fit's emissions are already near-deterministic
-(occupancy-weighted purity 0.986) and its boundaries already agree with the (v,n) run structure
-(boundary F1 0.975) -- i.e. EM spends its whole budget rediscovering something the observation
-stream states outright, and does not quite get there: 10 of the 48 distinct (v,n) pairs end up
-SPLIT across two to four states (`stall/kitchen` across four, `stirfry/egg` across three).
+Drop-in alternative to `warm_start.cascade_to_joint`, needing no cascade artifacts. The tick
+stream is coarse action labels, so a maximal run of constant (v,n) is one action instance and
+the distinct pairs are the action inventory -- recoverable from `sequences.json` alone.
+`labels.json` is not read here and must not be.
 
-That splitting is not cosmetic. It is the thing the structural channels lose to:
-
-* one action's transition mass is divided across its duplicate states, so a bigram that occurred
-  40 times is estimated from four rows of ~10 -- flattening `A^{(r)}` exactly where
-  `s_transition`'s per-state quantile threshold reads it;
-* a duplicate state is a *legal alternative path*, so Viterbi can re-explain an injected
-  transposition or omission by routing through the duplicate instead of paying the
-  ~30-nat cost of the transition the injection actually created. The anomaly is laundered into
-  the decode and no channel ever sees it.
-
-Since the observation stream is piecewise-constant coarse action labels, the distinct (v,n)
-pairs ARE the action inventory; recovering them needs no labels, only `sequences.json`. This
-module therefore hands EM the organisation it was struggling toward and lets it spend its
-budget on what is genuinely latent: the per-recipe transition structure and the durations.
-
-`labels.json` is not read here, and must not be -- see docs/README.md's standing rule. Every
-quantity below comes from the training sequences alone.
+Full rationale and the measurements behind the defaults: docs/recipe.md 4.
 """
 import functools
 
@@ -37,15 +17,12 @@ import numpy as np
 from cook_ad.hsmm import durations
 from cook_ad.hsmm.joint_params import JointHSMMParams
 
-# A (v,n) pair seen fewer times than this over the whole training split is not given its own
-# state -- it is almost certainly an annotation edge case, and a state whose entire support is
-# a handful of ticks produces a duration fit and a transition row that are pure noise.
+# A pair covering fewer ticks than this gets no state of its own: its duration fit and
+# transition row would be pure noise.
 MIN_PAIR_TICKS = 5
 
-# Dirichlet pseudocount placed on a state's own verb/noun token. The complementary
-# BACKGROUND_MASS is spread uniformly over the rest of the vocabulary, so a state is
-# near-deterministic but never assigns literally zero probability to an unseen token -- the
-# emission channels need a finite, calibratable surprise for an off-pair observation, not -inf.
+# Pseudocount on a state's own tokens, and the mass spread over the rest of each vocabulary.
+# Background is nonzero so an off-pair observation has finite, calibratable surprise, not -inf.
 ANCHOR_MASS = 50.0
 BACKGROUND_MASS = 1.0
 
@@ -65,15 +42,9 @@ def observed_pairs(sequences, min_ticks=MIN_PAIR_TICKS):
 
 def anchored_emission_counts(pairs, k_subtask, vocab_verbs, vocab_nouns,
                              anchor=ANCHOR_MASS, background=BACKGROUND_MASS):
-    """(K,V) / (K,N) Dirichlet pseudocount matrices placing `anchor` on state k's own pair
-    tokens and `background` spread uniformly over the rest of each vocabulary.
-
-    States beyond `len(pairs)` (the weak-limit headroom) get a flat background row: they are
-    reachable only if EM finds real use for them, and a flat row is the least committal way to
-    leave that door open. Note these are the SAME quantities `params.HSMMParams.verb_counts`
-    holds -- full posterior concentration, prior plus data -- so they can be used directly both
-    as an iteration-0 value and as the M-step's prior term (`joint_em.m_step`'s
-    `emit_prior_v`/`emit_prior_n`)."""
+    """(K,V) / (K,N) Dirichlet pseudocount matrices: `anchor` on state k's own pair tokens,
+    `background` spread over the rest. Weak-limit headroom states get a flat row. Usable both as
+    the iteration-0 value and as `joint_em.m_step`'s `emit_prior_v`/`emit_prior_n`."""
     verb = np.full((k_subtask, vocab_verbs), background / vocab_verbs)
     noun = np.full((k_subtask, vocab_nouns), background / vocab_nouns)
     for k, (v, n) in enumerate(pairs[:k_subtask]):
@@ -83,15 +54,9 @@ def anchored_emission_counts(pairs, k_subtask, vocab_verbs, vocab_nouns,
 
 
 def hard_segments(sequences, pairs):
-    """Run-length-encode each trial's (v,n) stream into [(state_id, duration), ...], where
-    state_id is the index of that run's pair in `pairs`. Runs whose pair was dropped by
-    `min_ticks` are folded into the preceding run (they are rare and short by construction);
-    a leading dropped run is folded into the following one instead. Returns one list per
-    sequence, always non-empty for a non-empty trial.
-
-    This is the segmentation the emission anchoring makes near-deterministic, so using it to
-    seed the transition/duration histograms keeps iteration 0 self-consistent: the counts
-    describe exactly the decode the iteration-0 emissions imply.
+    """Run-length-encode each trial's (v,n) stream into [(state_id, duration), ...]. A run whose
+    pair was dropped by `min_ticks` is folded into a neighbour rather than discarded, so the
+    segmentation still tiles the trial exactly -- every consumer assumes sum(d) == T.
     """
     index = {p: i for i, p in enumerate(pairs)}
     out = []
@@ -127,20 +92,11 @@ def hard_segments(sequences, pairs):
 
 
 def cluster_recipes(sequences, k_recipe, seed=0, n_init=20):
-    """Trial-level recipe clusters from L1-normalised (verb,noun)-pair histograms, by spherical
-    k-means (cosine k-means on L2-normalised rows).
-
-    A recipe is characterised by *which actions it contains*, and a trial's bag of pair
-    frequencies states that directly. The joint model's own recipe posterior has to infer it
-    through a K_R-way mixture over full HSMM likelihoods, which at K_R=16 is a hard, highly
-    multi-modal assignment problem -- and an earlier measurement on this repo found a plain
-    bag-of-nouns baseline recovering the true recipe labels at ARI 0.88 against the fitted
-    joint model's 0.31. Seeding the mixture from the bag-of-pairs solution starts EM at that
-    quality instead of asking it to rediscover it.
-
-    Returns (assignments (N,), centroids (k_recipe, D)). Empty clusters are re-seeded at the
-    trial furthest from its own centroid, so all k_recipe slots stay live -- the weak-limit
-    prior, not this function, is what is allowed to kill a recipe off.
+    """Trial-level recipe clusters by spherical k-means on L1-normalised (v,n)-pair histograms.
+    A recipe is characterised by which actions it contains, which the bag of pairs states
+    directly. Returns (assignments (N,), centroids). Empty clusters are re-seeded at the trial
+    furthest from its own centroid, so the weak-limit prior -- not this function -- is what kills
+    a recipe off.
     """
     pairs, _ = observed_pairs(sequences, min_ticks=1)
     index = {p: i for i, p in enumerate(pairs)}
@@ -201,10 +157,13 @@ def lexical_to_joint(sequences, k_subtask, k_recipe, d_max, vocab_verbs, vocab_n
     dynamics come from the bag-of-pairs clustering. Drop-in replacement for
     `warm_start.cascade_to_joint` -- same return type, and it needs no cascade artifacts at all.
 
-    Returns (params, info) where `info` carries the pair list, the cluster assignment and the
-    emission prior matrices, so a caller can hand the same anchors to the M-step
-    (`joint_em.run_joint_em`'s `emit_prior_v`/`emit_prior_n`) and can map a state id back to its
-    (verb, noun) for narration.
+    Returns (params, info); `info` carries the pair list, the cluster assignment and the emission
+    prior matrices, so a caller can hand the same anchors to `joint_em.run_joint_em`.
+
+    `init_prior_scale` scales the Dirichlet prior on the iteration-0 counts only. 1.0 is coherent
+    and is the default, but **0.0 is what the best-measured detector uses** -- it ends at a lower
+    objective and a worse subtask ARI, and at a better trial_loc accuracy (0.556 vs 0.518). Do
+    not "fix" it without re-measuring; docs/recipe.md 4.
     """
     pairs, pair_ticks = observed_pairs(sequences, min_ticks=min_ticks)
     if len(pairs) > k_subtask:

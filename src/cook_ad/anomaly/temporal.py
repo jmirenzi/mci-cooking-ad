@@ -69,11 +69,8 @@ def completed_segment_surprise(segments, dur_r, dur_p, final_censored=True):
 
     scored = n - 1 if (final_censored and n > 0) else n
     if scored > 0:
-        # One vectorised call per tail rather than one per segment. nb_log_survival/nb_log_cdf
-        # are elementwise, so this is the same arithmetic on the same inputs -- but a per-segment
-        # loop pays a full JAX dispatch and device round-trip for each scalar, which at ~7
-        # segments x hundreds of trials x six source groups is the dominant cost of every
-        # evaluation sweep in the repo (measured: minutes per group, versus milliseconds here).
+        # One vectorised call per tail: the tails are elementwise, and a per-segment loop pays a
+        # JAX dispatch per scalar (see durations.nb_*_np).
         states = np.array([state for state, _ in segments[:scored]], dtype=np.int64)
         ds = np.array([float(d) for _, d in segments[:scored]], dtype=np.float64)
         r_j = dur_r[states].astype(np.float64)
@@ -101,7 +98,6 @@ def pit_coordinate(segments, dur_r, dur_p):
     if not segments:
         return pit
 
-    # Vectorised for the same reason completed_segment_surprise is -- see its comment.
     states = np.array([state for state, _ in segments], dtype=np.int64)
     d_np = np.array([float(d) for _, d in segments], dtype=np.float64)
     r_j = dur_r[states].astype(np.float64)

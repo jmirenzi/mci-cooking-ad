@@ -171,19 +171,12 @@ def threshold_tables_joint(joint_log_probs, r_hat, log_trans_marginal, alpha):
 
 
 class JointThresholdCache:
-    """Memoised `threshold_tables_joint` for sweeps that re-flag the same model many times.
+    """Memoised `threshold_tables_joint`, for sweeps that re-flag one model many times.
 
-    The three emission tables (emit/verb/noun) depend only on (alpha, the shared emission
-    matrices) -- NOT on r_hat -- yet `threshold_tables_joint` rebuilds all five on every call,
-    and `joint_quantile_threshold` alone sorts a V*N support K times per call. A sweep over A
-    alphas x N trials x G source groups therefore pays that cost A*N*G times when only A
-    distinct values exist. The two recipe-conditioned tables genuinely vary with r_hat, so they
-    are cached per (alpha, r_hat) -- at most A*K_R distinct values, against A*N*G calls.
-
-    Construct one per fitted model; the cache key is (alpha, r_hat) only, so reusing an instance
-    across DIFFERENT `joint_log_probs` would silently serve another model's thresholds. Callers
-    that refit must build a new cache (assert-guarded below on the object identity of the tables
-    handed in, which is exactly the reuse pattern eval/sweep code has).
+    The three emission tables depend only on alpha, not on r_hat, yet are rebuilt on every call
+    and `joint_quantile_threshold` sorts a V*N support K times each; a sweep of A alphas x N
+    trials x G groups pays that A*N*G times for A distinct values. Cache key is (alpha, r_hat)
+    only, so build one per fitted model -- cross-model reuse is rejected below.
     """
 
     def __init__(self, joint_log_probs, log_trans_marginal):

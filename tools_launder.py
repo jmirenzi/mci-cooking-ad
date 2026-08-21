@@ -1,13 +1,11 @@
-"""Does the Viterbi decode LAUNDER injected structural anomalies?
+"""Does the Viterbi decode launder injected structural anomalies?
 
-tools_trans.py measures how many junctions an injection creates that the training data never
-contains -- the transition channel's ceiling. This measures how many of those junctions
-actually survive into the decode the detector reads, and of the survivors how many clear their
-own quantile threshold. The three numbers localise the loss:
+`tools_transition_ceiling.py` counts the junctions an injection creates that the data never
+contains. This follows those through the decode to the flag, localising the loss:
 
-    created & novel   ->  what the data makes flaggable at all
-    still in decode   ->  what Viterbi did not re-explain away with a different state path
-    flagged           ->  what the threshold then admitted
+    created & novel  ->  what the data makes flaggable at all
+    still in decode  ->  what Viterbi did not re-explain through another state path
+    flagged          ->  what the threshold then admitted
 """
 import argparse
 import json

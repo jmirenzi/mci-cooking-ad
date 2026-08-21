@@ -334,147 +334,85 @@ sanity check against its own majority-class baseline.
 
 ## 7. `run_detect_eval.py` — the scorecard model selection runs through
 
-Same `trial_loc` metric and the same ground-truth convention as §6 (positive range = injection
-window $\cup$ debris, strays charged independently of hits), so numbers from the two are directly
-comparable. What it adds:
-
-- the **per-error-type and per-channel** breakdown in one pass, so a change can be attributed to
-  the channel it moved rather than only to the union;
-- a healthy pool built with `synthetic.generate.trajectories_from_real_joint`, which pads the
-  whole split to one global $T_{\max}$ instead of compiling the recipe-inference and Viterbi
-  kernels once per distinct trial length;
-- `quantile.JointThresholdCache`, since a sweep over $A$ alphas × $N$ trials × 6 source groups
-  contains only $A$ distinct emission tables and $A \times K_R$ recipe-conditioned ones.
-
-Together those take a full 402-trial sweep from most of an hour to a couple of minutes, which is
-what makes detection usable as a selection criterion rather than a final report
-([`hsmm.md`](hsmm.md) §7).
+Same `trial_loc` metric and ground-truth convention as §6, so numbers are directly comparable.
+What it adds: the per-error-type and per-channel breakdown in one pass, a healthy pool built with
+the batched `generate.trajectories_from_real_joint`, and `quantile.JointThresholdCache`. Those
+take a 402-trial sweep from most of an hour to a couple of minutes, which is what makes detection
+usable as a *selection* criterion rather than only a final report ([`hsmm.md`](hsmm.md) §7).
 
 ### Read accuracy, not F1
 
-The pool is 1 healthy : 5 degraded and a stray flag is charged independently of a hit, so
-**flagging every trial** scores
-
-$$
-\text{precision} = \tfrac{5}{11},\quad \text{recall} = 1,\quad F_1 = 0.625,\quad
-\text{accuracy} = \tfrac{5}{11} = 0.455 ,
-$$
-
-and flagging nothing scores accuracy $1/6$. An $F_1$ near 0.62 is therefore not evidence of a
-working detector — it is what you get for free. Accuracy is the number that separates one, and
+The pool is 1 healthy : 5 degraded and a stray is charged independently of a hit, so **flagging
+every trial** scores precision $5/11$, recall 1, $F_1 = 0.625$, accuracy $5/11 = 0.455$; flagging
+nothing scores accuracy $1/6$. An $F_1$ near 0.62 is what you get for free. Accuracy is the number
+that separates a detector, and since
 
 $$
 \text{acc} \;=\; \frac{5R + (1 - h)}{6 + 5s}
 $$
 
-with $R$ = recall, $h$ = healthy false-alarm rate, $s$ = stray rate on degraded trials. The
-partials are $\partial\text{acc}/\partial R \approx 0.68$, $\partial\text{acc}/\partial s
-\approx -0.34$, $\partial\text{acc}/\partial h \approx -0.14$: **recall is worth roughly five
-times the healthy false-alarm rate**, which is the opposite of the weighting a precision-focused
-threshold sweep encourages. `render_detect_compare_png.py` draws both reference lines.
+($R$ recall, $h$ healthy false-alarm rate, $s$ stray rate on degraded trials), **recall is worth
+roughly five times $h$** — the opposite of the weighting a precision-focused sweep encourages.
 
 ### Two ways the comparison can flatter itself
 
-**Who placed the injections.** `synthetic/error_injection.py` perturbs whatever segmentation the
-**scoring model itself** decoded — so two models are graded on two different sets of degraded
-streams, and models that differ in how they segment differ in exactly that. `--traj-params`
-points every model at one common source. Report both directions; a gap that only exists in one is
-not a gap.
+**Who placed the injections.** `error_injection` perturbs whatever segmentation the *scoring
+model itself* decoded, so models that differ in how they segment are graded on different degraded
+streams. `--traj-params` points every model at one common source; report both directions.
 
-**Which segments were hit.** The injectors draw a segment per trial, and that draw is worth a few
-points on a single run. Quote a mean over several `--seed` values, not the best one.
+**Which segments were hit.** The injectors draw a segment per trial, worth a few points on a
+single run. Quote a mean over several `--seed` values, not the best one.
 
-`report_final.py` enforces the other half of the discipline: it picks $\alpha$ on **train** by
-`trial_loc` accuracy and reports the model at that same $\alpha$ on **test**. Picking $\alpha$
-per split would report a number no deployment could reproduce, since $\alpha$ has to be fixed
-before the test trials are seen.
+`report_final.py` enforces the rest: pick $\alpha$ on **train**, report at that same $\alpha$ on
+**test**. Picking per split reports a number no deployment could reproduce.
 
 ### `trial_loc` caps false positives at one per trial — cross-check at step level
 
 The stray is charged as a boolean: `fp += bool((~pos & mask).any())`. A trial that flags once
-outside the range and one that flags five times cost the same single false positive, and a
-healthy trial that flags twenty times also costs one. Total FP is bounded by the trial count —
-which is exactly the quantity a nagging assistant is *not* bounded by. Charging the stray
-independently of the hit (§6) separates "found it and also fired elsewhere" from "found it
-cleanly"; it does not separate "fired elsewhere once" from "fired elsewhere five times".
+outside the range and one that flags five times cost the same single false positive, so total FP
+is bounded by the trial count — not by anything a nagging assistant is bounded by. Charging the
+stray independently of the hit (§6) separates "found it and also fired elsewhere" from "found it
+cleanly"; it does not separate "once" from "five times".
 
-`tools_alarm_load.py` measures what that collapses, counting contiguous runs of the unioned flag
-mask — the closest tick-level proxy for one Query card. On the test split the ratio of alarms
-actually raised to false positives charged is roughly **1.1–1.4× for the HSMM and 3.2× for the
-LLM arm**, so the cap flatters the chattier detector, and the LLM is much the chattier one.
+`tools_alarm_load.py` measures the gap, counting contiguous runs of the unioned flag mask. On the
+test split the ratio of alarms raised to false positives charged is ~1.1–1.4× for the HSMM arms
+and **3.2× for the LLM arm**, so the cap flatters the chattier detector.
 
-That cap can invert a comparison. Two HSMM fits whose `trial_loc` accuracy differs by 5 points
-in one direction can differ in the other at step level, where every flagged step is counted:
+That can invert a comparison, so quote a `trial_loc` gain only alongside a step-level check
+(`run_step_sweep.py`, the step-layer analogue of `run_threshold_sweep.py`). Neither granularity
+is wrong — "did it bother the user about the right trial" versus "how often did it bother the
+user" — but for an assistant whose failure mode is nagging, select on the step layer.
 
-| test split | `trial_loc` acc | step precision | step recall | flagged steps on **healthy** trials |
-|---|---|---|---|---|
-| cascade fit, $\alpha = 5\!\times\!10^{-3}$ | 0.453 | 0.676 | 0.515 | 22 / 649 |
-| lexical+hard-EM fit, $\alpha = 5\!\times\!10^{-3}$ | 0.517 | 0.580 | 0.588 | 35 / 649 |
-| lexical+hard-EM fit, $\alpha = 5\!\times\!10^{-4}$ (recall matched) | — | 0.577 | 0.509 | 28 / 649 |
+### Selecting regularisation out of sample
 
-The healthy column settles what the two conventions could otherwise argue about: healthy trials
-contain no injection and therefore no debris, so no difference in ground-truth convention
-explains it. **At matched recall the second fit raises ~27% more false alarms on normal
-behaviour**, and `trial_loc` cannot see it because those extra alarms land on trials already
-charged their one false positive.
+`smooth_params.py`'s `--strength` and `--backoff-tau` are regularisation, so choosing them on the
+split the model was fit to chooses too little. On the train split the pooled backoff looks best
+at $\tau = 2$; on a nested held-out fold (`make_dev_split.py`, 322 fit / 80 dev out of the 402
+outer-train trials) $\tau = 2$ is the worst of the grid and $\tau = 30$ the best. The shift
+strength is unaffected — $s = 0.7$ wins on both, $s \ge 1.5$ loses on both.
 
-Neither granularity is wrong; they answer different questions ("did it bother the user about the
-right trial" versus "how often did it bother the user"). The rule is to quote a `trial_loc`
-improvement only alongside the step-level check, and to select an operating point on the
-granularity that matches the failure mode you care about. For an assistant whose failure mode is
-nagging, that is the step layer.
-
-### Selecting the operating point on the step layer
-
-Because the two layers can disagree, which one the operating point is chosen on is a real
-decision, not a formality. `run_step_sweep.py` is `run_threshold_sweep.py`'s step-layer
-counterpart — same trace-once-sweep-cheaply structure, scored through `evaluate_steps`.
-
-Two things had to change to make the lexical+hard-EM fit win at this layer as well:
-
-**Select regularisation out of sample.** `smooth_params.py`'s `--strength` and `--backoff-tau`
-are regularisation; their whole job is generalisation, so choosing them on the split the model
-was fit to systematically chooses too little. On the train split the pooled backoff looks best at
-$\tau = 2$; on a nested held-out fold (`make_dev_split.py`, 322 fit / 80 dev out of the 402
-outer-train trials) $\tau = 30$ is clearly better and $\tau = 2$ is the worst of the grid. The
-shift strength is unaffected — $s = 0.7$ wins on both, and $s \ge 1.5$ loses on both.
-
-**The symptom of getting it wrong is a train/dev gap in healthy false alarms**, which is the
-cheapest thing to monitor:
+The symptom of getting it wrong is a train/test gap in flagged healthy steps, which is the
+cheapest thing to watch:
 
 | flagged healthy steps, at matched recall | train | test |
 |---|---|---|
 | cascade fit | 3.2% (85/2692) | 3.4% (22/649) |
-| lexical+hard-EM, $\tau = 2$ (selected in-sample) | 0.8% (22/2692) | 4.3% (28/649) |
-| lexical+hard-EM, $\tau = 30$ (selected on dev) | — | 2.9% (19/649) |
+| lexical+hard-EM, $\tau = 2$ (in-sample pick) | 0.8% (22/2692) | 4.3% (28/649) |
+| lexical+hard-EM, $\tau = 30$ (dev pick) | — | 2.9% (19/649) |
 
-A 4× train/test gap is the transition table behaving as a lookup of the training bigrams: a legal
-transition that merely did not occur in those 402 trials costs ~32 nats out of sample. Backing
-off to the pooled row is exactly what covers it, and $\tau$ is how much.
-
-With $\tau = 30$ the fit dominates the cascade at both layers on test — step precision 0.691
-against 0.626 at matched recall 0.511, with 19 flagged healthy steps against 27; `trial_loc`
-accuracy 0.509 against 0.453 at equal recall, with the healthy false-alarm rate roughly halved
-(0.196 against 0.351).
+A 4× gap is the transition table acting as a lookup of the training bigrams: a legal transition
+that merely did not occur in those 402 trials costs ~32 nats out of sample, and backing off to
+the pooled row is what covers it. With $\tau = 30$ the fit beats the cascade at both layers on
+test — step precision 0.691 vs 0.626 at matched recall 0.511 with 19 vs 27 flagged healthy steps;
+`trial_loc` accuracy 0.509 vs 0.453 at equal recall, healthy false-alarm rate 0.196 vs 0.351.
 
 ### The healthy false-alarm floor $\alpha$ cannot reach
 
-Splitting those healthy steps per channel shows the same pathology in both fits — the one §6
-names, a false-positive rate flat across orders of magnitude of $\alpha$:
-
-| flagged healthy steps | $5\!\times\!10^{-3}$ | $5\!\times\!10^{-4}$ | $10^{-4}$ |
-|---|---|---|---|
-| `s_transition` | 19 → 24 | 19 → 22 | 19 → 22 |
-| `s_recipe_transition` | 19 → 19 | 19 → 16 | 19 → 16 |
-| `s_temporal` | 4 → 12 | 3 → 8 | 2 → 7 |
-| `s_dur_two` | 4 → 12 | 2 → 7 | 2 → 7 |
-
-(cascade fit → lexical+hard-EM fit). The two transition channels are ungated in **both**: their
-count is unmoved from $5\times10^{-3}$ to $10^{-4}$, so no threshold choice removes them. The
-duration channels *are* gated, and their floor roughly tripled — the cost of
-`refit_durations.py` tightening the duration fit, which buys abandonment and repetition recall
-and pays for it here. `run_threshold_sweep_coordinate.py` is the instrument for spending that
-budget per channel rather than through one shared $\alpha$.
+Per channel, both fits show the pathology §6 names — a false-positive rate flat across orders of
+magnitude of $\alpha$. `s_transition` and `s_recipe_transition` are unmoved from $5\times10^{-3}$
+to $10^{-4}$ in both, so no threshold choice removes them.
+`run_threshold_sweep_coordinate.py` is the instrument for spending the budget per channel rather
+than through one shared $\alpha$.
 
 ---
 
@@ -486,12 +424,10 @@ scorecard shows can be localised to a stage instead of guessed at. All are read-
 | Script | Question |
 |---|---|
 | `tools_state_organisation.py` | do the fitted states correspond one-to-one with the observed $(v,n)$ inventory, and does the decode agree with the run structure? (purity, boundary F1, split pairs) |
-| `tools_transition_sparsity.py` | usage-weighted transition row entropy, and what an unobserved transition actually costs in nats |
 | `tools_transition_ceiling.py` | of the junctions an injection creates, how many does the training data already contain — in this trial's own recipe, elsewhere, or nowhere? The "nowhere" share is what the transition channel *can* flag |
 | `tools_launder.py` | of those flaggable junctions, how many survive the Viterbi decode, and how many then clear their threshold? Separates a decode loss from a calibration loss |
 | `tools_oracle_recipe.py` | how much recall is lost to the MAP recipe being re-inferred from the degraded stream, by re-scoring with $\hat r$ pinned to the healthy decode's value |
 | `tools_duration_power.py` | re-scores every healthy segment at 1 tick (abandonment) and $2\times$ (repetition) against its own fitted NB — what $s_{\text{dur two}}$ can deliver at the current duration spread. It predicts **that one channel**, not the error type: $s_{\text{temporal}}$ is not modelled here and carries most of repetition |
-| `tools_pace.py` | how much of the duration spread is between-trial (a participant's pace) rather than within-trial |
 | `tools_alarm_load.py` | how many alarms are actually raised behind each false positive `trial_loc` charges, and what fraction of all alarms land in range |
 
 `run_step_sweep.py` (the step-layer analogue of `run_threshold_sweep.py`) and `make_dev_split.py`

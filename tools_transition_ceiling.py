@@ -1,14 +1,9 @@
-"""Is the transition channel's miss rate a MODEL limit or a DATA limit?
+"""Is the transition channel's miss rate a model limit or a data limit?
 
-For every omission / transposition injection this asks a question with no thresholds in it:
-the junction the injection creates -- state u followed by state v where the healthy trial had
-u -> w -> v -- how often is u -> v something the training split ALREADY contains, either
-anywhere or within this trial's own recipe cluster?
-
-A junction the data supports is not an anomaly the model can be blamed for missing: Breakfast
-participants genuinely vary the order of steps, so some fraction of "wrong order" injections
-produce orderings other people really used. That fraction is the ceiling. Everything below it
-is model headroom.
+For every omission / transposition injection, the junction it creates -- state u followed by v
+where the healthy trial had u -> w -> v -- is classified three ways: already present in this
+trial's own recipe cluster, present elsewhere in the corpus, or never seen. Only the last is
+something the model can flag; the first is real Breakfast order variation and is the ceiling.
 """
 import argparse
 import json

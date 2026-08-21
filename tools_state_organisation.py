@@ -1,5 +1,9 @@
-"""Diagnostics on a fitted joint model: state organisation, transition sparsity, segmentation
-quality vs the ground-truth action labels. Read-only; writes nothing."""
+"""Do the fitted states correspond one-to-one with the observed (verb, noun) inventory?
+
+Reports per-state emission purity, how many pairs are split across several states, and the
+boundary F1 of the decode against the (v,n) run structure. A pair split across states is a legal
+alternative path for Viterbi to launder an anomaly through (tools_launder.py).
+"""
 import json, sys, argparse
 import numpy as np, jax.numpy as jnp, jax
 jax.config.update("jax_enable_x64", True)

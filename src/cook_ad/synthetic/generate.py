@@ -172,14 +172,8 @@ def trajectory_from_real_joint(joint_hsmm_params, verb_ids, noun_ids, d_max):
 
 
 def trajectories_from_real_joint(joint_hsmm_params, sequences, d_max, chunk_size=8):
-    """Batched `trajectory_from_real_joint`. Same result, one JAX compile instead of one per
-    trial: `trajectory_from_real_joint` takes an unpadded (T,) stream, and T is a static shape,
-    so calling it in a loop recompiles infer_recipe AND the Viterbi kernel for every distinct
-    trial length -- which dominates the runtime of every evaluation runner that builds a healthy
-    pool. Padding the whole list to one global T_max (em.pad_batch's convention, mask-gated
-    everywhere) compiles both kernels exactly once, mirroring eval.batch.compute_traces_joint.
-
-    `sequences`: list of dicts with "verb_ids"/"noun_ids" (sequences.json's layout).
+    """Batched `trajectory_from_real_joint`: same result, one JAX compile instead of one per
+    distinct trial length. `sequences` is sequences.json's layout.
     """
     from cook_ad.hsmm import em as _em
 

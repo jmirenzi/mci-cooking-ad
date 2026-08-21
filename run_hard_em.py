@@ -1,22 +1,16 @@
 """Viterbi (hard-assignment) EM for the joint model -- an alternative optimiser to `joint_em`'s
-soft EM, maximising over the MAP segmentation rather than marginalising it out.
+soft EM, maximising over the MAP segmentation rather than marginalising it out:
 
     max_theta max_z log P_theta(o, z)   in place of   max_theta log sum_z P_theta(o, z)
 
-Hard EM is the wrong estimator if you want calibrated posterior uncertainty. It is the right one
-here because every surprise channel scores against `z_star`: the detector reads the MAP
-segmentation, so the counts the model is fit from and the decode the detector reads become the
-same object.
+The wrong estimator for calibrated posterior uncertainty, the right one here because every
+surprise channel scores against `z_star` -- so the counts the model is fit from and the decode
+the detector reads become the same object.
 
-Each iteration is a recipe-conditioned Viterbi decode of every trial -> hard init/transition
-counts and per-(recipe, state) duration histograms -> the same Dirichlet-MAP renormalisation and
-shrunk NB duration fit the soft M-step uses. Each trial's final segment is right-censored and
-goes into the censoring histogram, imputed by `durations.impute_censored_histogram` exactly as
-the soft M-step does; treating it as exactly observed would bias every duration short.
-
-Emissions stay pinned to the lexical anchor throughout (--anchor), since the (verb,noun) pair
-inventory is what defines the states and is not in question. Full treatment in docs/hsmm.md 7,
-including why the objective is not what these fits are selected on.
+One iteration: recipe-conditioned Viterbi decode -> hard init/transition counts and
+per-(recipe, state) duration histograms -> the same Dirichlet-MAP renormalisation and shrunk NB
+duration fit the soft M-step uses. Each trial's final segment is right-censored and imputed as
+in `joint_em`. Emissions stay pinned to the lexical anchor. See docs/hsmm.md 7.
 
     ./py run_hard_em.py --split-part train --out runs/joint_hard.npz --iters 5
 """
@@ -88,7 +82,6 @@ def main():
     ap.add_argument("--alpha-pi", type=float, default=None)
     ap.add_argument("--kappa", type=float, default=None)
     ap.add_argument("--chunk-size", type=int, default=32)
-    ap.add_argument("--snapshot-every", type=int, default=0)
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -161,8 +154,6 @@ def main():
               f"recipe ARI={recipe_hmm.adjusted_rand(np.asarray(r_hat), true_recipes):.4f} "
               f"subtask ARI={recipe_hmm.adjusted_rand(pred_tick, true_tick):.4f} "
               f"({time.time() - t0:.1f}s)", flush=True)
-        if args.snapshot_every and (it + 1) % args.snapshot_every == 0:
-            joint_params.save_params(p, f"{args.out}.iter{it + 1:02d}.npz")
 
     joint_params.save_params(p, args.out)
     print(f"saved {args.out}")

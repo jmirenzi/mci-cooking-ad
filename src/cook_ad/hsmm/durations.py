@@ -246,25 +246,17 @@ def fit_durations_shrunk(xi_dur_acc, cens_acc, dur_r_old, dur_p_old, d_max, kapp
 
 
 # ---------------------------------------------------------------------------------------------
-# numpy/scipy duplicates of the three NB tail functions above.
-#
-# The jax versions are the ones EM needs (they run inside jitted, vmapped M-steps). The anomaly
-# channels do NOT: anomaly/temporal.py is a pure-numpy module scoring a handful of segments per
-# trial, and there `jax.scipy.special.betainc` costs ~0.1s PER CALL on a float64 GPU regardless
-# of array size -- it is an iterative kernel with a fixed trip count, so a 7-element array pays
-# the same as a 7-million-element one. Measured on the full-scale train split that single
-# primitive was ~90% of the wall time of every evaluation sweep in the repo (0.3s per trial x
-# 378 trials x 6 source groups).
-#
-# scipy.special.betainc is the same regularized incomplete beta I_x(a,b), on the same
-# convention, and is the reference these functions' docstrings already say they were verified
-# against -- so this is the accurate side of the pair, not an approximation of the jax one.
-# Agreement is asserted in tests/test_temporal.py.
+# numpy/scipy duplicates of the three NB tail functions above. The jax versions are what EM
+# needs (jitted, vmapped M-steps); anomaly/temporal.py is pure numpy scoring a handful of
+# segments per trial, and there jax.scipy.special.betainc costs ~0.1s PER CALL on a float64 GPU
+# regardless of array size -- ~90% of every evaluation sweep's wall time. scipy's betainc is the
+# same I_x(a,b) and the reference these docstrings already cite; agreement is asserted in
+# tests/test_temporal.py.
 # ---------------------------------------------------------------------------------------------
 
 
 def nb_log_survival_np(d, r, p):
-    """numpy `nb_log_survival`. See the block comment above for why this duplicate exists."""
+    """numpy `nb_log_survival`."""
     import numpy as _np
     from scipy.special import betainc as _betainc
 
@@ -279,7 +271,7 @@ def nb_log_survival_np(d, r, p):
 
 
 def nb_log_cdf_np(d, r, p):
-    """numpy `nb_log_cdf`. See the block comment above for why this duplicate exists."""
+    """numpy `nb_log_cdf`."""
     import numpy as _np
     from scipy.special import betainc as _betainc
 
@@ -291,7 +283,7 @@ def nb_log_cdf_np(d, r, p):
 
 
 def nb_log_pmf_np(d, r, p):
-    """numpy `nb_log_pmf`. See the block comment above for why this duplicate exists."""
+    """numpy `nb_log_pmf`."""
     import numpy as _np
     from scipy.special import gammaln as _gammaln, xlog1py as _xlog1py
 

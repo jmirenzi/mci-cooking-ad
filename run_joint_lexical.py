@@ -45,8 +45,6 @@ def main():
                     help="Dirichlet pseudocount on a state's own (verb,noun) tokens, applied "
                          "both at iteration 0 and as the M-step prior")
     ap.add_argument("--background", type=float, default=lexical_init.BACKGROUND_MASS)
-    ap.add_argument("--freeze-emissions", action="store_true",
-                    help="hold emissions at the anchored init; EM fits only dynamics")
     ap.add_argument("--global-damping", type=float, default=None)
     ap.add_argument("--min-pair-ticks", type=int, default=lexical_init.MIN_PAIR_TICKS)
     ap.add_argument("--alpha-init", type=float, default=0.5, help="joint_em.run_joint_em alpha_init")
@@ -59,13 +57,6 @@ def main():
                          "counts (the M-step's own prior is unaffected). 0.0 is what the best "
                          "measured model uses -- see lexical_init.lexical_to_joint's docstring "
                          "for the measurement and why it is not the default")
-    ap.add_argument("--snapshot-every", type=int, default=0,
-                    help="also write <out>.iterNN.npz every N iterations. EM's objective is a "
-                         "poor proxy for detection here -- the lexical init starts at a better "
-                         "likelihood than the cascade fit CONVERGES to, and EM then degrades "
-                         "both it and the subtask ARI -- so the iteration count is a real "
-                         "hyperparameter and needs to be selectable by measurement, not assumed "
-                         "to be 'as many as the budget allows'.")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -102,14 +93,6 @@ def main():
     init_ari = recipe_hmm.adjusted_rand(info["assign"], [e["recipe_label"] for e in joined])
     print(f"  init bag-of-pairs recipe ARI (scoring only): {init_ari:.4f}", flush=True)
 
-    snapshots = []
-
-    def _snapshot(iteration, p_now, _history):
-        path = f"{args.out}.iter{iteration:02d}.npz"
-        joint_params.save_params(p_now, path)
-        snapshots.append(path)
-        print(f"  [snapshot] {path}", flush=True)
-
     t0 = time.time()
     best, obj, history, converged = joint_em.run_joint_em(
         init_params, sequences, d_max, alpha_pi=alpha_pi, kappa=kappa,
@@ -117,9 +100,6 @@ def main():
         max_iters=args.max_iters, tol=args.tol, chunk_size=chunk_size, progress=False,
         global_damping=global_damping,
         emit_prior_v=info["emit_prior_v"], emit_prior_n=info["emit_prior_n"],
-        freeze_emissions=args.freeze_emissions,
-        on_checkpoint=(_snapshot if args.snapshot_every > 0 else None),
-        checkpoint_every=max(1, args.snapshot_every),
     )
     print(f"joint EM: obj={float(obj):.1f} iters={len(history)} converged={converged} "
           f"elapsed={time.time() - t0:.1f}s", flush=True)

@@ -114,12 +114,9 @@ def compute_traces_joint(joint_hsmm_params, sequences, d_max, chunk_size=16, r_h
     and the pi-weighted marginal transition matrix -- all four are what surprise.flag_joint()
     needs per trial and would otherwise have to be rebuilt.
 
-    `r_hat`: optionally supply the per-trial recipe assignment instead of inferring it. The
-    detector never should -- it has to read the recipe off the trial in front of it -- but an
-    ORACLE analysis does: the MAP recipe is re-inferred from the degraded stream, and on a
-    transposition it flips away from the trial's real recipe most of the time, which quietly
-    relicenses the very transition the injection created. Pinning r_hat to the healthy decode's
-    value is how that loss is sized (tools_oracle_recipe.py).
+    `r_hat`: optionally supply the per-trial recipe assignment instead of inferring it. Only an
+    oracle analysis should (tools_oracle_recipe.py); the detector has to read the recipe off the
+    trial in front of it.
     """
     log_probs = joint_params.to_log_probs_joint(joint_hsmm_params, d_max)
     t_max = max(len(s["verb_ids"]) for s in sequences)
