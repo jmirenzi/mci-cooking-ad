@@ -90,13 +90,25 @@ DEFAULT_JOINT_PARAMS = "dataset/processed/breakfast/joint_params.npz"
 # shared trial construction -- one pool, both detectors
 # --------------------------------------------------------------------------------------------
 
+def usable_indices(trajectories):
+    """Indices of the trajectories build_pool keeps, in pool order.
+
+    build_pool FILTERS, so pool position i is not trajectory i. Callers that want to name a
+    pool entry -- its trial_id, its label row -- must map back through this, or they will
+    silently attribute one trial's stream to another trial's id once anything is dropped.
+    """
+    return [i for i, t in enumerate(trajectories)
+            if len(t["segments"]) >= error_injection.MIN_SEGMENTS]
+
+
 def build_pool(trajectories, rng, inject_params):
     """[(healthy_traj, {error_type: degraded_dict})] for every usable trajectory.
 
     Usability is error_injection.MIN_SEGMENTS, the same gate run_evaluation.py applies: an
-    out-of-order step is only out-of-order relative to context.
+    out-of-order step is only out-of-order relative to context. See usable_indices to map a
+    pool position back to the trajectory it came from.
     """
-    usable = [t for t in trajectories if len(t["segments"]) >= error_injection.MIN_SEGMENTS]
+    usable = [trajectories[i] for i in usable_indices(trajectories)]
     pool = []
     for traj in usable:
         degraded = {

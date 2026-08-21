@@ -176,13 +176,18 @@ def severity(value, threshold):
     return label, ratio
 
 
-def flagged_tick_severity(trace, flags, tables, alpha=DEFAULT_ALPHA, thresholds=None):
+def flagged_tick_severity(trace, flags, tables, alpha=DEFAULT_ALPHA, thresholds=None,
+                          with_ratio=False):
     """For every tick flagged in `flags` (surprise.flag/flag_joint's output), the severity label
     of that flag -- built from the SAME per-tick value/threshold pairing _base_flags gated on,
     so a tick's severity always matches why it was flagged. Returns {channel: {tick: label}},
     restricted to the five channels render_anomaly_png.py's CHANNEL_ROW knows how to place
     (s_emit/s_verb/s_noun/s_temporal/s_dur_two/s_transition) -- s_recipe_transition is omitted,
     mirroring narrate.py's own caveat that recipe clusters have no learned name to render against.
+
+    `with_ratio=True` returns the CONTINUOUS strength instead -- severity()'s value/threshold
+    ratio, the number the low/medium/high buckets are cut from -- for callers that want to shade
+    a flag by how far past its threshold it went rather than which bucket it fell in.
     """
     resolved = _duration_thresholds(alpha, thresholds)
     emit_thresh, verb_thresh, noun_thresh = emission_thresholds(trace, tables)
@@ -204,7 +209,8 @@ def flagged_tick_severity(trace, flags, tables, alpha=DEFAULT_ALPHA, thresholds=
         values = np.asarray(values)
         thresh = np.asarray(thresh)
         out[ch] = {
-            int(t): severity(values[t], thresh[t])[0] for t in np.flatnonzero(np.asarray(flags[ch]))
+            int(t): severity(values[t], thresh[t])[1 if with_ratio else 0]
+            for t in np.flatnonzero(np.asarray(flags[ch]))
         }
     return out
 
