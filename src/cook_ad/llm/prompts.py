@@ -26,8 +26,9 @@ from cook_ad.synthetic import error_injection
 # make the type-confusion matrix measure prompt drift rather than model capability.
 ERROR_TYPE_DEFINITIONS = {
     "substitution": (
-        "the right action performed on the wrong object -- a single brief step whose object does "
-        "not belong at that point in the task, e.g. spreading, but with mustard"
+        "one whole step done with the wrong object, or the wrong action, for its entire "
+        "duration -- e.g. spreading mustard instead of jelly for the whole step, not just a "
+        "brief flicker"
     ),
     "abandonment": (
         "a step that is dropped early -- it appears, but lasts far less time than that step "

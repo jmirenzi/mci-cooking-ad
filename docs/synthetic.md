@@ -81,17 +81,29 @@ fields record *what the injector actually changed* (§2.1).
 
 | Type | Perturbation | Window | Channel it should light up |
 |---|---|---|---|
-| **substitution** | one tick's noun → that state's **least likely** noun | the single tick | $s_{\text{noun}}$ (with attribution `"item"`) |
-| **abandonment** | truncate an interior segment to ~1 tick | premature end tick | retrospective $s_{\text{dur2}}$, left tail |
+| **substitution** | one whole segment's verb **or** noun (channel picked at random) → a token with no training evidence for that state | the whole segment | $s_{\text{noun}}$ or $s_{\text{verb}}$ (attribution `"item"`/`"action"` to match) |
+| **abandonment** | truncate an interior segment to a random 5-20% of its own duration | premature end tick | retrospective $s_{\text{dur2}}$, left tail |
 | **omission** | delete an interior segment entirely | the new boundary | $s_{\text{trans}}$ |
 | **transposition** | swap two adjacent interior segments | the swapped pair | $s_{\text{trans}}$ (twice) |
 | **repetition** | duplicate an interior segment in place | the inserted copy | $s_{\text{trans}}$, or $s_{\text{temporal}}$ once Viterbi merges |
 
-**Substitution** is the only injector that needs the model — it reads $B^n$ to pick
-$\arg\min_n P(n \mid Z{=}k)$, so the perturbation is *genuinely* anomalous rather than merely
-different (with a fallback to the second-least-likely if that already equals the observed noun).
-Only the noun is touched, isolating the item channel from the action channel. The other four are
-purely structural index surgery on `verb_ids`/`noun_ids`.
+**Substitution** is the only injector that touches `hsmm_params`, but it no longer takes an
+argmin over the fitted probability row for its `"random"` case. It reads the state's raw
+accumulated E-step pseudocounts (`hsmm_params.verb_counts`/`noun_counts` — already computed once,
+during fitting) and draws uniformly from whichever tokens sit within `SUBSTITUTION_UNSEEN_BAND`
+of that row's own floor: essentially no training evidence links them to this state, as opposed to
+the single point the fitted distribution ranks worst. That decouples the `"random"` replacement
+from the exact distribution that later scores it — the perturbation is no longer engineered to be
+the worst possible case under the very model being evaluated — with a fallback to the single
+least-observed token (excluding the current one) if the band is empty. Exactly one channel
+changes, chosen at random per injection and applied uniformly across the whole segment rather
+than a single mid-step tick; the other channel is untouched, which is what still isolates the
+item channel from the action channel. `"hardest"` deliberately reintroduces the deterministic
+worst case for both the channel choice (whichever channel has the single least-observed cell for
+this state) and the token (`_argmin_candidate`, the argmin over that channel's raw counts) — see
+§2's segment-selection-modes section for why the two modes now diverge on more than just which
+segment gets picked. The other four injectors remain purely structural index surgery on
+`verb_ids`/`noun_ids`, needing no model at all.
 
 **Abandonment exists to test the left tail.** As explained in [`anomaly.md`](anomaly.md), the live
 survival channel structurally *cannot* catch a step that ends early: short durations always have
@@ -123,10 +135,10 @@ instead on `arange(T)`:
 | repetition | `concat(arange(0,end), arange(start,end), arange(end,T))` — many-to-one: the copy's ticks map to their originals |
 
 **`edited_ticks`** lists degraded indices whose *content* differs from the mapped original. Only
-substitution is non-empty (`[tick]`); the other four reorder, drop or duplicate ticks without
-rewriting any surviving one. Both fields are needed because neither implies the other: `tick_map`
-alone would assert substitution's retagged tick is unchanged, and `edited_ticks` alone says nothing
-about the four structural injectors.
+substitution is non-empty (`arange(start, end)`, the whole retagged segment); the other four
+reorder, drop or duplicate ticks without rewriting any surviving one. Both fields are needed
+because neither implies the other: `tick_map` alone would assert substitution's retagged span is
+unchanged, and `edited_ticks` alone says nothing about the four structural injectors.
 
 Two consumers depend on this:
 
@@ -141,22 +153,38 @@ The schema change is additive, matching the precedent of `sample_trajectory_join
 
 ### Interior constraints
 
-Each injector restricts its segment choice, and the constraints are not arbitrary:
+Each injector restricts its segment choice to an explicit list of valid indices (built once per
+call, not just a bare range), and the constraints are not arbitrary:
 
 ```python
-substitution   lo=0, hi=len            # anywhere
-abandonment    lo=1, hi=len            # non-first: needs preceding context
-omission       lo=1, hi=len-1          # interior: needs both neighbours
-transposition  lo=1, hi=len-2          # i and i+1 must both be interior
-repetition     lo=1, hi=len-1          # interior
+substitution   1 <= i < len-1                    # interior: skip the leading/trailing idle
+abandonment    1 <= i < len-1  and  d[i] >= 2     # interior AND long enough to truncate at all
+omission       1 <= i < len-1                     # interior: needs both neighbours
+transposition  1 <= i < len-2                     # i and i+1 must both be interior
+repetition     1 <= i < len-1                     # interior
 ```
 
+Breakfast trials open and close on idle (`stall kitchen`), which carries no task semantics, so
+every injector is now interior-only. Substitution and abandonment did not always restrict this
+way: substitution originally allowed `i` anywhere (including the first/last segment) and
+abandonment allowed the last segment specifically, which together with `keep_ticks` being a fixed
+1-tick constant (not the current duration-relative fraction) meant a 1-tick segment could be
+"truncated" to itself — a degraded stream byte-identical to the healthy one, still carrying a
+ground-truth window and scored as a missed anomaly. Measured on 419 real trials before the fix:
+12% of substitutions landed on the first segment and 15% on the last (28% total), 21% of
+abandonments landed on the trailing idle, and 3.2% of abandonments were exact no-ops. All three
+are gated out now (`d[i] >= 2` on top of the interior constraint eliminates the no-op case, since
+the new percent-based `keep` is always strictly less than `d` whenever `d >= 2`).
+
 `MIN_SEGMENTS = 4` gates the driver: trajectories with fewer segments are skipped entirely, since
-an out-of-order step is only out-of-order *relative to context*.
+an out-of-order step is only out-of-order *relative to context*. Abandonment's extra `d[i] >= 2`
+filter can still leave zero valid segments on a short, unlucky trajectory even past that gate;
+`_pick_segment` raises `ValueError` in that case, the same failure mode every other injector
+already has for a too-short trajectory, and every caller already handles it the same way.
 
 ### Segment selection modes
 
-`_pick_segment(rng, n, lo, hi, select)`:
+`_pick_segment(rng, valid_indices, select)`:
 
 - `"random"` — uniform over the valid range. This is the **honest recall** number: it measures
   detection on a typical perturbation, not a cherry-picked one.
@@ -168,6 +196,16 @@ an out-of-order step is only out-of-order *relative to context*.
 and explains in a comment that `"hardest"` ignores the rng entirely (every remaining rng use is
 deterministic once the segment is picked), so it is tried with only one seed instead of repeating
 identical work.
+
+This held briefly only for omission/transposition/repetition after substitution and abandonment
+gained their own post-segment rng draws (channel, replacement token, keep fraction) — under
+`select="hardest"` those draws are now themselves deterministic rather than random: substitution
+takes whichever channel has the single least-observed cell for this state and uses that exact
+token (`_argmin_candidate`, an argmin over the raw counts, not a random member of the near-zero-
+evidence band), and abandonment always keeps the bottom of `ABANDON_KEEP_FRAC` (5%, floored at
+1 tick) instead of a random draw from the range. So the comment's property is restored for all
+five: `select="hardest"` never touches `rng` at all, and `export_anomaly.py`'s "try `hardest`
+with only one seed" optimisation is lossless again.
 
 ### One error type that is *not* here
 

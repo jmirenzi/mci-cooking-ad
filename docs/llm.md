@@ -172,7 +172,7 @@ $[t_0, t_1]$ onto the steps it overlaps. Verified against each injector's index 
 
 | Injector | What the rendered text shows |
 |---|---|
-| substitution | the retagged tick splits a run into three; the middle becomes its own 1-second step |
+| substitution | the whole segment keeps its own boundaries; it becomes one step of unchanged duration, different label |
 | abandonment | the truncated segment becomes a 1-second step |
 | omission | $t_0$ is the new boundary, i.e. the first tick of the following step |
 | transposition | the window spans both swapped runs, visibly out of order |
@@ -190,7 +190,7 @@ its window start**, leaving every earlier tick untouched:
 
 | Injector | What the source step at $t_0$ is |
 |---|---|
-| substitution | the original run whose one tick was retagged |
+| substitution | the original run at the same span, before its channel was retagged |
 | abandonment | the same step at its **full** original duration — the duration *is* the correction |
 | omission | the deleted step |
 | transposition | the step that should have come first of the swapped pair |
@@ -518,11 +518,9 @@ borders an edited tick, or if its own tick range spans a `tick_map` splice
 injected anomaly nor a clean normal step: it is an artefact of the edit, and it is dropped from the
 pool rather than counted either way.
 
-The clearest case is substitution. Retagging one tick inside a run splits that run into three
-steps, and the two surviving fragments have the durations they have *only* because of the
-injection. A detector that flags one — correctly recovering the original duration — is neither
-right nor wrong about anything the injector set out to test. Repetition produces the analogous case
-when its duplicate merges with its original across a splice.
+Substitution's edit now spans its whole segment and lands exactly on the boundary already there,
+so it no longer produces this kind of debris — the only case remaining in practice is repetition,
+when its duplicate merges with its original across a `tick_map` splice.
 
 Both rules move the denominator, so `chance_precision` is computed from the same scoreable pool
 rather than from `tp + fp + fn` — that quantity varies with how much a given detector flags and

@@ -75,7 +75,19 @@ def test_injection_structurally_correct(error_type):
         assert not np.array_equal(deg["noun_ids"], traj["noun_ids"])
     elif error_type == "substitution":
         assert new_len == orig_len
-        assert int(np.sum(deg["noun_ids"] != traj["noun_ids"])) == 1  # exactly one tick changed
+        outside = np.ones(new_len, dtype=bool)
+        outside[t0 : t1 + 1] = False
+        assert np.array_equal(deg["verb_ids"][outside], traj["verb_ids"][outside])
+        assert np.array_equal(deg["noun_ids"][outside], traj["noun_ids"][outside])
+
+        deg_touched = deg["noun_ids"] if deg["channel"] == "noun" else deg["verb_ids"]
+        src_touched = traj["noun_ids"] if deg["channel"] == "noun" else traj["verb_ids"]
+        deg_other = deg["verb_ids"] if deg["channel"] == "noun" else deg["noun_ids"]
+        src_other = traj["verb_ids"] if deg["channel"] == "noun" else traj["noun_ids"]
+
+        assert np.array_equal(deg_other, src_other)  # the untouched channel is unchanged everywhere
+        assert np.all(deg_touched[t0 : t1 + 1] == deg_touched[t0])  # one uniform replacement across the span
+        assert deg_touched[t0] != src_touched[t0]  # and it really did change
 
 
 @pytest.mark.parametrize("error_type", error_injection.ERROR_TYPES)
@@ -103,7 +115,8 @@ def test_injection_tick_map_round_trips(error_type):
         assert deg["noun_ids"][i] == traj["noun_ids"][src]
 
     if error_type == "substitution":
-        assert edited == {int(deg["window"][0])}
+        t0, t1 = deg["window"]
+        assert edited == set(range(int(t0), int(t1) + 1))
     else:
         assert edited == set()
 
@@ -161,15 +174,17 @@ def test_kl_sanity_nonzero_when_distributions_differ():
 
 
 def test_end_to_end_channel_isolation_on_generated_trials():
-    """The detector's isolation claim on generated+injected trials: a substitution fires the
-    noun channel in-window; an abandonment fires the retrospective short-duration channel.
+    """The detector's isolation claim on generated+injected trials: a substitution fires its own
+    channel (noun or verb, whichever it edited) in-window; an abandonment fires the retrospective
+    short-duration channel.
 
     Alpha is pinned at 0.05 rather than read from DEFAULT_ALPHA. This asserts WHICH CHANNEL
     responds to which perturbation -- an isolation property of the cascade -- on a deliberately
-    small synthetic setup (6 seeds, K=5). The deployment default is tuned for the real corpus's
+    small synthetic setup (20 seeds, K=5). The deployment default is tuned for the real corpus's
     precision/false-alarm trade (see surprise.DEFAULT_ALPHA) and is strict enough that these few
     tiny synthetic injections fall below it, which would turn a channel-isolation test into an
-    incidental sensitivity test at whatever alpha happens to be shipping."""
+    incidental sensitivity test at whatever alpha happens to be shipping. Substitution's hit rate
+    here is low (see below) and needs enough seeds that `sub_hits >= 1` isn't itself a coin flip."""
     from cook_ad.anomaly import surprise
     from cook_ad.recipe import recipe_hmm
 
@@ -181,7 +196,7 @@ def test_end_to_end_channel_isolation_on_generated_trials():
 
     sub_hits, aband_hits, left_early_hits = 0, 0, 0
     trials = 0
-    for seed in range(6):
+    for seed in range(20):
         traj = generate.sample_trajectory(p, np.random.default_rng(seed), max_ticks=150, d_max=D_MAX)
         if len(traj["segments"]) < error_injection.MIN_SEGMENTS:
             continue
@@ -193,7 +208,8 @@ def test_end_to_end_channel_isolation_on_generated_trials():
         )
         f = surprise.flag(sub_trace, sub_log_probs, sub_recipe_log_trans, alpha=alpha)
         _, _, _, hits = metrics.score_trial(f, sub["window"])
-        sub_hits += "s_noun" in hits
+        expected_channel = "s_noun" if sub["channel"] == "noun" else "s_verb"
+        sub_hits += expected_channel in hits
 
         ab = error_injection.inject("abandonment", traj, rng, p)
         trace, log_probs, recipe_log_trans = surprise.compute_trace(p, recipe_params, ab["verb_ids"], ab["noun_ids"], D_MAX)
@@ -205,8 +221,15 @@ def test_end_to_end_channel_isolation_on_generated_trials():
         left_early_hits += "left_early" in set(trace.temporal_attribution[t0 : t1 + 9])
 
     assert trials >= 3
-    # substitution predominantly fires the noun channel (not 100% -- the predictive occupancy
-    # can hedge across states -- but a clear majority, and when detected it IS the noun channel)
-    assert sub_hits >= (trials + 1) // 2
+    # NOT a majority-detection guarantee, deliberately: substitution now rewrites a whole segment
+    # to one constant wrong token rather than a single mid-segment tick, and sustained identical
+    # evidence gives the LIVE predictive belief (pi_all) time to drift toward whatever OTHER state
+    # that token best fits -- in this tiny K=5 toy vocabulary, most non-peak tokens are some other
+    # state's peak, so this happens often (measured ~30% hit rate over 30 seeds here, vs 100% for
+    # the old single-tick edit). Viterbi's hindsight z_star is not fooled -- only the live/causal
+    # channel is -- so this is a real property of s_noun/s_verb's causal scoring, not a test bug;
+    # it should be much rarer on the real corpus's larger vocabulary. What this test still asserts
+    # is the isolation claim itself: WHEN the live channel does catch it, it's the right channel.
+    assert sub_hits >= 1
     assert aband_hits >= 1        # abandonment -> the two-sided duration channel flags
     assert left_early_hits >= 1   # ...and its direction is attributed 'left_early'

@@ -76,7 +76,7 @@ def inject_stall(traj, rng, extra_ticks=None, select="random"):
     noun_ids = np.array(traj["noun_ids"])
     bounds = error_injection._seg_bounds(traj["segments"])
 
-    i = error_injection._pick_segment(rng, len(bounds), lo=0, hi=len(bounds), select=select)
+    i = error_injection._pick_segment(rng, range(len(bounds)), select=select)
     start, end, state, d = bounds[i]
 
     if extra_ticks is None:

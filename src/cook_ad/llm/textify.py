@@ -89,12 +89,13 @@ def gt_steps_for_window(steps, window):
 
     This is the bridge between synthetic.error_injection's tick-space ground truth and the
     step-space unit both detectors are scored in. Checked against all five injectors:
-    substitution's single retagged tick splits a run into three, so it becomes its own 1-second
-    step; abandonment's truncated segment becomes a 1-second step; omission's window is the new
-    boundary tick, i.e. the first tick of the following step; transposition's window spans both
-    swapped runs; repetition's duplicate is adjacent-identical to its original and so MERGES into
-    one double-length step -- which is the same 'Viterbi merges the copy' behavior docs/
-    synthetic.md already documents for the tick-level path, not a new approximation.
+    substitution's whole retagged segment keeps the segment's own boundaries, so it becomes one
+    step of unchanged duration but a different (verb, noun) label; abandonment's truncated
+    segment becomes a shorter step; omission's window is the new boundary tick, i.e. the first
+    tick of the following step; transposition's window spans both swapped runs; repetition's
+    duplicate is adjacent-identical to its original and so MERGES into one double-length step --
+    which is the same 'Viterbi merges the copy' behavior docs/synthetic.md already documents for
+    the tick-level path, not a new approximation.
     """
     t0, t1 = int(window[0]), int(window[1])
     return [s.index for s in steps if s.tick_start <= t1 and s.tick_end > t0]
@@ -108,20 +109,20 @@ def injection_touched_steps(steps, tick_map, edited_ticks, gt_steps):
 
     Two ways a step can be debris:
       1. It borders an edited tick (is directly adjacent to, or contains, a tick in
-         `edited_ticks`). Substitution retags exactly one tick inside a run, splitting what was
-         one step into up to three; the two surviving fragments are shortened runs that exist
-         only because the edit forced an RLE break next to them, even though neither fragment's
-         own ticks were rewritten.
+         `edited_ticks`) without itself being the injected step. Guards against a future injector
+         whose edit doesn't land on an existing segment boundary; substitution's edit now spans
+         its whole segment and lands exactly on the boundary already there (see below), so this
+         rule does not currently fire for any of the five.
       2. Its own tick range is glued from two non-contiguous original positions -- consecutive
          degraded ticks i, i+1 inside the step with `tick_map[i+1] != tick_map[i] + 1`.
          Repetition's duplicate is adjacent-identical to its original and merges into one
          over-long run in the degraded RLE, spanning the splice.
 
-    Splices that fall exactly on an existing step boundary (abandonment/omission/transposition:
-    every splice a structural injector introduces lands where the RLE already breaks) are NOT
+    Splices that fall exactly on an existing step boundary (substitution/abandonment/omission/
+    transposition: every splice these four introduce lands where the RLE already breaks) are NOT
     debris by either rule -- confirmed against each injector's index arithmetic in
     synthetic/error_injection.py, and is why this function only ever flags something for the
-    substitution and repetition injectors in practice.
+    repetition injector in practice.
     """
     tick_map = np.asarray(tick_map)
     edited = set(int(t) for t in edited_ticks)

@@ -157,6 +157,13 @@ valid for a censored segment, but `live_stall_surprise` already carries it, so n
 > anything was injected — but it is a judgement, and `final_censored=False` restores the old
 > behaviour.
 >
+> **Stale as of 2026-08-22.** The "26% land at the trial end" figure was `error_injection.
+> inject_abandonment` picking the trailing idle segment, a bug fixed the same day (see
+> [`synthetic.md`](synthetic.md) §2's interior-constraints note) — abandonment is now interior-only
+> and can never land at the trial end, so that share is 0%, and the whole −4.2/+3.4/−2.1 trade this
+> paragraph argues for needs a fresh measurement before being cited again. The mechanism argument
+> for `final_censored=True` (a censored segment can't answer a two-sided question) is unaffected.
+>
 > The inflated means driving this have the same root cause: a state that is disproportionately the
 > final segment of training trials has little uncensored duration data pinning it down. Several are
 > fitted at 32–734 ticks. That fit problem is still open, and it is what makes §6's repetition test
