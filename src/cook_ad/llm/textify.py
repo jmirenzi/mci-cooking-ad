@@ -80,10 +80,6 @@ def render_step(step):
     return f"{step.verb} {step.noun} for {step.duration} {unit}"
 
 
-def render_trial(steps):
-    return [render_step(s) for s in steps]
-
-
 def gt_steps_for_window(steps, window):
     """Tick-space injection window (t0, t1) inclusive -> the step indices it overlaps.
 
@@ -101,28 +97,61 @@ def gt_steps_for_window(steps, window):
     return [s.index for s in steps if s.tick_start <= t1 and s.tick_end > t0]
 
 
-def injection_touched_steps(steps, tick_map, edited_ticks, gt_steps):
+def gt_steps_for_ticks(steps, anomaly_ticks):
+    """The elements covering `degraded["anomaly_ticks"]` -- the injector's own list of the ticks
+    that are actually anomalous (synthetic/error_injection._result), as opposed to the whole
+    extent it disturbed.
+
+    Supersedes gt_steps_for_window as the source of ground truth. The window is still what
+    injection_touched_steps uses to decide the debris extent, so the two are used together:
+    points are ground truth, window-minus-points is debris.
+    """
+    ticks = sorted({int(t) for t in anomaly_ticks})
+    return [s.index for s in steps if any(s.tick_start <= t < s.tick_end for t in ticks)]
+
+
+def injection_touched_steps(steps, tick_map, edited_ticks, gt_steps, window=None):
     """Degraded steps that exist, or take the tick range they have, only because of the
     injection -- but are NOT themselves the ground-truth anomaly. Neither the injected anomaly
     nor a clean normal step: debris, to be excluded from false-positive scoring rather than
     counted either way (eval/element_metrics.py).
 
-    Two ways a step can be debris:
-      1. It borders an edited tick (is directly adjacent to, or contains, a tick in
-         `edited_ticks`) without itself being the injected step. Guards against a future injector
-         whose edit doesn't land on an existing segment boundary; substitution's edit now spans
-         its whole segment and lands exactly on the boundary already there (see below), so this
-         rule does not currently fire for any of the five.
+    Three ways a step can be debris:
+      0. It lies inside `window` -- the injection's whole disturbed extent -- without being one
+         of the anomalous points. This is the rule that carries the weight once ground truth is
+         points rather than ranges: a transposition's ground truth is three junction ticks, and
+         the ~46 ticks between them are a correctly-executed run in the wrong place, which is
+         neither a hit nor a false alarm. Pass `window=None` to disable it and recover the
+         pre-points behaviour exactly.
+      1. It contains an edited tick, or is directly adjacent to one (`edited_ticks`), without
+         itself being the injected step.
       2. Its own tick range is glued from two non-contiguous original positions -- consecutive
-         degraded ticks i, i+1 inside the step with `tick_map[i+1] != tick_map[i] + 1`.
-         Repetition's duplicate is adjacent-identical to its original and merges into one
-         over-long run in the degraded RLE, spanning the splice.
+         degraded ticks i, i+1 INSIDE the step with `tick_map[i+1] != tick_map[i] + 1`.
 
-    Splices that fall exactly on an existing step boundary (substitution/abandonment/omission/
-    transposition: every splice these four introduce lands where the RLE already breaks) are NOT
-    debris by either rule -- confirmed against each injector's index arithmetic in
-    synthetic/error_injection.py, and is why this function only ever flags something for the
-    repetition injector in practice.
+    Which of them fires, measured over 25 real trials x 5 injections at both units (the earlier
+    version of this docstring asserted the exact opposite of each line below, having been written
+    before substitution became a whole-segment edit):
+
+    | injector      | rule 1: contains | rule 2: borders | rule 3: interior splice |
+    |---------------|------------------|-----------------|-------------------------|
+    | substitution  | 0                | 50 (2/trial)    | 0                       |
+    | the other four| 0                | 0               | 0                       |
+
+    So the ADJACENCY half of rule 1 is the only live rule, and only for substitution: that
+    injector rewrites a whole segment, so the runs either side of it border an edited tick. Its
+    own segment is the ground truth and is skipped before any rule runs.
+
+    The interior-splice rule has never fired for any shipped injector at either unit, because
+    every splice these five introduce lands exactly where the RLE already breaks -- and a splice
+    ON a step boundary is deliberately not debris. At unit="tick" that rule cannot fire even in
+    principle (`range(a, b - 1)` is empty when a step is one tick wide), which is the SAME policy
+    on a finer grid rather than a lost case: a splice between two ticks is always on an element
+    boundary. It is kept for a future injector that edits mid-run.
+
+    The one thing that does change with the unit is the SIZE of substitution's excused halo:
+    2 bordering steps (~22 ticks) at unit="step", 2 bordering ticks at unit="tick". The tick unit
+    is therefore stricter about false positives near a substitution, which is one reason
+    precision does not transfer between units.
     """
     tick_map = np.asarray(tick_map)
     edited = set(int(t) for t in edited_ticks)
@@ -133,6 +162,9 @@ def injection_touched_steps(steps, tick_map, edited_ticks, gt_steps):
         if s.index in gt:
             continue
         a, b = s.tick_start, s.tick_end
+        if window is not None and a <= int(window[1]) and b > int(window[0]):
+            touched.add(s.index)
+            continue
         if any(t in edited for t in range(a, b)):
             touched.add(s.index)
             continue
@@ -164,3 +196,119 @@ def step_covering_tick(steps, tick):
         if s.tick_start <= tick < s.tick_end:
             return s
     return None
+
+
+# --------------------------------------------------------------------------------------------
+# the tick unit
+# --------------------------------------------------------------------------------------------
+#
+# Everything above encodes a trial as run-length STEPS, and every consumer -- the prompt builder,
+# the ground-truth bridge, eval/element_metrics.py -- is written against Step's (index,
+# tick_start, tick_end) triple rather than against the run-length property itself. So the second
+# unit is not a second pipeline: it is the same Step type at duration 1, one per tick, with
+# index == tick_start == the tick number.
+#
+# That is what makes the two units comparable. The HSMM emits a value at every tick and the step
+# unit collapses those to one verdict per run (element_metrics.step_verdicts_from_flags), which
+# is a handicap the step unit imposes on BOTH arms equally but which no longer has to be imposed
+# at all once the LLM is asked per tick. Read the resulting numbers knowing what changed with it:
+# a trial offers ~18x more chances to false-positive (12227 ticks vs 661 steps over the test
+# split), so precision is not comparable ACROSS units even though it is comparable across arms
+# WITHIN one. evaluate_steps reports chance_precision for exactly this reason -- quote it.
+UNITS = ("step", "tick")
+
+
+def _check_unit(unit):
+    if unit not in UNITS:
+        raise ValueError(f"unknown unit: {unit!r} (expected one of {UNITS})")
+
+
+def ticks_from_ids(verb_ids, noun_ids, lexicon):
+    """One Step per tick, in tick order: the identity segmentation.
+
+    Deliberately the same NamedTuple rather than a parallel type. gt_steps_for_window,
+    injection_touched_steps, step_covering_tick and element_metrics all read only tick_start /
+    tick_end / index, so they work on this unchanged -- and a tick element's `index` IS its tick,
+    which makes a tick-level ground-truth window map to itself.
+    """
+    verb_ids = np.asarray(verb_ids, dtype=np.int64)
+    noun_ids = np.asarray(noun_ids, dtype=np.int64)
+    return [
+        Step(index=t, tick_start=t, tick_end=t + 1, verb_id=int(v), noun_id=int(n),
+             verb=lexicon.verb(int(v)), noun=lexicon.noun(int(n)), duration=1)
+        for t, (v, n) in enumerate(zip(verb_ids.tolist(), noun_ids.tolist()))
+    ]
+
+
+def ticks_from_trajectory(traj, lexicon):
+    return ticks_from_ids(traj["verb_ids"], traj["noun_ids"], lexicon)
+
+
+def elements_from_ids(verb_ids, noun_ids, lexicon, unit="step"):
+    _check_unit(unit)
+    fn = steps_from_ids if unit == "step" else ticks_from_ids
+    return fn(verb_ids, noun_ids, lexicon)
+
+
+def elements_from_trajectory(traj, lexicon, unit="step"):
+    """The unit switch every caller goes through. `unit='step'` is the historical behaviour."""
+    _check_unit(unit)
+    fn = steps_from_trajectory if unit == "step" else ticks_from_trajectory
+    return fn(traj, lexicon)
+
+
+def render_tick_lines(ticks):
+    """Tick elements -> one line each, carrying elapsed time in the CURRENT run and, on the tick
+    where a run ends, how long the run that just ended lasted:
+
+        5. pour milk (5s)
+        6. stall kitchen (1s)   [pour milk ended after 5s]
+
+    The elapsed counter exists for fairness, and its absence was a defect. The step unit says
+    `pour cereals for 19 seconds` outright, and the HSMM's duration channels carry elapsed
+    occupancy for free; a tick rendering that printed only `pour cereals` gave the LLM strictly
+    LESS than either and made every tick-vs-step difference partly measure "the durations were
+    deleted". It also forced the model to detect anomalies by counting identical lines, which is
+    arithmetic rather than the capability under test -- measured on the first tick-unit smoke run
+    as repeated false `repetition` verdicts fired inside long, normal runs.
+
+    Both annotations are strictly BACKWARD-LOOKING, which is what keeps the protocol causal and
+    the prefixes append-only. In particular the completion note lands on the FIRST tick of the
+    next run, not the last tick of the finished one: at second 5 the model cannot yet know the
+    step is over, and it learns so at second 6. Attaching it a tick earlier would leak one tick
+    of the future onto exactly the type whose whole signal is "this step ended too early", and
+    would inflate abandonment recall for free.
+    """
+    lines, elapsed, previous = [], 0, None
+    for i, e in enumerate(ticks):
+        note = ""
+        if i and (e.verb, e.noun) == (ticks[i - 1].verb, ticks[i - 1].noun):
+            elapsed += 1
+        else:
+            if i:
+                previous = (ticks[i - 1].verb, ticks[i - 1].noun, elapsed)
+                note = f"   [{previous[0]} {previous[1]} ended after {previous[2]}s]"
+            elapsed = 1
+        lines.append(f"{e.verb} {e.noun} ({elapsed}s){note}")
+    return lines
+
+
+def render_tick(step):
+    """One tick with no run context -- `'pour cereals'`. render_tick_lines is what the prompts
+    actually use; this stays for callers holding a single element."""
+    return f"{step.verb} {step.noun}"
+
+
+def render_element(step, unit="step"):
+    _check_unit(unit)
+    return render_step(step) if unit == "step" else render_tick(step)
+
+
+def render_trial(steps, unit="step"):
+    """One rendered line per element. The tick unit renders the LIST rather than each element
+    independently, because a tick line reports how long the current run has been going, which no
+    single element knows. Line i still depends only on elements <= i."""
+    _check_unit(unit)
+    if unit == "tick":
+        return render_tick_lines(steps)
+    return [render_step(s) for s in steps]

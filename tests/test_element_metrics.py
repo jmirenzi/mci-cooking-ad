@@ -559,3 +559,113 @@ def test_chance_precision_counts_healthy_steps_in_the_denominator():
                             degraded_by_type={"substitution": [(_llm(anomaly_at=(2,)), [2], None)]})
     assert two["step_level"]["n_steps"] == one["step_level"]["n_steps"] + 2 * N_STEPS
     assert two["step_level"]["chance_precision"] < one["step_level"]["chance_precision"]
+
+
+# ---- the tick unit --------------------------------------------------------------------------
+#
+# A tick element is a Step of duration 1 (textify.ticks_from_ids), so nothing in this module
+# needed a code path of its own. These tests are what holds that claim up: the same scoring code
+# has to give the RIGHT answer on tick elements, not merely run on them.
+
+def _ticks(n=N_STEPS * STEP_TICKS):
+    verbs = [i // STEP_TICKS for i in range(n)]
+    return textify.ticks_from_ids(verbs, verbs, _Lex())
+
+
+def test_hsmm_adapter_at_tick_unit_returns_the_raw_per_tick_flags():
+    """At the step unit a step is flagged if ANY tick in it fired, which hands the HSMM's 10-tick
+    step to the LLM's single verdict. At the tick unit that collapse is gone -- one verdict per
+    tick, exactly the channel's own output."""
+    ticks = _ticks()
+    flags = _flags([21, 22, 23])
+    verdicts = em.step_verdicts_from_flags(flags, ticks, trace=None, lexicon=None)
+
+    assert len(verdicts) == N_STEPS * STEP_TICKS
+    assert [v.step_index for v in verdicts if v.is_anomaly] == [21, 22, 23]
+    # the same flags at the step unit collapse to one flagged step covering ticks 20-29
+    step_verdicts = em.step_verdicts_from_flags(flags, _steps(), trace=None, lexicon=None)
+    assert [v.step_index for v in step_verdicts if v.is_anomaly] == [2]
+
+
+def test_tick_tolerance_is_the_step_tolerance_restated_not_a_tighter_deadline():
+    """tol=1 at the tick unit would be a ~11x tighter deadline than tol=1 at the step unit, and
+    the two units' recalls would stop being comparable. DEFAULT_TOL is what prevents that."""
+    assert em.DEFAULT_TOL["step"] == em.DEFAULT_STEP_TOL
+    assert em.DEFAULT_TOL["tick"] == em.DEFAULT_TICK_TOL == 10
+
+    verdicts = em.from_llm_verdicts([
+        Verdict(i, i == 27, "substitution" if i == 27 else None, None, "", True)
+        for i in range(N_STEPS * STEP_TICKS)
+    ])
+    gt = list(range(20, 25))                      # the injection occupied ticks 20-24
+    # a flag 3 ticks after the window closes is a hit at the tick deadline...
+    assert em.score_trial_steps(verdicts, gt, tol_steps=em.DEFAULT_TICK_TOL)[0] is True
+    # ...and would have been scored a miss AND a false positive at the step deadline
+    detected, _, out_of_window, _ = em.score_trial_steps(verdicts, gt, tol_steps=1)
+    assert (detected, out_of_window) == (False, True)
+
+
+def test_evaluate_at_tick_unit_labels_the_report_and_counts_ticks_as_elements():
+    ticks_per_trial = N_STEPS * STEP_TICKS
+    healthy = [em.from_llm_verdicts(
+        [Verdict(i, False, None, None, "", True) for i in range(ticks_per_trial)]
+    )]
+    degraded = em.from_llm_verdicts(
+        [Verdict(i, i == 22, "substitution" if i == 22 else None, None, "", True)
+         for i in range(ticks_per_trial)]
+    )
+    report = em.evaluate_steps(
+        healthy, {"substitution": [(degraded, list(range(20, 25)), None)]},
+        tol_steps=em.DEFAULT_TICK_TOL, unit="tick",
+    )
+
+    assert report["unit"] == "tick"
+    assert report["per_type"]["substitution"]["recall"] == 1.0
+    assert report["step_level"]["fp"] == 0
+    # the denominator is ticks: one healthy trial of 50 ticks, plus the degraded trial's 45
+    # non-ground-truth ticks and its single pooled ground-truth window
+    assert report["step_level"]["n_steps"] == ticks_per_trial + (ticks_per_trial - 5) + 1
+    # ...which is what makes chance precision ~11x lower than the step unit's on the same data
+    assert report["step_level"]["chance_precision"] < 0.02
+
+
+def test_detection_deadlines_are_per_junction_not_one_span():
+    """With three isolated junctions, a flag between them is NOT a hit just because it sits
+    between the first and the last -- which is what the old single-interval rule said, and what
+    made transposition nearly free at the tick unit."""
+    # junctions at 20/34/47 with tol=10 cover [20,30], [34,44], [47,57] -- 31..33 is a genuine
+    # gap, and the old single-interval rule [min(gt), max(gt)+tol] would have called it a hit
+    gt = [20, 34, 47]
+    verdicts = em.from_llm_verdicts([
+        Verdict(i, i == 32, "transposition" if i == 32 else None, None, "", True)
+        for i in range(N_STEPS * STEP_TICKS)
+    ])
+    detected, _, out_of_window, _ = em.score_trial_steps(verdicts, gt, tol_steps=em.DEFAULT_TICK_TOL)
+    assert (detected, out_of_window) == (False, True)
+    assert em.score_trial_steps(verdicts, list(range(20, 48)), tol_steps=em.DEFAULT_TICK_TOL)[0] is True
+
+    # ...and a flag inside one junction's deadline is a hit, with latency from THAT junction
+    near = em.from_llm_verdicts([
+        Verdict(i, i == 38, "transposition" if i == 38 else None, None, "", True)
+        for i in range(N_STEPS * STEP_TICKS)
+    ])
+    detected, latency, out_of_window, _ = em.score_trial_steps(near, gt, tol_steps=em.DEFAULT_TICK_TOL)
+    assert (detected, latency, out_of_window) == (True, 4, False)
+
+
+def test_contiguous_ground_truth_scores_exactly_as_the_old_interval_rule():
+    """Substitution's ground truth is a span, and for a span the union-of-deadlines rule and the
+    old [min(gt), max(gt) + tol] rule coincide -- including latency, measured from the span's
+    start rather than from the nearest point inside it."""
+    gt = list(range(20, 25))
+    for flag in (20, 22, 24, 30, 35):
+        verdicts = em.from_llm_verdicts([
+            Verdict(i, i == flag, "substitution" if i == flag else None, None, "", True)
+            for i in range(N_STEPS * STEP_TICKS)
+        ])
+        detected, latency, out_of_window, _ = em.score_trial_steps(
+            verdicts, gt, tol_steps=em.DEFAULT_TICK_TOL)
+        expected = 20 <= flag <= 24 + em.DEFAULT_TICK_TOL
+        assert detected is expected and out_of_window is not expected
+        if detected:
+            assert latency == flag - 20

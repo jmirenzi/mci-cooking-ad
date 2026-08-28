@@ -561,3 +561,100 @@ def test_no_anomaly_still_wins_over_the_relaxed_type_pattern():
     for text in ("No Anomaly", "no anomaly.", "  NO ANOMALY  "):
         v = detect.parse_response(text, 0, VOCAB)
         assert (v.is_anomaly, v.parse_ok) == (False, True)
+
+
+# ---- the tick unit --------------------------------------------------------------------------
+
+def _ticks(n=6):
+    verbs = [1 + (i // 2) % 3 for i in range(n)]
+    return textify.ticks_from_ids(verbs, verbs, _Lex())
+
+
+def test_tick_prefix_is_one_line_per_second_carrying_elapsed_run_time():
+    ticks = _ticks(4)                       # runs of 2: [a a b b]
+    lines = detect.render_prefix(ticks, 3, unit="tick").splitlines()
+    assert len(lines) == 4
+    assert lines[0].startswith("1. ") and lines[0].endswith("(1s)")
+    assert lines[1].endswith("(2s)")
+    assert lines[2].startswith("3. ") and "(1s)" in lines[2]
+    # the completion note lands on the FIRST tick of the next run, never the last of the finished
+    # one -- attaching it a tick earlier would leak one tick of the future onto abandonment
+    assert "ended after 2s" in lines[2]
+    assert "ended after" not in lines[1]
+
+
+def test_tick_prefix_is_causal_at_every_length():
+    """Rendering the whole trial and slicing must equal rendering the slice, or a prefix would
+    carry information from ticks the model has not been shown yet."""
+    ticks = _ticks(9)
+    for upto in range(len(ticks)):
+        assert (detect.render_prefix(ticks, upto, unit="tick")
+                == detect.render_prefix(ticks[: upto + 1], upto, unit="tick"))
+
+
+def test_tick_prefixes_stay_append_only():
+    """The prefix-cache property the incremental protocol is built on has to survive the unit
+    switch, or every request re-prefills from scratch on a prompt ~18x longer."""
+    ticks = _ticks(6)
+    msgs = detect.incremental_messages("SYS", ticks, unit="tick")
+    assert len(msgs) == 6
+    for i in range(5):
+        assert msgs[i + 1][1]["content"].startswith(msgs[i][1]["content"])
+
+
+def test_tick_protocol_asks_one_request_per_tick_not_per_step():
+    """The whole point of the unit: 6 ticks spanning 3 runs cost 6 requests, not 3."""
+    ticks = _ticks(6)
+    stub = StubClient(["No Anomaly"] * 6)
+    verdicts = detect.run_trial(stub, "SYS", ticks, VOCAB, protocol="incremental", unit="tick")
+    assert len(stub.calls) == 6
+    assert [v.step_index for v in verdicts] == [0, 1, 2, 3, 4, 5]
+    assert detect.request_cost(ticks, "incremental") == 6
+
+
+def test_tick_and_step_prompts_do_not_collide_in_the_cache(tmp_path):
+    """Same trial, two units, two different prompts -- so a tick run must not read back step-unit
+    answers from the 30k-response cache collected under the step unit."""
+    steps, ticks = _steps(3), _ticks(6)
+    a = detect.incremental_messages("SYS", steps)[0]
+    b = detect.incremental_messages("SYS", ticks, unit="tick")[0]
+    c = llm_client.ChatClient(base_url="http://localhost:1/v1", cache_dir=tmp_path)
+    assert c._cache_key(a) != c._cache_key(b)
+
+
+def test_tick_verdicts_parse_with_the_same_grammar():
+    ticks = _ticks(2)
+    stub = StubClient([
+        "No Anomaly",
+        "substitution Anomaly. Correct move would have been pour bowl for 12 seconds",
+    ])
+    v0, v1 = detect.run_trial(stub, "SYS", ticks, VOCAB, protocol="incremental", unit="tick")
+    assert (v0.is_anomaly, v0.parse_ok) == (False, True)
+    assert (v1.is_anomaly, v1.error_type, v1.correction) == (True, "substitution", ("pour", "bowl", 12))
+
+
+def test_abbreviated_durations_parse_because_the_tick_prompt_teaches_them():
+    """Second instance of the `stir_dough (~36s)` problem: the tick preprompt writes every line as
+    `pour milk (5s)`, models copy that into their corrections, and rejecting it would measure
+    obedience to a format the prompt itself showed. Measured at a 13.9% parse-failure rate (and an
+    empty correction_accuracy) on the first tick run that used the counter, 0.0% before it."""
+    for text, expected in [
+        ("Repetition Anomaly. Correct move would have been stall kitchen for 5s",
+         ("stall", "kitchen", 5)),
+        ("Repetition Anomaly. Correct move would have been take bowl (5s)", ("take", "bowl", 5)),
+        ("abandonment Anomaly. Correct move would have been pour bowl for 36 secs",
+         ("pour", "bowl", 36)),
+        ("substitution Anomaly. Correct move would have been pour bowl for 12 seconds",
+         ("pour", "bowl", 12)),
+    ]:
+        v = detect.parse_response(text, 0, VOCAB)
+        assert v.parse_ok, text
+        assert v.correction == expected, text
+
+
+def test_a_bare_number_is_still_not_a_duration():
+    """The tolerance is for the units the prompt shows, not for anything numeric -- a correction
+    with no unit at all stays a parse failure rather than being silently rescued."""
+    v = detect.parse_response(
+        "substitution Anomaly. Correct move would have been pour bowl for 12", 0, VOCAB)
+    assert not v.parse_ok

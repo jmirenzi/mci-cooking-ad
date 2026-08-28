@@ -157,6 +157,128 @@ both healthy sources render legibly and `synthetic/generate.py` needed no specia
 seconds. `assert_tick_seconds` makes that dependency explicit rather than letting "seconds"
 silently become a lie if the binning ever changes.
 
+### The second unit: one tick (`--unit tick`)
+
+The step unit is a **handicap the comparison imposes on the HSMM**, not a neutral choice. The
+HSMM already has an opinion at every tick; `step_verdicts_from_flags` throws ~18 of them away per
+step to meet the LLM where it can answer. `--unit tick` removes that by asking the LLM the same
+question once per second — one request per tick — so both arms answer on the stream's native
+resolution.
+
+Implementation is deliberately *not* a second pipeline. A tick element is `textify.Step` at
+duration 1, one per tick, with `index == tick_start == the tick number`
+(`textify.ticks_from_ids`). Everything downstream — `gt_steps_for_window`,
+`injection_touched_steps`, `step_covering_tick`, all of `element_metrics` — reads only
+`(index, tick_start, tick_end)` and so transfers unchanged; a tick-space ground-truth window maps
+to itself. `--unit` threads through `textify` → `detect` → `prompts` → `element_metrics` and
+nothing else.
+
+Three things change with the unit, and reports have to say which one they used:
+
+| | `--unit step` | `--unit tick` |
+|---|---|---|
+| elements per trial (test split) | 6.5 | 121 |
+| elements, whole test split | 661 | 12,227 |
+| requests, 6 conditions × 2 variants | 7,932 | 146,724 |
+| detection deadline (`DEFAULT_TOL`) | 1 step | 10 ticks |
+| chance precision | ~1 in 7 | ~1 in 100 |
+
+1. **Cost is ~18×.** See §4.
+2. **Precision is not comparable across units**, only across arms *within* one. A tick run offers
+   ~18× more chances to false-positive on the same corpus. `chance_precision` is in every report
+   for exactly this; quote it alongside.
+3. **The deadline is restated, not tightened.** `DEFAULT_TICK_TOL = 10` is the median step width,
+   so a tick run is not holding either detector to an ~11× tighter clock than the step runs the
+   existing numbers came from.
+
+Two things deliberately do *not* change. The **ground-truth correction** is still the pre-injection
+*step* — verb, noun, and how long that step should have run — because that is what the prompt asks
+for; taking it from a tick element would make every duration truth 1 second and
+`correction_accuracy` meaningless. And the **step-unit prompts are byte-identical** to what they
+were before the tick unit existed, so the ~30k-response cache collected under them stays valid
+(there is a test asserting this).
+
+#### The line format carries elapsed time
+
+```
+41. pour milk (3s)
+42. pour milk (4s)
+43. pour milk (5s)
+44. stall kitchen (1s)   [pour milk ended after 5s]
+45. stall kitchen (2s)
+```
+
+`(Ns)` counts up within a run and resets when a new action starts; the bracket reports the
+finished run's total. The first version of this rendering printed only `pour cereals` and left the
+model to count identical lines. That was a **defect, not a design choice**: the step unit says
+`pour cereals for 19 seconds` outright and the HSMM's duration channels carry elapsed occupancy
+for free, so the bare rendering gave the LLM strictly less than either arm had, and any
+tick-vs-step difference would have partly measured "the durations were deleted." It also made
+anomaly detection depend on counting — measured on the first tick smoke run as repeated false
+`repetition` verdicts fired *inside* long, normal runs.
+
+Both annotations look only **backward**, which is what keeps the protocol causal and the prefixes
+append-only (asserted by test). In particular the completion note lands on the **first tick of the
+next run**, not the last tick of the finished one: at second 5 the model cannot yet know the step
+is over, and it learns so at second 6. A tick earlier would leak one tick of the future onto
+exactly the type whose whole signal is *this step ended too early*, inflating abandonment recall
+for free.
+
+The tick preprompt (`prompts.tick_task_block`) is a separate template rather than a
+parameterisation of the step one, for the same cache reason, and it explains the format above
+before stating the anomaly definitions.
+
+### Ground truth is points, not ranges
+
+`window` is the whole extent an injection disturbed. It is **not** the same thing as the ticks
+that are actually anomalous, and conflating them distorts scoring badly at the tick unit. A
+transposition's two swapped runs are each being executed *correctly*; what is wrong is only that
+they arrive in the wrong order. Scoring the whole span as ground truth says every second of
+correct cooking is an anomaly.
+
+Each injector therefore emits `anomaly_ticks` from its own index arithmetic
+(`error_injection._result`):
+
+| injector | anomalous ticks | why |
+|---|---|---|
+| substitution | the whole segment | *content* error — every second of it is wrong |
+| abandonment | the truncation onset | one moment |
+| omission | the junction | one moment |
+| transposition | 3 junctions: B's onset, B→A, A's last tick | *structural* — the runs are correct, the order is not |
+| repetition | 2 junctions: the copy's first and last tick | structural — the step is correct, doing it twice is not |
+
+Everything inside `window` that is not a point becomes **debris** — excluded from false-positive
+scoring rather than charged — because a detector firing in the middle of a correctly-executed but
+misplaced run is neither right nor wrong. This is what debris was for; before this change it fired
+for one injector and nothing else.
+
+The effect, as the fraction of a trial that counts as ground truth (i.e. the chance one randomly
+placed flag "detects" the anomaly):
+
+| injector | step unit | tick, by window | tick, by points |
+|---|---|---|---|
+| substitution | 13.2% | 13.7% | 13.7% |
+| abandonment | 13.2% | 0.7% | 0.7% |
+| omission | 15.3% | 0.7% | 0.7% |
+| transposition | 25.9% | **29.9%** | **1.8%** |
+| repetition | 13.2% | **13.1%** | **1.0%** |
+
+At the step unit every type presents a similar-sized target, which is why this never surfaced
+there. At the tick unit the range rule spread them over **40×**, so per-type recalls were not
+comparable to one another and transposition scored nearly for free.
+
+**The step unit does not move.** Both of repetition's junctions sit inside the copy, and
+transposition's exit junction is the misplaced run's *last* tick rather than its innocent
+successor's first — so at the step unit the points select exactly the steps the window did.
+Verified over 290 real injections: identical ground-truth *and* debris sets on every one, asserted
+by test for all five injectors. Every step-unit number on this page therefore stands unchanged.
+
+`score_trial_steps` generalises to match: detection is a flag within `tol` of any **contiguous run
+of ground truth**, with latency measured from that run's start. For contiguous ground truth that
+is exactly the old `[min(gt), max(gt) + tol]` interval rule, including latency — so substitution,
+abandonment and omission are scored bit-for-bit as before, and only the two multi-junction
+injectors change. Reaching the successor step is `tol`'s job, not the ground truth's.
+
 ### Names come from `Lexicon.verb`/`.noun`, not `.phrase`
 
 `narrate.Lexicon.phrase` collapses the SIL sentinels to `"idle"` or to a bare noun. That is right
@@ -386,6 +508,13 @@ Three further mitigations:
    and a sweep interrupted by a daily cap resumes where it stopped.
 3. **`--protocol batch`** — ~7× fewer requests, at the cost of causal comparability.
 
+**At `--unit tick` the arithmetic changes by ~18×** (§1). The full test split, both variants, is
+**146,724 requests** before caching and ~92k after — see §6 for what that costs in wall-clock time
+locally. Shrink it along the axes that do not compromise the comparison: one prompt variant halves
+it (and the with-recipes arm is the one that is not like-for-like against the HSMM anyway), and
+`--max-real` scales it linearly. This is far outside any hosted free tier — a tick-unit run is a
+local-server experiment.
+
 `--max-requests` raises `BudgetExceeded` rather than silently truncating: a half-finished sweep
 that reports as complete is worse than a crash, and the cache makes restarting cheap.
 
@@ -602,8 +731,27 @@ Nothing errors. The run just becomes CPU inference. Measured on n=10, 251 reques
 | default context (21/63 layers on GPU) | 850 s | 701 s |
 | `OLLAMA_CONTEXT_LENGTH=2048` (63/63 on GPU) | **212 s** | **167 s** |
 
-**4x from one environment variable** -- far more than concurrency ever contributed. The longest
-prompt this evaluation produces is 842 tokens (1476 with recipe descriptions), so 2048 is ample.
+**4x from one environment variable** -- far more than concurrency ever contributed. At
+`--unit step` the longest prompt this evaluation produces is 842 tokens (1476 with recipe
+descriptions), so 2048 is ample.
+
+**`--unit tick` breaks that.** Measured on the served model: the system prompt alone is 776 tokens
+(1540 with recipes), and a tick prefix costs ~6.5 tokens per line, so the longest test-split trial
+(447 ticks) reaches **3852 tokens** -- and ollama truncates an over-long prompt **from the front**,
+silently dropping the system prompt (the response grammar, the vocabulary, the anomaly
+definitions) while still returning a plausible reply. It appears as a parse-failure cliff on long
+trials and as nothing else. `run_llm_eval.py --unit tick` therefore prints the longest request's
+size and the context length to serve before it sends anything.
+
+Serve tick-unit runs with `OLLAMA_CONTEXT_LENGTH=8192`. That is 8 x 8192 of KV, which still leaves
+`gemma3:27b` fully on the GPU (verify: `curl localhost:11434/api/ps` -- `size_vram` should equal
+`size`).
+
+One trap on top of the trap: **ollama decides layer placement from free VRAM at load time and
+keeps that decision**. Loading the model while JAX holds the card -- which any `run_*.py` import
+does -- gives 18/63 layers on GPU and CPU-speed inference for the rest of the session, with the
+same silence as above. Load the model first, or unload and reload it (`keep_alive: 0`, then one
+warm-up request) once the GPU is free.
 
 Gemma 3's sliding-window attention is a red herring here. ollama does churn ~250 MB KV checkpoints
 in its log (`n_swa = 1024`) and that churn is real, but it is not the bottleneck — the layer-offload

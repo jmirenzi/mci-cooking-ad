@@ -30,6 +30,18 @@ ALL_CHANNELS = surprise.CHANNELS
 # structurally retrospective channels (an abandonment is only visible once the step closes).
 DEFAULT_STEP_TOL = 1
 
+# The same tolerance restated in the tick unit (llm/textify.py's UNITS). One step is ~11 ticks on
+# this corpus (median run length), so a tick-unit run scored at tol=1 would be holding the
+# detectors to a ~11x tighter deadline than the step-unit run and the two units' recalls would
+# not be comparable. 10 is that median, rounded down.
+#
+# It is a DEADLINE, not a window: the ground-truth range is already every tick the injection
+# touched, so this only governs how many ticks after the last of them a flag still counts as
+# having found the anomaly.
+DEFAULT_TICK_TOL = 10
+
+DEFAULT_TOL = {"step": DEFAULT_STEP_TOL, "tick": DEFAULT_TICK_TOL}
+
 # Duration counts as correct within 50%, floored at +/-2s so short steps are not held to an
 # impossible standard. Durations here are integer seconds over steps whose median width is 11s.
 DURATION_TOL_FRAC = 0.5
@@ -260,33 +272,74 @@ def step_verdicts_from_flags(flags, steps, trace=None, lexicon=None, channels=AL
     return verdicts
 
 
+def _gt_runs(gt_steps):
+    """`gt_steps` grouped into maximal contiguous runs, as [(run_start, run_end), ...].
+
+    This is what lets one scoring rule serve both shapes of ground truth. Substitution's ground
+    truth is a contiguous span -- one run -- and the anomaly becomes visible at its START, so
+    latency is measured from there. Transposition's is three isolated junction ticks -- three
+    runs of length one -- and each is a separate moment at which something goes wrong, so a flag
+    on the second junction has latency 0 from that junction rather than ~40 from the first.
+    """
+    runs = []
+    for i in sorted(set(int(g) for g in gt_steps)):
+        if runs and i == runs[-1][1] + 1:
+            runs[-1][1] = i
+        else:
+            runs.append([i, i])
+    return [(a, b) for a, b in runs]
+
+
+def _match_run(runs, index, tol_steps):
+    """The run whose detection deadline `index` falls in, or None.
+
+    A flag counts from a run's start through `tol_steps` past its end. When two runs' deadlines
+    overlap, the LATEST run starting at or before `index` wins -- the nearest preceding cause,
+    which is also the smaller latency.
+    """
+    best = None
+    for start, end in runs:
+        if start <= index <= end + tol_steps:
+            best = start
+    return best
+
+
 def score_trial_steps(verdicts, gt_steps, tol_steps=DEFAULT_STEP_TOL, debris_steps=frozenset()):
     """(detected, latency_steps, flagged_out_of_window, predicted_type).
 
-    `gt_steps` is the step-index list from textify.gt_steps_for_window. Detection is any
-    `is_anomaly` verdict in [min(gt), max(gt) + tol_steps]; latency counts steps from min(gt).
-    Any `is_anomaly` verdict outside that range is a false positive.
+    `gt_steps` is the element-index list from textify.gt_steps_for_ticks -- the injector's own
+    anomalous POINTS, which for substitution is a contiguous span and for the three structural
+    injectors is two or three isolated junctions (synthetic/error_injection._result). Detection is
+    any `is_anomaly` verdict falling within `tol_steps` past one of those runs; latency counts
+    from that run's start.
+
+    For contiguous ground truth this is EXACTLY the old interval rule -- [min(gt), max(gt) + tol]
+    with latency from min(gt) -- so substitution, abandonment and omission are scored identically
+    to before points existed, and only the two multi-junction injectors change.
 
     `debris_steps` (textify.injection_touched_steps) are excluded from the out-of-window
-    false-positive check: they are steps the injection itself created or reshaped but which are
-    not the ground-truth anomaly, so a detector that flags them is neither wrong nor right about
-    anything the injector actually tests. Debris is a third bucket -- excluded from scoring
-    entirely, counted as neither a hit nor a false alarm.
+    false-positive check: they are elements the injection created or reshaped but which are not
+    themselves anomalous -- a transposition's correctly-executed-but-misplaced runs, most of the
+    volume now. Debris is a third bucket, counted as neither a hit nor a false alarm.
     """
     if not gt_steps:
         out_of_window = any(v.is_anomaly for v in verdicts if v.step_index not in debris_steps)
         return False, None, out_of_window, None
-    lo, hi = min(gt_steps), max(gt_steps) + tol_steps
+    runs = _gt_runs(gt_steps)
 
     detected, latency, predicted = False, None, None
     for v in verdicts:
-        if v.is_anomaly and lo <= v.step_index <= hi:
+        if not v.is_anomaly:
+            continue
+        start = _match_run(runs, v.step_index, tol_steps)
+        if start is not None:
             detected = True
-            latency = v.step_index - lo
+            latency = v.step_index - start
             predicted = v.error_type
             break
     out_of_window = any(
-        v.is_anomaly and not (lo <= v.step_index <= hi) and v.step_index not in debris_steps
+        v.is_anomaly and _match_run(runs, v.step_index, tol_steps) is None
+        and v.step_index not in debris_steps
         for v in verdicts
     )
     return detected, latency, out_of_window, predicted
@@ -309,7 +362,7 @@ def _correction_matches(predicted, truth):
 
 
 def evaluate_steps(healthy_verdicts, degraded_by_type, tol_steps=DEFAULT_STEP_TOL,
-                   error_types=None, artifact_steps=None):
+                   error_types=None, artifact_steps=None, unit="step"):
     """healthy_verdicts: [[StepVerdict, ...], ...] for control trials with no injection.
     degraded_by_type: {error_type: [(verdicts, gt_steps, gt_correction), ...]}, where gt_correction
     is the pre-injection (verb, noun, duration) from textify.step_covering_tick, or None.
@@ -317,6 +370,12 @@ def evaluate_steps(healthy_verdicts, degraded_by_type, tol_steps=DEFAULT_STEP_TO
     type's trial list in degraded_by_type -- textify.injection_touched_steps per trial. When
     absent (the default), no steps are treated as debris and this behaves exactly as before this
     parameter existed.
+    unit: labels the report and nothing else -- the arithmetic is identical for both units,
+    because a tick element IS a Step of duration 1 (llm/textify.ticks_from_ids), so the elements
+    arriving here are already whichever unit the caller chose. Pass the matching `tol_steps`
+    (DEFAULT_TOL) or the two units are scored to different deadlines. NOTE that precision and
+    chance_precision are NOT comparable across units: the tick unit offers ~18x more chances to
+    false-positive on the same corpus, which is why chance_precision is reported.
     Returns the same report shape as metrics.evaluate -- per_type / attribution / healthy -- so
     the two layers print through the same code, plus type_confusion, correction_accuracy,
     step_level, trial_located and parse_failure_rate.
@@ -372,8 +431,12 @@ def evaluate_steps(healthy_verdicts, degraded_by_type, tol_steps=DEFAULT_STEP_TO
                 tp += 1
                 latencies.append(latency)
                 confusion[predicted if predicted in confusion else "none"] += 1
+                # Must re-find the hit with the SAME rule score_trial_steps used, or on
+                # multi-junction ground truth this picks a different verdict than the one that
+                # was scored -- or none at all, and raises.
+                runs = _gt_runs(gt_steps)
                 hit = next(v for v in verdicts
-                           if v.is_anomaly and min(gt_steps) <= v.step_index <= max(gt_steps) + tol_steps)
+                           if v.is_anomaly and _match_run(runs, v.step_index, tol_steps) is not None)
                 verb_noun_ok, duration_ok = _correction_matches(hit.correction, gt_correction)
                 if verb_noun_ok is not None:
                     corr_total += 1
@@ -435,7 +498,7 @@ def evaluate_steps(healthy_verdicts, degraded_by_type, tol_steps=DEFAULT_STEP_TO
         fp_steps += sum(1 for v in verdicts if v.is_anomaly)
 
     return {
-        "unit": "step",
+        "unit": unit,
         "per_type": per_type,
         # Kept under the key metrics.evaluate uses so run_evaluation.py's printer and
         # eval.plotting work unchanged on this report; the rows are anomaly types, not channels.

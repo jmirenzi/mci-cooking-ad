@@ -29,18 +29,50 @@ def _seg_bounds(segments):
     return bounds
 
 
-def _result(verb_ids, noun_ids, t0, t1, error_type, tick_map, edited_ticks=()):
+def _result(verb_ids, noun_ids, t0, t1, error_type, tick_map, edited_ticks=(), points=None):
     """`tick_map[i]` is the original-trial tick that degraded tick `i` came from -- the same
     concatenation each injector below already applies to its own verb_ids/noun_ids, applied
     instead to np.arange(T). `edited_ticks` lists degraded indices whose CONTENT differs from
     tick_map's source tick; every injector but substitution reorders/copies/drops ticks without
     rewriting any surviving one, so tick_map alone would otherwise imply their content is
     unchanged everywhere, which is exactly true for those four and false for substitution's
-    retagged segment."""
+    retagged segment.
+
+    `points` -- `anomaly_ticks` in the result -- are the ticks that are ACTUALLY anomalous, as
+    opposed to `window`, which is the whole extent the injection disturbed. For substitution the
+    two coincide: every tick of a segment done with the wrong object is wrong. For the three
+    STRUCTURAL injectors they do not, and conflating them badly distorts scoring at the tick unit:
+    a transposition's two swapped runs are each being executed correctly, and what is wrong is
+    only that they arrive in the wrong order -- so the evidence is at the JUNCTIONS, not spread
+    over ~49 ticks of correct cooking.
+
+    Measured as a fraction of a trial, i.e. the chance a single randomly-placed flag lands on
+    ground truth, before this distinction existed:
+
+        injector        step unit   tick unit
+        substitution          13%         14%
+        abandonment           13%        0.7%
+        omission              15%        0.7%
+        transposition         26%         30%
+        repetition            13%         13%
+
+    At the step unit every type presents a similar-sized target. At the tick unit they differ by
+    40x, so per-type recalls stop being comparable to one another and a chatty detector scores
+    transposition nearly for free. Points fix that; the rest of `window` becomes DEBRIS
+    (llm/textify.injection_touched_steps), excluded from false-positive scoring rather than
+    charged, because a detector that fires in the middle of a correctly-executed but misplaced run
+    is neither right nor wrong.
+
+    Defaults to the whole window, which is the pre-existing behaviour and the correct one for
+    substitution."""
+    t0, t1 = int(t0), int(t1)
+    if points is None:
+        points = range(t0, t1 + 1)
     return {
         "verb_ids": np.asarray(verb_ids, dtype=np.int64),
         "noun_ids": np.asarray(noun_ids, dtype=np.int64),
-        "window": (int(t0), int(t1)),
+        "window": (t0, t1),
+        "anomaly_ticks": np.asarray(sorted({int(p) for p in points}), dtype=np.int64),
         "error_type": error_type,
         "tick_map": np.asarray(tick_map, dtype=np.int64),
         "edited_ticks": np.asarray(list(edited_ticks), dtype=np.int64),
@@ -164,8 +196,20 @@ def inject_omission(traj, rng, select="random"):
 
 
 def inject_transposition(traj, rng, select="random"):
-    """Swap two adjacent interior segments -- steps done in the wrong order. Anomaly spans the
-    swapped pair (two out-of-order boundaries)."""
+    """Swap two adjacent interior segments -- steps done in the wrong order.
+
+    Three anomalous ticks, not the whole swapped span (see `_result`): B begins where A was
+    expected, B hands over to A, and A's LAST tick, after which the pair's successor follows A
+    rather than B. Everything between those junctions is a correctly-executed run in the wrong
+    place.
+
+    The exit junction is A's last tick rather than the successor's first, and the difference
+    matters at the step unit: the successor step is entirely normal, and pointing at it would
+    enlarge transposition's ground truth from 1.92 steps to 2.88 -- 39% of a trial -- making the
+    step-unit numbers MORE generous than the range-based ones they replace. Detection lag is what
+    `tol` is for, and one step / ten ticks of it already reaches the successor. Measured: with
+    this placement step-unit ground truth is 1.92 steps, exactly the range-based value, so the
+    existing step-unit results stand and only the tick unit changes."""
     verb_ids = np.array(traj["verb_ids"])
     noun_ids = np.array(traj["noun_ids"])
     bounds = _seg_bounds(traj["segments"])
@@ -181,12 +225,23 @@ def inject_transposition(traj, rng, select="random"):
     verb_ids = _swapped(verb_ids)
     noun_ids = _swapped(noun_ids)
     tick_map = _swapped(np.arange(T))
-    return _result(verb_ids, noun_ids, a_start, a_start + da + db - 1, "transposition", tick_map)
+    # The third junction is the tick after the pair. It exists whenever a trailing segment
+    # follows, which _pick_segment's interior range guarantees -- guarded anyway so a corpus
+    # whose last segment ever became eligible cannot index past the end.
+    junctions = [a_start, a_start + db, a_start + da + db - 1]
+    return _result(verb_ids, noun_ids, a_start, a_start + da + db - 1, "transposition", tick_map,
+                   points=junctions)
 
 
 def inject_repetition(traj, rng, select="random"):
     """Duplicate an interior segment in place (the user repeats a step). Shows as an impossible
-    re-entry transition or, once Viterbi merges the copy, an over-long stall."""
+    re-entry transition or, once Viterbi merges the copy, an over-long stall.
+
+    Two anomalous ticks, not the whole copy (see `_result`): the copy's first tick (the re-entry)
+    and its last (after which what should have followed the first pass finally does). The copy's
+    interior is the step being performed correctly -- for the second time, which is what the
+    junctions say. Both sit inside the copy, for the same reason transposition's exit junction
+    does: the successor step is normal, and reaching it is `tol`'s job."""
     verb_ids = np.array(traj["verb_ids"])
     noun_ids = np.array(traj["noun_ids"])
     bounds = _seg_bounds(traj["segments"])
@@ -201,7 +256,9 @@ def inject_repetition(traj, rng, select="random"):
     verb_ids = _duplicated(verb_ids)
     noun_ids = _duplicated(noun_ids)
     tick_map = _duplicated(np.arange(T))  # many-to-one: the copy's ticks map to their originals
-    return _result(verb_ids, noun_ids, end, end + d - 1, "repetition", tick_map)  # the inserted copy
+    junctions = [end, end + d - 1]
+    return _result(verb_ids, noun_ids, end, end + d - 1, "repetition", tick_map,  # the inserted copy
+                   points=junctions)
 
 
 def _pick_segment(rng, valid_indices, select):

@@ -152,3 +152,177 @@ def test_recipe_block_does_not_teach_the_underscore_format():
     assert prompts._label_to_step_text("stir_dough") == "stir dough"
     assert prompts._label_to_step_text("SIL") == "stall kitchen"
     assert prompts._label_to_step_text("put_egg2plate") == "put egg2plate"  # only first _ splits
+
+
+# --------------------------------------------------------------------------------------------
+# the tick unit
+# --------------------------------------------------------------------------------------------
+
+def test_tick_elements_are_one_per_tick_with_index_equal_to_tick():
+    """The property the whole tick unit rests on: a tick element's index IS its tick, so every
+    consumer written against (index, tick_start, tick_end) -- the ground-truth bridge, the
+    metrics -- transfers with no translation layer."""
+    lex = _lexicon()
+    verbs = [0, 0, 1, 1, 1, 2]
+    nouns = [0, 0, 2, 2, 3, 1]
+    ticks = textify.ticks_from_ids(verbs, nouns, lex)
+
+    assert len(ticks) == len(verbs)
+    for t, e in enumerate(ticks):
+        assert (e.index, e.tick_start, e.tick_end, e.duration) == (t, t, t + 1, 1)
+    assert [e.verb_id for e in ticks] == verbs
+    assert [e.noun_id for e in ticks] == nouns
+
+
+def test_tick_elements_cover_the_same_ticks_as_the_steps_they_replace():
+    lex = _lexicon()
+    verbs = [0, 0, 1, 1, 1, 2]
+    nouns = [0, 0, 2, 2, 3, 1]
+    steps = textify.steps_from_ids(verbs, nouns, lex)
+    ticks = textify.ticks_from_ids(verbs, nouns, lex)
+
+    assert steps[-1].tick_end == ticks[-1].tick_end
+    # every tick element falls inside exactly one step, carrying that step's labels
+    for e in ticks:
+        owner = textify.step_covering_tick(steps, e.tick_start)
+        assert (owner.verb, owner.noun) == (e.verb, e.noun)
+
+
+def test_tick_rendering_omits_the_duration():
+    """One line is one second by construction. Restating 'for 1 second' on every line would both
+    waste the prompt and invite the model to read each tick as a completed one-second step."""
+    lex = _lexicon()
+    ticks = textify.ticks_from_ids([1, 1], [2, 2], lex)
+    assert textify.render_tick(ticks[0]) == "pour cereals"
+    assert textify.render_element(ticks[0], "tick") == "pour cereals"
+    assert textify.render_element(ticks[0], "step") == "pour cereals for 1 second"
+
+
+def test_gt_window_maps_to_exactly_its_own_ticks_at_the_tick_unit():
+    """gt_steps_for_window is reused unchanged for both units. At the tick unit the answer must be
+    the window itself -- an off-by-one here would silently shift every ground truth."""
+    lex = _lexicon()
+    ticks = textify.ticks_from_ids([0] * 10, [0] * 10, lex)
+    assert textify.gt_steps_for_window(ticks, (3, 5)) == [3, 4, 5]
+    assert textify.gt_steps_for_window(ticks, (0, 0)) == [0]
+
+
+def test_elements_from_trajectory_dispatches_on_unit():
+    lex = _lexicon()
+    traj = {"verb_ids": [0, 0, 1], "noun_ids": [0, 0, 2]}
+    assert len(textify.elements_from_trajectory(traj, lex, "step")) == 2
+    assert len(textify.elements_from_trajectory(traj, lex, "tick")) == 3
+    assert len(textify.elements_from_trajectory(traj, lex)) == 2   # step is the default
+    with pytest.raises(ValueError, match="unknown unit"):
+        textify.elements_from_trajectory(traj, lex, "segment")
+
+
+def test_debris_is_the_border_rule_and_only_for_substitution_at_both_units():
+    """Pins which debris rule actually fires, because the docstring here once claimed the
+    opposite of the measurement. Rule 'borders an edited tick' is the live one; the interior
+    -splice rule has never fired for a shipped injector at either unit.
+
+    Built by hand rather than through an injector so the assertion does not move if injector
+    internals change: a 3-run trial whose MIDDLE run was retagged, which is substitution's shape.
+    """
+    lex = _lexicon()
+    verbs = [1] * 4 + [2] * 4 + [3] * 4     # the middle run is the substituted segment
+    tick_map = np.arange(12)                # no splices at all -- substitution reorders nothing
+    edited = list(range(4, 8))
+
+    steps = textify.steps_from_ids(verbs, verbs, lex)
+    gt_steps = textify.gt_steps_for_window(steps, (4, 7))
+    assert gt_steps == [1]
+    # both neighbouring RUNS border an edited tick -- ~8 ticks excused from FP scoring
+    assert textify.injection_touched_steps(steps, tick_map, edited, gt_steps) == {0, 2}
+
+    ticks = textify.ticks_from_ids(verbs, verbs, lex)
+    gt_ticks = textify.gt_steps_for_window(ticks, (4, 7))
+    assert gt_ticks == [4, 5, 6, 7]
+    # at the tick unit the same rule excuses only the two bordering TICKS: a stricter halo
+    assert textify.injection_touched_steps(ticks, tick_map, edited, gt_ticks) == {3, 8}
+
+
+def test_a_splice_on_an_element_boundary_is_not_debris_at_either_unit():
+    """The interior-splice rule is deliberately silent when the splice lands where the RLE
+    already breaks -- which is every splice the five shipped injectors produce, and which at the
+    tick unit is every splice there can be."""
+    lex = _lexicon()
+    verbs = [1] * 3 + [3] * 3
+    tick_map = np.array([0, 1, 2, 7, 8, 9])   # ticks 3..5 come from elsewhere: splice at 2->3
+
+    steps = textify.steps_from_ids(verbs, verbs, lex)
+    assert textify.injection_touched_steps(steps, tick_map, (), gt_steps=[]) == set()
+    ticks = textify.ticks_from_ids(verbs, verbs, lex)
+    assert textify.injection_touched_steps(ticks, tick_map, (), gt_steps=[]) == set()
+
+
+# --------------------------------------------------------------------------------------------
+# point ground truth
+# --------------------------------------------------------------------------------------------
+
+def _traj_from(verbs, nouns, seg_lengths):
+    return {"verb_ids": np.array(verbs), "noun_ids": np.array(nouns),
+            "segments": [(i, d) for i, d in enumerate(seg_lengths)]}
+
+
+def test_structural_injectors_mark_junctions_not_whole_ranges():
+    """A transposition's two runs are each performed correctly; only their ORDER is wrong, so the
+    ground truth is the three junctions and the ~46 ticks between them are debris. Before this,
+    30% of a trial counted as transposition ground truth at the tick unit against 0.7% for
+    abandonment, and per-type recalls were not comparable to each other."""
+    lex = _lexicon()
+    verbs = [0] * 5 + [1] * 6 + [2] * 7 + [3] * 5
+    traj = _traj_from(verbs, verbs, [5, 6, 7, 5])
+    dg = error_injection.inject("transposition", traj, np.random.default_rng(0), _peaked_params())
+
+    ticks = textify.ticks_from_trajectory(dg, lex)
+    gt = textify.gt_steps_for_ticks(ticks, dg["anomaly_ticks"])
+    assert len(gt) == 3                                    # three junctions, not the whole span
+    window = dg["window"]
+    assert len(textify.gt_steps_for_window(ticks, window)) == window[1] - window[0] + 1 > 3
+
+    debris = textify.injection_touched_steps(
+        ticks, dg["tick_map"], dg["edited_ticks"], gt, window=window)
+    # every tick of the disturbed span is now exactly one of: ground truth, or debris
+    span = set(range(window[0], window[1] + 1))
+    assert span == set(gt) | debris
+    assert not (set(gt) & debris)
+
+
+def test_point_ground_truth_leaves_the_step_unit_bit_for_bit_unchanged():
+    """The property that lets the existing step-unit results stand. Both junction points of a
+    repetition sit INSIDE the copy, and a transposition's exit junction is the last tick of the
+    misplaced run rather than the first tick of its innocent successor -- so at the step unit the
+    points select exactly the steps the window did. Measured over 290 real injections; asserted
+    here on all five injectors so a future injector cannot silently break it."""
+    lex = _lexicon()
+    verbs = [0] * 5 + [1] * 6 + [2] * 7 + [3] * 6 + [4] * 5
+    traj = _traj_from(verbs, verbs, [5, 6, 7, 6, 5])
+
+    for etype in error_injection.ERROR_TYPES:
+        dg = error_injection.inject(etype, traj, np.random.default_rng(1), _peaked_params())
+        steps = textify.steps_from_trajectory(dg, lex)
+        by_window = set(textify.gt_steps_for_window(steps, dg["window"]))
+        by_points = set(textify.gt_steps_for_ticks(steps, dg["anomaly_ticks"]))
+        assert by_points == by_window, etype
+        assert textify.injection_touched_steps(
+            steps, dg["tick_map"], dg["edited_ticks"], by_points, window=dg["window"]
+        ) == textify.injection_touched_steps(
+            steps, dg["tick_map"], dg["edited_ticks"], by_window
+        ), etype
+
+
+def test_substitution_keeps_its_whole_range_as_ground_truth():
+    """Not every injector is a junction. Every second of a step done with the wrong object is
+    itself wrong, so substitution's points ARE its window -- at both units."""
+    lex = _lexicon()
+    verbs = [0] * 5 + [1] * 6 + [2] * 7
+    traj = _traj_from(verbs, verbs, [5, 6, 7])
+    dg = error_injection.inject("substitution", traj, np.random.default_rng(0), _peaked_params())
+
+    t0, t1 = dg["window"]
+    assert list(dg["anomaly_ticks"]) == list(range(t0, t1 + 1))
+    ticks = textify.ticks_from_trajectory(dg, lex)
+    assert (textify.gt_steps_for_ticks(ticks, dg["anomaly_ticks"])
+            == textify.gt_steps_for_window(ticks, dg["window"]))

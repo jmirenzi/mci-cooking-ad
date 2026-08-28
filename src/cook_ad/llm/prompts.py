@@ -18,6 +18,7 @@ HSMM and must not be reported as one.
 import collections
 import statistics
 
+from cook_ad.llm import textify
 from cook_ad.synthetic import error_injection
 
 # Definitions lifted from the corresponding synthetic/error_injection.py injector docstrings. The
@@ -123,6 +124,130 @@ wrong.
 """
 
 
+# --------------------------------------------------------------------------------------------
+# the tick unit
+# --------------------------------------------------------------------------------------------
+#
+# A SEPARATE template rather than a parameterised task_block, deliberately. The step wording above
+# is frozen -- it is part of the response-cache key, so a template that produced it by
+# substitution would risk invalidating ~30k collected responses over a whitespace change. The two
+# blocks are meant to be read side by side and kept in sync by hand.
+#
+# What actually differs, and why:
+#   * each line carries ELAPSED time in the run so far, and the tick that starts a new run also
+#     reports how long the previous one lasted. The first version of this block printed only
+#     'pour cereals' and left the model to count identical lines -- which gave it strictly less
+#     than the step unit (`pour cereals for 19 seconds`) and less than the HSMM's duration
+#     channels, and was measured producing false `repetition` verdicts inside long normal runs.
+#     Both annotations look only BACKWARD, so the protocol stays causal; see
+#     textify.render_tick_lines for why the completion note lands on the tick AFTER the run ends.
+#   * the judged object is the LAST LINE, i.e. the current second, not a finished step. The
+#     anomaly definitions are unchanged -- they describe the same five injector behaviours -- but
+#     they are restated in terms of what the RECORD SO FAR shows, since at tick level a step is
+#     still in progress when it is judged. An abandonment, in particular, is not yet visible at
+#     its first tick, which is a real property of the online problem and not a prompt defect.
+#   * the base-rate reminder is stronger. At this unit ~1 line in 20 is anomalous rather than
+#     ~1 step in 7, so the prior the model should hold is further toward 'No Anomaly'.
+_TICK_DELIVERY = {
+    "incremental": """You will be given a numbered, second-by-second record of what the person has done SO FAR: line N
+is what they were doing during second N. The record stops at the present moment: there is no
+future, and the task may not be finished.
+
+Judge ONLY THE LAST line -- the current second. The earlier lines are context for that judgement
+-- do not comment on them, and do not judge them again.""",
+    "conversational": """You will be given the person's actions ONE SECOND AT A TIME, in order, as they happen. There is
+no future, the task may not be finished, and you cannot revise an answer you have already given.
+
+Judge ONLY the second you have just been given. Everything earlier in this conversation is context
+for that judgement -- do not comment on it, and do not judge it again.""",
+    "batch": """You will be given the complete second-by-second record of one trial.
+
+Judge EVERY line in the record, in order, one verdict per second.""",
+}
+
+_TICK_ANOMALY_MEANINGS = {
+    "substitution": (
+        "the wrong object, or the wrong action, for the whole of the action currently under way "
+        "-- e.g. spreading mustard where the recipe wants jelly"
+    ),
+    "abandonment": (
+        "the action that just ENDED stopped far sooner than that action normally takes, so it "
+        "cannot have been completed -- judge this on a line whose bracket reports a finished "
+        "action that ran too short"
+    ),
+    "omission": (
+        "the action that just started should have been preceded by something that never "
+        "appeared -- the record runs straight from one action into another, skipping a step that "
+        "normally sits between them"
+    ),
+    "transposition": (
+        "the action that just started and the one before it are in the wrong order -- both are "
+        "present and both run for normal lengths, but they are swapped relative to the usual "
+        "sequence"
+    ),
+    "repetition": (
+        "the action under way has already been done once earlier in the trial and is being done "
+        "again, or its counter has now passed roughly double the time that action normally "
+        "takes. A counter that is merely still rising within the action's normal length is NOT "
+        "a repetition"
+    ),
+}
+
+
+def tick_task_block(protocol="incremental"):
+    """The unit='tick' counterpart of task_block: one line per second, judged per second."""
+    delivery = _TICK_DELIVERY.get(protocol, _TICK_DELIVERY["incremental"])
+    return f"""You are monitoring a person with mild cognitive impairment as they cook a
+single breakfast recipe. You see what they are doing once per second, written as:
+
+    VERB NOUN (Ns)
+
+Each line is exactly one second, so an action that lasts 19 seconds appears as 19 consecutive
+lines, and the line number is the elapsed time in seconds since the trial began.
+
+(Ns) is how long the action ON THAT LINE has been going so far, counting the current second.
+It COUNTS UP while one action continues and RESETS TO (1s) when a different action begins:
+
+    41. pour milk (3s)
+    42. pour milk (4s)
+    43. pour milk (5s)
+    44. stall kitchen (1s)   [pour milk ended after 5s]
+    45. stall kitchen (2s)
+
+So consecutive lines with a rising counter are ONE ongoing action that has lasted that many
+seconds -- NOT the action being done again and again. The action is still in progress and you do
+not yet know how long it will last in total.
+
+When an action ends, the FIRST line of whatever comes next also reports how long the finished
+action ran, in square brackets, as line 44 does above. That bracket is the only place a completed
+duration appears -- which means you find out that an action has ended one second after it did.
+
+{delivery}
+
+Reply with EXACTLY one line, in one of these two forms and nothing else -- no preamble, no
+explanation, no markdown:
+
+    No Anomaly
+
+    <TYPE> Anomaly. Correct move would have been VERB NOUN for NUMBER seconds
+
+where <TYPE> is exactly one of: {_TYPE_LIST}
+
+and VERB and NOUN are drawn from the vocabularies below. The correction states what the person
+should have been doing at this point instead, and for how long that action normally lasts.
+
+The five anomaly types mean, judged at the current second:
+
+""" + "\n".join(
+        f"  - {t}: {_TICK_ANOMALY_MEANINGS[t]}" for t in error_injection.ERROR_TYPES
+    ) + """
+
+The overwhelming majority of seconds in every trial are NORMAL, including every second in the
+middle of an action that is proceeding correctly. Answer 'No Anomaly' unless the CURRENT second
+genuinely looks wrong.
+"""
+
+
 def _canonical_recipes(labels, top_k_variants=1):
     """Per recipe: the modal collapsed subtask-label sequence and each step's median duration.
 
@@ -209,12 +334,22 @@ def recipe_block(labels):
     return "\n".join(lines)
 
 
-def build_system_prompt(vocab, with_recipes=False, labels=None, protocol="incremental"):
+def build_system_prompt(vocab, with_recipes=False, labels=None, protocol="incremental",
+                        unit="step"):
     """The full preprompt. with_recipes=True requires labels (parsed labels.json) -- see this
-    module's docstring for why that arm is not a like-for-like comparison against the HSMM."""
+    module's docstring for why that arm is not a like-for-like comparison against the HSMM.
+
+    `unit` selects task_block (run-length steps) or tick_task_block (one line per second). The
+    vocabulary and recipe blocks are unit-independent: both describe the world, not the sampling
+    of it. The step path is byte-for-byte what it was before the tick unit existed, which is what
+    keeps the existing response cache valid.
+    """
     if with_recipes and labels is None:
         raise ValueError("with_recipes=True requires labels (the parsed labels.json)")
-    blocks = [task_block(protocol), vocab_block(vocab)]
+    if unit not in textify.UNITS:
+        raise ValueError(f"unknown unit: {unit!r} (expected one of {textify.UNITS})")
+    head = task_block(protocol) if unit == "step" else tick_task_block(protocol)
+    blocks = [head, vocab_block(vocab)]
     if with_recipes:
         blocks.append(recipe_block(labels))
     return "\n\n".join(blocks).strip()
@@ -223,8 +358,8 @@ def build_system_prompt(vocab, with_recipes=False, labels=None, protocol="increm
 VARIANTS = ("no-recipes", "with-recipes")
 
 
-def build_variant(variant, vocab, labels=None, protocol="incremental"):
+def build_variant(variant, vocab, labels=None, protocol="incremental", unit="step"):
     if variant not in VARIANTS:
         raise ValueError(f"unknown prompt variant: {variant!r} (expected one of {VARIANTS})")
     return build_system_prompt(vocab, with_recipes=(variant == "with-recipes"), labels=labels,
-                               protocol=protocol)
+                               protocol=protocol, unit=unit)

@@ -119,18 +119,31 @@ def build_pool(trajectories, rng, inject_params):
     return pool
 
 
-def steps_and_truth(traj, degraded, lexicon):
+def steps_and_truth(traj, degraded, lexicon, unit="step"):
     """Degraded steps, the ground-truth step indices, the ground-truth correction, and the
     debris steps the injection created but which are not themselves ground truth
     (textify.injection_touched_steps) -- excluded from false-positive scoring in
     element_metrics.evaluate_steps rather than counted either way."""
-    source_steps = textify.steps_from_trajectory(traj, lexicon)
-    steps = textify.steps_from_trajectory(degraded, lexicon)
-    gt_steps = textify.gt_steps_for_window(steps, degraded["window"])
+    source_steps = textify.elements_from_trajectory(traj, lexicon, unit)
+    steps = textify.elements_from_trajectory(degraded, lexicon, unit)
+    # Ground truth is the injector's own anomalous POINTS, not the whole disturbed window: for
+    # the structural injectors most of that window is a correctly-executed run in the wrong
+    # place. The window is still what decides the debris extent, so the two are used together.
+    gt_steps = textify.gt_steps_for_ticks(steps, degraded["anomaly_ticks"])
     source = textify.step_covering_tick(source_steps, degraded["window"][0])
+    # The ground-truth correction is always the pre-injection STEP -- verb, noun, and the
+    # duration that step should have run for -- even at unit="tick", because that is what the
+    # prompt asks the detector to name and what correction_accuracy scores. Taking it from the
+    # tick element instead would make every duration truth 1 second and the metric meaningless,
+    # so the source trial is re-encoded as steps here regardless of the scoring unit.
+    if unit != "step":
+        source = textify.step_covering_tick(
+            textify.steps_from_trajectory(traj, lexicon), degraded["window"][0]
+        )
     correction = (source.verb, source.noun, source.duration) if source else None
     debris = textify.injection_touched_steps(
-        steps, degraded["tick_map"], degraded["edited_ticks"], gt_steps
+        steps, degraded["tick_map"], degraded["edited_ticks"], gt_steps,
+        window=degraded["window"],
     )
     return steps, gt_steps, correction, debris
 
@@ -154,13 +167,14 @@ def _hsmm_flags(trials, model, chunk_size, alpha=surprise.DEFAULT_ALPHA):
     return flags, traces
 
 
-def hsmm_arm(pool, model, lexicon, chunk_size, alpha=surprise.DEFAULT_ALPHA):
+def hsmm_arm(pool, model, lexicon, chunk_size, alpha=surprise.DEFAULT_ALPHA,
+             unit="step", tol=None):
     """Score the HSMM through the step layer on the shared pool."""
     healthy = [t for t, _ in pool]
     healthy_flags, healthy_traces = _hsmm_flags(healthy, model, chunk_size, alpha)
     healthy_verdicts = [
         element_metrics.step_verdicts_from_flags(
-            f, textify.steps_from_trajectory(t, lexicon), trace, lexicon
+            f, textify.elements_from_trajectory(t, lexicon, unit), trace, lexicon
         )
         for f, trace, t in zip(healthy_flags, healthy_traces, healthy)
     ]
@@ -173,7 +187,8 @@ def hsmm_arm(pool, model, lexicon, chunk_size, alpha=surprise.DEFAULT_ALPHA):
         rows = []
         debris_rows = []
         for (traj, degraded), f, trace in zip(pool, flags, traces):
-            steps, gt_steps, correction, debris = steps_and_truth(traj, degraded[error_type], lexicon)
+            steps, gt_steps, correction, debris = steps_and_truth(
+                traj, degraded[error_type], lexicon, unit)
             verdicts = element_metrics.step_verdicts_from_flags(
                 f, steps, trace, lexicon
             )
@@ -183,19 +198,21 @@ def hsmm_arm(pool, model, lexicon, chunk_size, alpha=surprise.DEFAULT_ALPHA):
         artifact_steps[error_type] = debris_rows
         print(f"  [hsmm/{model['kind']}] {error_type}: {len(rows)} degraded trials", flush=True)
 
-    return element_metrics.evaluate_steps(healthy_verdicts, degraded_by_type,
-                                          artifact_steps=artifact_steps)
+    return element_metrics.evaluate_steps(
+        healthy_verdicts, degraded_by_type, artifact_steps=artifact_steps, unit=unit,
+        tol_steps=element_metrics.DEFAULT_TOL[unit] if tol is None else tol,
+    )
 
 
 # --------------------------------------------------------------------------------------------
 # the LLM arm
 # --------------------------------------------------------------------------------------------
 
-def llm_arm(pool, lexicon, client, system_prompt, vocab, protocol, tag):
+def llm_arm(pool, lexicon, client, system_prompt, vocab, protocol, tag, unit="step", tol=None):
     healthy_verdicts = []
     for traj, _ in pool:
-        steps = textify.steps_from_trajectory(traj, lexicon)
-        verdicts = detect.run_trial(client, system_prompt, steps, vocab, protocol)
+        steps = textify.elements_from_trajectory(traj, lexicon, unit)
+        verdicts = detect.run_trial(client, system_prompt, steps, vocab, protocol, unit)
         healthy_verdicts.append(element_metrics.from_llm_verdicts(verdicts))
     print(f"  [{tag}] healthy: {len(healthy_verdicts)} trials "
           f"({client.n_would_request} uncached requests so far)", flush=True)
@@ -206,8 +223,9 @@ def llm_arm(pool, lexicon, client, system_prompt, vocab, protocol, tag):
         rows = []
         debris_rows = []
         for traj, degraded in pool:
-            steps, gt_steps, correction, debris = steps_and_truth(traj, degraded[error_type], lexicon)
-            verdicts = detect.run_trial(client, system_prompt, steps, vocab, protocol)
+            steps, gt_steps, correction, debris = steps_and_truth(
+                traj, degraded[error_type], lexicon, unit)
+            verdicts = detect.run_trial(client, system_prompt, steps, vocab, protocol, unit)
             rows.append((element_metrics.from_llm_verdicts(verdicts), gt_steps, correction))
             debris_rows.append(debris)
         degraded_by_type[error_type] = rows
@@ -215,11 +233,13 @@ def llm_arm(pool, lexicon, client, system_prompt, vocab, protocol, tag):
         print(f"  [{tag}] {error_type}: {len(rows)} degraded trials "
               f"({client.n_would_request} uncached requests so far)", flush=True)
 
-    return element_metrics.evaluate_steps(healthy_verdicts, degraded_by_type,
-                                          artifact_steps=artifact_steps)
+    return element_metrics.evaluate_steps(
+        healthy_verdicts, degraded_by_type, artifact_steps=artifact_steps, unit=unit,
+        tol_steps=element_metrics.DEFAULT_TOL[unit] if tol is None else tol,
+    )
 
 
-def pool_request_cost(pool, lexicon, protocol):
+def pool_request_cost(pool, lexicon, protocol, unit="step"):
     """UPPER BOUND on the requests a sweep over this pool costs, for --dry-run and the budget line.
 
     A bound rather than an estimate: prefix-only requests cache on the whole prompt, and the six
@@ -229,9 +249,10 @@ def pool_request_cost(pool, lexicon, protocol):
     """
     total = 0
     for traj, degraded in pool:
-        total += detect.request_cost(textify.steps_from_trajectory(traj, lexicon), protocol)
+        total += detect.request_cost(
+            textify.elements_from_trajectory(traj, lexicon, unit), protocol)
         for error_type in error_injection.ERROR_TYPES:
-            steps = textify.steps_from_trajectory(degraded[error_type], lexicon)
+            steps = textify.elements_from_trajectory(degraded[error_type], lexicon, unit)
             total += detect.request_cost(steps, protocol)
     return total
 
@@ -241,14 +262,15 @@ def pool_request_cost(pool, lexicon, protocol):
 # --------------------------------------------------------------------------------------------
 
 def print_report(report, tag, note=None):
-    print(f"\n===== {tag} (unit: step) =====")
+    unit = report.get("unit", "step")
+    print(f"\n===== {tag} (unit: {unit}) =====")
     if note:
         print(note)
     h = report["healthy"]
     print(f"healthy false-positive rate: {h['false_positive_rate']:.3f} "
           f"({h['false_positive_trials']}/{h['n']} control trials flagged)")
     sl = report["step_level"]
-    print(f"pooled step-level: precision {sl['precision']:.3f}  recall {sl['recall']:.3f}  "
+    print(f"pooled {unit}-level: precision {sl['precision']:.3f}  recall {sl['recall']:.3f}  "
           f"(tp {sl['tp']}, fp {sl['fp']}, fn {sl['fn']})")
     tl = report.get("trial_located")
     if tl:
@@ -259,7 +281,7 @@ def print_report(report, tag, note=None):
               f"healthy {tl['healthy_fpr']:.3f})")
     print(f"parse failure rate: {report['parse_failure_rate']:.3f}")
     print(f"\n{'error type':>14}  {'n':>4}  {'recall':>7}  {'precision':>9}  {'prec_excl_hlt':>13}  "
-          f"{'lat(steps)':>10}  {'top pred type':>15}  {'corr v/n':>9}  {'corr dur':>9}")
+          f"{('lat(%ss)' % unit):>10}  {'top pred type':>15}  {'corr v/n':>9}  {'corr dur':>9}")
     for error_type, m in report["per_type"].items():
         conf = report["type_confusion"][error_type]
         top = max(conf, key=conf.get) if any(conf.values()) else "-"
@@ -288,9 +310,13 @@ BATCH_CAVEAT = (
 # Arguments that must match for two runs to describe the same experiment: everything the shared
 # trial pool depends on. --model/--variant/--protocol are deliberately absent -- comparing two
 # models or two prompt variants inside one report is the whole point of merging.
+# --unit and --tol are pool-defining even though they do not change which trajectories are built:
+# they change the ELEMENTS both arms answer about and the deadline they are scored to, so a
+# step-unit arm and a tick-unit arm in one report would be a table that looks like a comparison
+# and is not one (~18x more elements per trial, hence a different chance precision).
 POOL_DEFINING_ARGS = ("seed", "source", "n", "max_ticks", "max_real", "config", "sequences",
                       "joint_params", "cascade", "params", "recipe_params",
-                      "split_file", "split_part")
+                      "split_file", "split_part", "unit", "tol")
 
 
 def _write_report(args, reports, incomplete=False):
@@ -364,6 +390,15 @@ def main():
     parser.add_argument("--source", choices=("synthetic", "real", "both"), default="real")
     parser.add_argument("--variant", choices=(*prompts.VARIANTS, "both"), default="both")
     parser.add_argument("--protocol", choices=tuple(detect.PROTOCOLS), default="incremental")
+    parser.add_argument("--unit", choices=textify.UNITS, default="step",
+                        help="the element both arms answer about and are scored on. 'step' is one "
+                             "run-length-encoded step (~6.5 per trial, the historical default); "
+                             "'tick' is one second (~121 per trial), which removes the step "
+                             "layer's handicap on the HSMM but costs ~18x the requests and is NOT "
+                             "precision-comparable to a step-unit run -- read chance_precision")
+    parser.add_argument("--tol", type=int, default=None,
+                        help="detection deadline in elements past the ground-truth window "
+                             "(default: 1 step / 10 ticks, element_metrics.DEFAULT_TOL)")
     parser.add_argument("--skip-hsmm", action="store_true",
                         help="skip the HSMM arm (it needs no API budget, so this is only for "
                              "iterating on the LLM side)")
@@ -450,7 +485,7 @@ def main():
         except llm_client.LLMError as e:
             raise SystemExit(f"error: {e}") from None
 
-    print("LLM-vs-HSMM step-level evaluation")
+    print(f"LLM-vs-HSMM {args.unit}-level evaluation")
     print(f"model={args.model}  base_url={args.base_url}  protocol={args.protocol}  "
           f"hsmm={model['kind']}")
 
@@ -497,20 +532,48 @@ def main():
                       f"{args.model}, and results across models are not comparable)")
 
     for name, pool in pools.items():
-        cost = pool_request_cost(pool, lexicon, args.protocol)
+        cost = pool_request_cost(pool, lexicon, args.protocol, args.unit)
         n_variants = 0 if args.skip_llm else (2 if args.variant == "both" else 1)
         print(f"\n[{name}] {len(pool)} usable trials; at most {cost} requests per variant, "
               f"{cost * n_variants} for this run ({args.protocol} protocol). Shared prefixes "
               f"between conditions cache, so the real cost runs ~35% lower.")
+
+    # The tick unit's prefixes are ~18x longer than the step unit's, which is the one way this
+    # can go silently wrong: ollama truncates a prompt that exceeds the served context window
+    # from the FRONT, dropping the system prompt -- the response grammar, the vocabulary, the
+    # anomaly definitions -- while still returning a plausible-looking reply. That shows up as a
+    # parse-failure cliff on long trials and nothing else, so the size is stated up front rather
+    # than discovered afterwards. ~1.4 tokens per word is a deliberate over-estimate.
+    if args.unit == "tick":
+        longest = max(
+            (len(textify.elements_from_trajectory(t, lexicon, "tick"))
+             for pool in pools.values() for t, _ in pool), default=0
+        )
+        variant = prompts.VARIANTS[-1] if args.variant == "both" else args.variant
+        sys_words = len(prompts.build_variant(variant, vocab, labels, args.protocol,
+                                              args.unit).split())
+        # Calibrated against the served model, not guessed: the with-recipes tick prompt for a
+        # 466-tick trial measures 7611 prompt_tokens, of which 1540 is the system block (928
+        # words). That is 1.66 tokens/word and 13.0 tokens per rendered line -- twice the 6.5 a
+        # bare `pour milk` line cost, because `43. pour milk (5s)` carries a number, a
+        # parenthesised counter and a newline. An earlier estimate of 4 tokens/line under-reported
+        # this by 1.85x, which is the difference between "fits in 8192" and "silently truncated".
+        est = int(1.7 * sys_words + 13 * longest)
+        print(f"\ncontext: longest trial is {longest} ticks; final request ~{est} tokens "
+              f"(system prompt + {longest} numbered lines).")
+        print(f"  ollama truncates from the FRONT and drops the system prompt silently. Serve "
+              f"with OLLAMA_CONTEXT_LENGTH >= {2 ** (est - 1).bit_length()} and keep "
+              f"OLLAMA_NUM_PARALLEL * context within VRAM, or the model spills to CPU.")
 
     if args.dry_run:
         name, pool = next(iter(pools.items()))
         traj, _ = pool[0]
         variant = prompts.VARIANTS[0] if args.variant == "both" else args.variant
         print(f"\n----- system prompt ({variant}) -----")
-        print(prompts.build_variant(variant, vocab, labels, args.protocol))
-        print(f"\n----- first trial as steps ({name}) -----")
-        for line in textify.render_trial(textify.steps_from_trajectory(traj, lexicon)):
+        print(prompts.build_variant(variant, vocab, labels, args.protocol, args.unit))
+        print(f"\n----- first trial as {args.unit}s ({name}) -----")
+        for line in textify.render_trial(
+                textify.elements_from_trajectory(traj, lexicon, args.unit), args.unit):
             print("   ", line)
         print("\ndry run: no requests made.")
         return
@@ -524,7 +587,8 @@ def main():
     for name, pool in pools.items():
         if not args.skip_hsmm:
             print(f"\n[{name}] HSMM arm ({model['kind']})")
-            report = hsmm_arm(pool, model, lexicon, args.chunk_size, args.alpha)
+            report = hsmm_arm(pool, model, lexicon, args.chunk_size, args.alpha,
+                              args.unit, args.tol)
             reports[f"{name}/hsmm-{model['kind']}"] = report
             print_report(report, f"{name} / hsmm-{model['kind']}")
             plotting.save_step_figures(report, args.figures_dir, f"{name}_hsmm_{model['kind']}")
@@ -539,9 +603,11 @@ def main():
                 concurrency=args.concurrency,
             )
             print(f"  client: rpm={client.rpm} concurrency={client.concurrency}", flush=True)
-            system_prompt = prompts.build_variant(variant, vocab, labels, args.protocol)
+            system_prompt = prompts.build_variant(variant, vocab, labels, args.protocol,
+                                                  args.unit)
             try:
-                report = llm_arm(pool, lexicon, client, system_prompt, vocab, args.protocol, tag)
+                report = llm_arm(pool, lexicon, client, system_prompt, vocab, args.protocol, tag,
+                                 args.unit, args.tol)
             except (llm_client.LLMError, llm_client.BudgetExceeded) as e:
                 # Running out of quota part-way through is an expected operating condition on a
                 # free tier, not a crash. Write the arms that DID finish rather than discarding an
@@ -554,6 +620,7 @@ def main():
             report["client"] = client.stats()
             report["prompt_variant"] = variant
             report["protocol"] = args.protocol
+            report["unit"] = args.unit
             reports[tag] = report
 
             note = "\n".join(filter(None, [

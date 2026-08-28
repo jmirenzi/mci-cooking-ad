@@ -48,10 +48,24 @@ NO_ANOMALY = re.compile(r"^\s*no\s+anomaly\s*[.!]?\s*$", re.IGNORECASE)
 #     preprompt renders recipe steps as `stir_dough (~36s)`, and models imitate that format in
 #     their corrections. Rejecting it penalised that arm for copying the format the prompt itself
 #     showed it -- measured at a 25% parse-failure rate before this was allowed.
+#   * the DURATION may be written `5s`, `5 secs` or `(5s)` as well as `5 seconds`, and the word
+#     `for` may be dropped when the duration is parenthesised. Same cause, second instance: the
+#     tick preprompt shows every line as `pour milk (5s)` and reports completions as
+#     `[pour milk ended after 5s]`, and models copy that abbreviation into their corrections --
+#     `Repetition Anomaly. Correct move would have been stall kitchen for 5s`. Measured at a
+#     13.9% parse-failure rate on the first tick run that used the counter, against 0.0% on the
+#     run before it, and it also emptied correction_accuracy, since a correction that does not
+#     parse cannot be scored. Rejecting these would measure obedience to a format the prompt
+#     itself teaches.
+# The duration clause, shared by both patterns. `for` is optional only when the number is
+# parenthesised, which is the form the tick prompt's own lines use; the unit alternatives are
+# ordered longest-first so `12 seconds` matches `seconds` rather than leaving `econds` behind.
+_DURATION = r"(?:for\s+(?P<dur>\d+)\s*(?:seconds?|secs?|s)\b|\(\s*(?P<dur_paren>\d+)\s*(?:seconds?|secs?|s)\s*\))"
+
 STRICT = re.compile(
     r"^\s*(?P<type>\w+)(?:\s+anomaly)?\s*[.:!]?\s*"
     r"(?:correct\s+move\s+would\s+have\s+been\s+"
-    r"(?P<verb>\w+)[\s_]+(?P<noun>\w+)\s+for\s+(?P<dur>\d+)\s+seconds?\s*[.!]?)?\s*$",
+    r"(?P<verb>\w+)[\s_]+(?P<noun>\w+)\s+" + _DURATION + r"\s*[.!]?)?\s*$",
     re.IGNORECASE,
 )
 
@@ -62,7 +76,7 @@ LENIENT_TYPE = re.compile(
     r"\b(" + "|".join(error_injection.ERROR_TYPES) + r")\b", re.IGNORECASE
 )
 LENIENT_CORRECTION = re.compile(
-    r"\b(?P<verb>\w+)[\s_]+(?P<noun>\w+)\s+for\s+(?P<dur>\d+)\s+seconds?\b", re.IGNORECASE
+    r"\b(?P<verb>\w+)[\s_]+(?P<noun>\w+)\s+" + _DURATION, re.IGNORECASE
 )
 
 
@@ -108,15 +122,18 @@ def parse_response(text, step_index, vocab):
         if m:
             etype = _canon_type(m.group("type"))
             if etype is not None:
-                correction = _canon_correction(m.group("verb"), m.group("noun"), m.group("dur"), vocab) \
-                    if m.group("dur") else None
+                dur = m.group("dur") or m.group("dur_paren")
+                correction = _canon_correction(m.group("verb"), m.group("noun"), dur, vocab) \
+                    if dur else None
                 return Verdict(step_index, True, etype, correction, raw, True)
 
     m = LENIENT_TYPE.search(raw)
     if m:
         etype = _canon_type(m.group(1))
         c = LENIENT_CORRECTION.search(raw)
-        correction = _canon_correction(c.group("verb"), c.group("noun"), c.group("dur"), vocab) if c else None
+        correction = _canon_correction(
+            c.group("verb"), c.group("noun"), c.group("dur") or c.group("dur_paren"), vocab
+        ) if c else None
         return Verdict(step_index, True, etype, correction, raw, False)
 
     # Unparseable. NOT coerced to "No Anomaly": a model that cannot follow the format is a
@@ -125,26 +142,30 @@ def parse_response(text, step_index, vocab):
     return Verdict(step_index, False, None, None, raw, False)
 
 
-def render_prefix(steps, upto):
-    """The numbered step list through index `upto` inclusive -- the user turn's whole content.
+def render_prefix(steps, upto, unit="step"):
+    """The numbered element list through index `upto` inclusive -- the user turn's whole content.
 
     Grows by pure append as `upto` advances, which is what keeps request i's prompt a strict
-    prefix of request i+1's.
+    prefix of request i+1's. Preserved at unit="tick" even though a tick line reports elapsed
+    time in the current run: every annotation render_trial adds is backward-looking, so line i is
+    a function of elements <= i and rendering the whole list then slicing gives the same text as
+    rendering the slice.
     """
-    return "\n".join(f"{s.index + 1}. {textify.render_step(s)}" for s in steps[: upto + 1])
+    lines = textify.render_trial(steps[: upto + 1], unit)
+    return "\n".join(f"{s.index + 1}. {line}" for s, line in zip(steps, lines))
 
 
-def incremental_messages(system_prompt, steps):
+def incremental_messages(system_prompt, steps, unit="step"):
     """Every request for one trial, built upfront. Possible only because the protocol is
     prefix-only -- with self-feedback, request i+1 could not be built until response i arrived."""
     return [
         [{"role": "system", "content": system_prompt},
-         {"role": "user", "content": render_prefix(steps, i)}]
+         {"role": "user", "content": render_prefix(steps, i, unit)}]
         for i in range(len(steps))
     ]
 
 
-def run_incremental(client, system_prompt, steps, vocab):
+def run_incremental(client, system_prompt, steps, vocab, unit="step"):
     """One request per step, prefix-only (no self-feedback). len(steps) requests.
 
     Two turns per request -- system, then the step list so far -- rather than an alternating
@@ -155,7 +176,7 @@ def run_incremental(client, system_prompt, steps, vocab):
     All requests for the trial are issued through client.complete_many, so they run concurrently
     when the client allows it. Order is preserved, so verdict k is still step k's.
     """
-    replies = client.complete_many(incremental_messages(system_prompt, steps))
+    replies = client.complete_many(incremental_messages(system_prompt, steps, unit))
     return [parse_response(reply, step.index, vocab) for step, reply in zip(steps, replies)]
 
 
@@ -167,17 +188,31 @@ BATCH_INSTRUCTION = (
     "step and nothing else."
 )
 
+# The tick wording of the same instruction. A separate constant rather than a substitution on the
+# one above, because BATCH_INSTRUCTION is part of a cache key: editing it by template would
+# invalidate every batch response already collected.
+BATCH_INSTRUCTION_TICK = (
+    "Here is the complete second-by-second record of one trial, numbered in order -- line N is "
+    "what the person was doing during second N. Give your verdict for EVERY line, one per line, "
+    "in order, each line formatted exactly as:\n\n"
+    "    <line number>. <your verdict>\n\n"
+    "where <your verdict> follows the response format you were given. Output exactly one line per "
+    "second and nothing else."
+)
+
 BATCH_LINE = re.compile(r"^\s*(?P<idx>\d+)\s*[.):]\s*(?P<body>.+?)\s*$")
 
 
-def run_batch(client, system_prompt, steps, vocab):
+def run_batch(client, system_prompt, steps, vocab, unit="step"):
     """One request for the whole trial. Cheap but NON-CAUSAL -- the model sees every step before
     judging any of them, so latency from this protocol is not comparable to run_incremental or to
     the HSMM's online channels."""
-    listing = "\n".join(f"{i + 1}. {textify.render_step(s)}" for i, s in enumerate(steps))
+    listing = "\n".join(f"{i + 1}. {line}"
+                        for i, line in enumerate(textify.render_trial(steps, unit)))
+    instruction = BATCH_INSTRUCTION if unit == "step" else BATCH_INSTRUCTION_TICK
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"{BATCH_INSTRUCTION}\n\n{listing}"},
+        {"role": "user", "content": f"{instruction}\n\n{listing}"},
     ]
     reply = client.complete(messages)
 
@@ -199,7 +234,7 @@ def run_batch(client, system_prompt, steps, vocab):
     ]
 
 
-def run_conversational(client, system_prompt, steps, vocab):
+def run_conversational(client, system_prompt, steps, vocab, unit="step"):
     """The ORIGINAL incremental protocol, kept as an ablation: one request per step with the
     model's own earlier replies fed back as assistant turns.
 
@@ -217,8 +252,13 @@ def run_conversational(client, system_prompt, steps, vocab):
     """
     messages = [{"role": "system", "content": system_prompt}]
     verdicts = []
-    for step in steps:
-        messages.append({"role": "user", "content": textify.render_step(step)})
+    # Rendered as a list for the same reason render_prefix is: a tick line reports elapsed time
+    # in the current run, which no single element knows. Still causal -- line i depends only on
+    # elements <= i -- so feeding them one at a time shows the model nothing it could not have
+    # had at that moment.
+    lines = textify.render_trial(steps, unit)
+    for step, line in zip(steps, lines):
+        messages.append({"role": "user", "content": line})
         reply = client.complete(messages)
         messages.append({"role": "assistant", "content": reply})
         verdicts.append(parse_response(reply, step.index, vocab))
@@ -232,10 +272,10 @@ PROTOCOLS = {
 }
 
 
-def run_trial(client, system_prompt, steps, vocab, protocol="incremental"):
+def run_trial(client, system_prompt, steps, vocab, protocol="incremental", unit="step"):
     if protocol not in PROTOCOLS:
         raise ValueError(f"unknown protocol: {protocol!r} (expected one of {tuple(PROTOCOLS)})")
-    return PROTOCOLS[protocol](client, system_prompt, steps, vocab)
+    return PROTOCOLS[protocol](client, system_prompt, steps, vocab, unit)
 
 
 def request_cost(steps, protocol="incremental"):
