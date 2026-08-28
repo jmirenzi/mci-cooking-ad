@@ -37,6 +37,7 @@ LLM_STYLE = {
 }
 LLM_STYLE_LABEL = {"hit": "flagged (correct)", "false_alarm": "flagged (false alarm)",
                    "debris": "flagged (debris, excluded, not scored)"}
+GUIDE_C = "#b0b0b0"  # segment-boundary lines carried down through the AD lanes
 
 # Flag strength is severity()'s value/threshold ratio, shaded continuously rather than bucketed.
 # The scale is FIXED at 1x..3x across every figure so two figures are comparable: 1.0 is the
@@ -46,6 +47,13 @@ STRENGTH_LO, STRENGTH_HI = 1.0, 3.0
 STRENGTH_CMAP = mcolors.LinearSegmentedColormap.from_list(
     "hsmm_strength", [(0.0, SEV_C["low"]), (0.25, SEV_C["medium"]), (1.0, SEV_C["high"])])
 ROW_H = 1.0
+# The "observations" block: a lettered bar up top (FED_LETTER_H tall) with the detector lanes
+# packed directly beneath it (LANE_H each, LANE_GAP between) -- one tall block, not four rows a
+# full ROW_H apart. GAP_UNALT_OBS is the only "row gap" left, between unaltered and that block.
+GAP_UNALT_OBS = 0.20
+FED_LETTER_H = 0.62
+LANE_H = 0.42
+LANE_GAP = 0.05
 # matplotlib stacks multiline text at linespacing 1.2, so n lines of CARD_FS occupy
 # (1.2n - 0.2) * CARD_FS points. Reserving more than that is just white space at the bottom.
 LINE_H = 7.5 * 1.2 / 72.0
@@ -105,15 +113,16 @@ def _step_letters(*step_lists):
     return by_action, key
 
 
-def _bar(ax, y, steps, color, letters, min_label_ticks, fontsize=8.0):
+def _bar(ax, y, steps, color, letters, min_label_ticks, height=0.52, fontsize=8.0):
     """Every step gets its letter. Slivers too narrow to hold one carry it just above the bar
     instead of dropping it -- an unlabelled sliver is indistinguishable from a rendering gap.
     """
+    half = height / 2
     for st in steps:
-        ax.add_patch(Rectangle((st.tick_start, y - 0.26), st.duration, 0.52,
+        ax.add_patch(Rectangle((st.tick_start, y - half), st.duration, height,
                                facecolor=color, edgecolor="white", lw=1.1, zorder=2))
         inside = st.duration >= min_label_ticks
-        ax.text(st.tick_start + st.duration / 2, y if inside else y + 0.36,
+        ax.text(st.tick_start + st.duration / 2, y if inside else y + half + 0.14,
                 letters[f"{st.verb} {st.noun}"], ha="center",
                 va="center" if inside else "bottom", fontsize=fontsize,
                 color="white" if inside else "#333", fontweight="bold", zorder=3)
@@ -128,13 +137,17 @@ def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path):
     false-positive scoring entirely (docs/llm.md, eval/element_metrics.py). Drawn as a distinct
     grey "debris (excluded)" rather than red FALSE ALARM, so this figure and the corrected score
     agree: a flag here is neither a hit nor a false alarm, it's not scored at all.
+
+    Layout: "observations" is ONE tall block, not four stacked rows. The lettered fed-bar sits
+    at its top; the HSMM and LLM verdict lanes sit directly beneath, inside the SAME tinted
+    region, each its own thin strip. That is what makes the detectors read as overlaying the
+    observations rather than living in a separate panel a full row-height away -- there is no
+    gap left to close, because there is no separate row.
     """
     t_max = fed[-1].tick_end
     letters, letter_key = _step_letters(unaltered, fed)
-
-    rows = ["unaltered\n(what happened)", "observations\n(fed to detector)", "HSMM (joint)"]
-    rows += [lab for lab, _, _, _, _ in llm_arms]
-    n = len(rows)
+    lane_names = ["HSMM (joint)"] + [lab for lab, _, _, _, _ in llm_arms]
+    n_lanes = len(lane_names)
 
     cards = []
     for i, q in enumerate(hsmm[1], 1):
@@ -169,11 +182,29 @@ def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path):
     # a bar earns its letter once it is wide enough in INCHES to hold one character
     min_label_ticks = max(1.0, 0.13 * t_max / ax_w_in)
 
+    # ---- vertical layout: a cursor walked top-down, in y-axis data units ------------------
+    y = 0.0
+    y_unalt = y - ROW_H / 2
+    y -= ROW_H + GAP_UNALT_OBS
+    obs_top = y
+    y_fed = y - FED_LETTER_H / 2
+    y -= FED_LETTER_H
+    lane_ys = []
+    for i in range(n_lanes):
+        if i:
+            y -= LANE_GAP
+        lane_ys.append(y - LANE_H / 2)
+        y -= LANE_H
+    obs_bottom = y
+    obs_block_h = obs_top - obs_bottom
+    pad_top, pad_bot = 0.35, 0.30
+    ax_data_h = -obs_bottom + pad_top + pad_bot
+
     # Headroom above the axes is budgeted in inches, top-down: colorbar, legend, title. Fixed
     # inches rather than axes fractions because the figure width -- and so the legend's wrapped
     # height -- varies a lot between a 30-tick and a 560-tick trial.
     head_in = 1.55
-    chart_h = 0.55 + head_in + 0.55 + ROW_H * n
+    chart_h = 0.55 + head_in + 0.55 + ax_data_h
     card_h = 0.22 + LINE_H * len(cards)
     fig_h = chart_h + card_h
     ax_h_in = chart_h - 0.55 - head_in
@@ -186,23 +217,37 @@ def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path):
     cb_w = 2.2 / fig_w
     bar_ax = fig.add_axes([0.5 - cb_w / 2, (fig_h - 0.40) / fig_h, cb_w, 0.12 / fig_h])
 
-    y_of = {name: n - 1 - i for i, name in enumerate(rows)}
     if gt_ticks:
-        ax.add_patch(Rectangle((gt_ticks[0], -0.55), gt_ticks[1] - gt_ticks[0] + 1, n + 0.1,
+        ax.add_patch(Rectangle((gt_ticks[0], obs_bottom - pad_bot),
+                               gt_ticks[1] - gt_ticks[0] + 1, ax_data_h,
                                color=WIN_C, zorder=0))
         ax.axvline(gt_ticks[0], color="#c44e52", ls="--", lw=1.2, zorder=1)
-        ax.text(gt_ticks[0] + 1, n - 0.45, "injected", color="#c44e52", fontsize=8, zorder=4)
+        ax.text(gt_ticks[0] + 1, pad_top - 0.10, "injected", color="#c44e52", fontsize=8,
+                zorder=4)
 
-    _bar(ax, y_of[rows[0]], unaltered, UNALT_C, letters, min_label_ticks)
-    _bar(ax, y_of[rows[1]], fed, FED_C, letters, min_label_ticks)
+    _bar(ax, y_unalt, unaltered, UNALT_C, letters, min_label_ticks)
 
-    # HSMM row: one marker vocabulary, not two. Every flagged tick is a triangle shaded by its
+    # The observations block: a faint FED_C wash spans the whole block first -- the visual cue
+    # that "observations" extends down through the lanes -- then the opaque lettered bar is
+    # drawn on top of it at the block's top, at higher zorder than the lanes below it.
+    ax.add_patch(Rectangle((0, obs_bottom), t_max, obs_block_h, facecolor=FED_C, alpha=0.14,
+                           edgecolor="none", zorder=1))
+    _bar(ax, y_fed, fed, FED_C, letters, min_label_ticks, height=FED_LETTER_H)
+
+    # Each fed-bar segment boundary continues straight down through every lane below it, so a
+    # detector's marker can be read against the observation it lines up with instead of just
+    # its raw tick number.
+    for st in fed[1:]:
+        ax.plot([st.tick_start, st.tick_start], [obs_bottom, obs_top], color=GUIDE_C, lw=0.7,
+                zorder=2.5)
+
+    # HSMM lane: one marker vocabulary, not two. Every flagged tick is a triangle shaded by its
     # strength; the ticks that became a narrated query are the same triangle drawn large and
     # numbered, so "which flag is card 3" is read off size, not a second symbol.
-    yh = y_of["HSMM (joint)"]
+    yh = lane_ys[0]
+    ax.add_patch(Rectangle((0, yh - LANE_H / 2), t_max, LANE_H, facecolor="white", alpha=0.55,
+                           edgecolor="#cfcfcf", lw=0.5, zorder=2))
     strength = hsmm[0]
-    ax.add_patch(Rectangle((0, yh - 0.16), t_max, 0.32, facecolor=HSMM_C, alpha=0.30,
-                           edgecolor="none", zorder=1))
     norm = mcolors.Normalize(STRENGTH_LO, STRENGTH_HI)
     q_ticks = {q["tick"] for q in hsmm[1]}
 
@@ -215,18 +260,25 @@ def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path):
     for tick in sorted(strength):
         if tick in q_ticks:
             continue
-        ax.plot([tick], [yh + 0.30], marker="v", ls="none", ms=5,
+        ax.plot([tick], [yh], marker="v", ls="none", ms=5,
                 color=_strength_color(tick), zorder=3)
     for i, q in enumerate(hsmm[1], 1):
-        ax.plot([q["tick"]], [yh + 0.32], marker="v", ls="none", ms=13,
+        ax.plot([q["tick"]], [yh], marker="v", ls="none", ms=12,
                 markeredgecolor="#333", markeredgewidth=0.7,
                 color=_strength_color(q["tick"], q["severity"]), zorder=4)
-        ax.text(q["tick"], yh + 0.56, str(i), ha="center", va="bottom", fontsize=8,
-                fontweight="bold")
+        ax.text(q["tick"] + t_max * 0.010, yh, str(i), ha="left", va="center", fontsize=7,
+                fontweight="bold", zorder=5,
+                bbox=dict(boxstyle="square,pad=0.08", fc="white", ec="none", alpha=0.85))
 
-    # LLM rows: step-resolution verdicts, keyed to their card by number.
-    for lab, steps, verdicts, gt_steps, debris in llm_arms:
-        y = y_of[lab]
+    # LLM lanes: step-resolution verdicts, drawn in the same marker language as the HSMM lane
+    # above -- a triangle, shaded and hatched exactly as the old verdict boxes were -- so the
+    # three detectors read as one visual family instead of two different chart types stacked
+    # together. The line from the step's start tick to the triangle is what a plain point marker
+    # would lose: which step, and how long it ran, is still readable at a glance.
+    for li, (lab, steps, verdicts, gt_steps, debris) in enumerate(llm_arms, 1):
+        y = lane_ys[li]
+        ax.add_patch(Rectangle((0, y - LANE_H / 2), t_max, LANE_H, facecolor="white", alpha=0.4,
+                               edgecolor="#cfcfcf", lw=0.5, zorder=2))
         for v in verdicts:
             if not v.is_anomaly:
                 continue
@@ -237,23 +289,29 @@ def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path):
                 kind = "debris"
             else:
                 kind = "false_alarm"
-            ax.add_patch(Rectangle((st.tick_start, y - 0.24), st.duration, 0.48,
-                                   edgecolor=LLM_EDGE, lw=0.9, zorder=2, **LLM_STYLE[kind]))
+            x0, x1 = st.tick_start, st.tick_start + st.duration
+            tick_h = LANE_H * 0.30
+            ax.plot([x0, x0], [y - tick_h, y + tick_h], color=LLM_EDGE, lw=1.1, zorder=3)
+            ax.plot([x0, x1], [y, y], color=LLM_EDGE, lw=1.2, zorder=3)
+            ax.scatter([x1], [y], marker="v", s=110, edgecolors=LLM_EDGE, linewidths=0.8,
+                      zorder=4, **LLM_STYLE[kind])
             num = card_no.get((lab, v.step_index))
-            if num is not None:
-                # narrow bars would swallow the number, so those get it just above instead
-                wide = st.duration >= 0.22 * t_max / ax_w_in
-                ax.text(st.tick_start + st.duration / 2, y if wide else y + 0.34, str(num),
-                        ha="center", va="center", fontsize=8, fontweight="bold", zorder=5,
-                        color="white" if wide and kind != "debris" else "#222",
-                        bbox=None if wide and kind != "debris" else
-                        dict(boxstyle="square,pad=0.10", fc="white", ec="none", alpha=0.85))
+            if num is None:
+                continue
+            ax.text(x1 + t_max * 0.008, y, str(num), ha="left", va="center", fontsize=7.5,
+                    fontweight="bold", color="#222", zorder=5,
+                    bbox=dict(boxstyle="square,pad=0.08", fc="white", ec="none", alpha=0.85))
 
-    for name, y in y_of.items():
-        ax.text(-t_max * 0.012, y, name, ha="right", va="center", fontsize=8.5,
-                fontweight="bold" if "HSMM" in name or "gemma" in name else "normal")
+    ax.text(-t_max * 0.012, y_unalt, "unaltered\n(what happened)", ha="right", va="center",
+            fontsize=8.5)
+    ax.text(-t_max * 0.012, y_fed, "observations\n(fed to detector)", ha="right", va="center",
+            fontsize=8.5)
+    for lab, y in zip(lane_names, lane_ys):
+        ax.text(-t_max * 0.010, y, lab, ha="right", va="center", fontsize=7.3,
+                fontweight="bold" if "HSMM" in lab or "gemma" in lab else "normal")
+
     ax.set_xlim(0, t_max)
-    ax.set_ylim(-0.75, n - 0.35)
+    ax.set_ylim(obs_bottom - pad_bot, pad_top)
     ax.set_yticks([])
     ax.set_xlabel("tick (seconds)")
     for sp in ("top", "right", "left"):
@@ -261,7 +319,8 @@ def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path):
     handles = [Rectangle((0, 0), 1, 1, color=WIN_C)]
     labels = ["injected window"]
     for kind in ("hit", "false_alarm", "debris"):
-        handles.append(Rectangle((0, 0), 1, 1, edgecolor=LLM_EDGE, **LLM_STYLE[kind]))
+        handles.append(ax.scatter([], [], marker="v", s=90, edgecolors=LLM_EDGE,
+                                  linewidths=0.8, **LLM_STYLE[kind]))
         labels.append(f"LLM {LLM_STYLE_LABEL[kind]}")
     handles += [plt.Line2D([], [], marker="v", ls="none", color="#888", ms=5),
                 plt.Line2D([], [], marker="v", ls="none", color="#888", ms=11,
@@ -349,6 +408,9 @@ def main():
     ap.add_argument("--max-hsmm-scan", type=int, default=60,
                     help="cap on HSMM inference passes per error type; the scanned subset is "
                          "drawn in shuffled order so it stays unbiased")
+    ap.add_argument("--only", default=None,
+                    help="comma-separated subset of error types to render, e.g. 'repetition' -- "
+                         "for iterating on layout without re-running the other four")
     ap.add_argument("--out-dir", default="dataset/processed/breakfast/figures_conv100")
     args = ap.parse_args()
 
@@ -395,7 +457,8 @@ def main():
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    for error_type in error_injection.ERROR_TYPES:
+    error_types = (tuple(args.only.split(",")) if args.only else error_injection.ERROR_TYPES)
+    for error_type in error_types:
         shortlist = []
         for idx, (traj_i, degraded) in enumerate(pool):
             deg = degraded[error_type]
