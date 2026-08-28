@@ -48,6 +48,57 @@ the way log-probabilities are.
 
 Non-firing ticks are filled with $0$ (or $-1$ for id fields, `NaN` for the PIT diagnostic).
 
+### 2.0 What distribution each channel is surprise *for*
+
+Every channel is $-\log P(\text{observed} \mid \text{conditioning})$ against one specific fitted
+conditional distribution. $Z_t$ is the subtask at tick $t$; $\hat r$ is the joint model's trial-level
+MAP recipe (`infer_recipe`, one draw for the whole trial); $\rho_j$ is the **cascade's** per-segment
+recipe-cluster id (a separate stage-2 HMM state that *can* change across segments — not the same
+object as $\hat r$, despite both being called "recipe"). $j$ indexes segments, $t$ indexes ticks.
+
+| Channel | Distribution scored — cascade | Distribution scored — joint |
+|---|---|---|
+| $s_{\text{emit}}$ | $P(v_t, n_t \mid Z_t)$ | $P(v_t, n_t \mid Z_t)$ — **never $\hat r$** |
+| $s_{\text{verb}}$ | $P(v_t \mid Z_t)$ | $P(v_t \mid Z_t)$ |
+| $s_{\text{noun}}$ | $P(n_t \mid Z_t)$ | $P(n_t \mid Z_t)$ |
+| $s_{\text{temporal}}$ | $P(D \ge d_{\text{elapsed}} \mid Z_j)$ | $P(D \ge d_{\text{elapsed}} \mid Z_j, \hat r)$ |
+| $s_{\text{dur2}}$ | $P(D\ge d),\ P(D\le d) \mid Z_j$ | $P(D\ge d),\ P(D\le d) \mid Z_j, \hat r$ |
+| $s_{\text{trans}}$ | $P(Z_j \mid Z_{j-1})$ | $P(Z_j \mid Z_{j-1}, \hat r)$ |
+| $s_{\text{recipe}}$ | $P(\rho_j\mid\rho_{j-1})$ | not a probability — signed excess, see below |
+
+**Emissions are the one place recipe never enters, in either model.** $B^v, B^n$ are shared,
+unindexed tables (`assemble_trace_joint`'s docstring: "emissions stay shared"); $P(v_t,n_t\mid Z_t)$
+has no $R$ or $\hat r$ term to add. Duration and transition, by contrast, are genuinely
+recipe-conditioned in the joint model — `dur_r[r_hat]`/`dur_p[r_hat]` and `log_trans[r_hat]` are
+different numbers for different $\hat r$, so $Z_j$ alone does not pin down the distribution there.
+
+**Hard vs. soft conditioning.** $Z_t$ in the emission row is never observed directly at tick $t$
+scoring time, so the *actual* computed quantity marginalises over the causal belief
+$\tilde\pi_t(k) = P(Z_t{=}k\mid o_{<t})$ rather than conditioning on one hard value:
+$$
+s_{\text{emit}}(t) = -\log P(v_t,n_t\mid o_{<t}) = -\log\sum_k \tilde\pi_t(k)\,P(v_t,n_t\mid Z_t{=}k).
+$$
+Duration and transition channels instead condition on the **hard** Viterbi decode $Z_j = z^*_j$ (the
+segmentation is already fixed before these channels are scored — see §2.5), so no marginalisation
+is needed there; the formula in the table above is evaluated directly at $Z_j=z^*_j$ (and $R=\hat r$
+in the joint model).
+
+**The joint model's $s_{\text{recipe}}$ is not $P(\cdot\mid\cdot)$ at all.** It measures how much
+better $\hat r$'s own transition row explains the observed step than the recipe-averaged row does
+for the *same* $(Z_{j-1}, Z_j)$ pair:
+$$
+s_{\text{recipe}} = \log P(Z_j\mid Z_{j-1}) - \log P(Z_j \mid Z_{j-1}, R{=}\hat r), \qquad
+P(Z_j\mid Z_{j-1}) := \textstyle\sum_r P(R{=}r)\, P(Z_j\mid Z_{j-1}, R{=}r),
+$$
+a signed excess (§2.4), not a surprisal — it can be negative when $\hat r$ explains the transition
+*better* than the average recipe does.
+
+Every formula above bottoms out in one of three fitted objects, each defined precisely elsewhere:
+the predictive occupancy $\tilde\pi_t(k)$ (forward recursion, [hsmm.md §4.2](hsmm.md)), the
+categorical emission tables $B^v, B^n$ ([hsmm.md §1](hsmm.md)), the NB duration tail via the
+regularised incomplete beta ([hsmm.md §2.1](hsmm.md)), or the Dirichlet-MAP transition matrix $A$
+([hsmm.md §3](hsmm.md)). §2.1–2.4 substitute each of these in turn.
+
 ### 2.1 Emission channels and the predictive weighting
 
 All three emission channels are scored against $\tilde\pi_t$, the **predictive** occupancy
@@ -111,6 +162,16 @@ $$
 s_{\text{temporal}}(t) \;=\; -\log P\bigl(D \ge d_{\text{elapsed}} \mid z^*_t\bigr).
 $$
 
+Concretely, with $(r,p) = (r_{z^*_t},\, p_{z^*_t})$ the fitted NB parameters of the believed state
+and $I_p(a,b)$ the regularised incomplete beta (`jax.scipy.special.betainc`, [hsmm.md §2.1](hsmm.md)):
+
+$$
+s_{\text{temporal}}(t) \;=\; \begin{cases}
+0 & d_{\text{elapsed}} = 1 \quad (P(D\ge1)=1,\text{ always true})\\[4pt]
+-\log\bigl(1 - I_{p}(r,\, d_{\text{elapsed}}-1)\bigr) & d_{\text{elapsed}} \ge 2.
+\end{cases}
+$$
+
 Two properties make this the right object:
 
 - It is **monotonically non-decreasing within a segment** — the longer you persist, the deeper into
@@ -135,6 +196,17 @@ $$
 
 the standard two-sided $p$-value, clipped at 0. Attribution is `"stuck"` if the right tail is the
 smaller one, else `"left_early"`.
+
+Substituting the same incomplete-beta tails, with $(r,p) = (r_{z_j},\, p_{z_j})$ the closed
+segment's fitted state:
+
+$$
+s_{\text{long}} = -\log\bigl(1-I_p(r,\,d-1)\bigr), \qquad
+s_{\text{short}} = -\log I_p(r,\,d),
+$$
+$$
+s_{\text{dur2}} \;=\; -\log\Bigl(\min\bigl\{1,\ 2\min\bigl(1-I_p(r,\,d{-}1),\ I_p(r,\,d)\bigr)\bigr\}\Bigr).
+$$
 
 **The left tail exists because the live channel structurally cannot catch abandonment.** A short
 duration always has *high* survival probability, hence *low* $s_{\text{temporal}}$ — leaving a step
@@ -186,12 +258,19 @@ $$
 s_{\text{trans}} \;=\; -\log A_{z_{j-1},\, z_j} \quad\text{at segment } j\text{'s first tick.}
 $$
 
+$A$ here is the fitted, Dirichlet-MAP-normalised transition matrix ([hsmm.md §3](hsmm.md)), each
+row summing to 1 over the $K-1$ off-diagonal entries since self-transitions are banned
+($A_{kk}=0$).
+
 Cascade recipe channel: the same thing one level up, evaluated at **every** segment boundary
 (recipe self-transitions are legal and expected, so there is no boundary to skip):
 
 $$
 s_{\text{recipe}} \;=\; -\log A^{R}_{\rho_{j-1},\, \rho_j}.
 $$
+
+$A^R$ is the analogous transition matrix fit over recipe-cluster symbols by `recipe_hmm.py`
+([recipe.md](recipe.md)), not the subtask HSMM's $A$.
 
 **The joint model repurposes this channel entirely.** With per-recipe transition matrices, a more
 useful question is *"is this transition ordinary in general but wrong for **this** recipe?"* So:
@@ -203,6 +282,37 @@ $$
 
 This is a **signed excess**, not a neg-log-probability. It can be negative, which has real
 consequences downstream (§3.3).
+
+### 2.5 Where "segment start" / "segment end" actually come from
+
+Every boundary-indexed channel above ($s_{\text{trans}}$, $s_{\text{recipe}}$) and every
+end-of-segment channel ($s_{\text{dur2}}$, PIT) reads its ticks off `seg_result["segments"]` /
+`subtask_per_tick`, which is the **Viterbi (max-product) decode of the whole trial**
+([recipe.md §1](recipe.md)):
+
+$$
+\bigl(\hat z_{1:J},\ \hat d_{1:J}\bigr) \;=\;
+\arg\max_{J,\, z_{1:J},\, d_{1:J}}\ \log P\bigl(o_{0:T-1},\, z_{1:J},\, d_{1:J}\bigr).
+$$
+
+Concretely, a boundary is a tick where this single best explanation of the *entire* observed
+sequence — jointly trading off emission likelihood, the duration prior, and the transition matrix
+— switches state. It is **not**:
+
+- **where the raw $(v_t, n_t)$ differs from $(v_{t-1}, n_{t-1})$.** Emission is a fitted per-state
+  distribution, not a lookup key: a state can legitimately emit different (verb, noun) pairs on
+  consecutive ticks (if $B^v_{k,\cdot}$/$B^n_{k,\cdot}$ put mass on more than one token) and still
+  be one segment, while an anomalous single-tick observation does not by itself force a boundary —
+  the duration and transition priors can make staying cheaper than switching.
+- **where $\tilde\pi_t$'s argmax flips.** $\tilde\pi_t$ (§2.1) is the *causal*, tick-by-tick
+  predictive belief and can flicker; $z^*$ is the *global* MAP path computed with the benefit of
+  the whole trial. §3.5 documents the resulting known gap — `flag`/`flag_joint` index thresholds
+  by $z^*$, which is only an exact stand-in for the live belief when $\tilde\pi_t$ is concentrated
+  on it (`belief_concentration`, `belief_diagnostic`).
+
+Because self-transitions are banned ($A_{kk}=0$, §2.4), consecutive Viterbi segments always differ
+in state, so a maximal run of constant `subtask_per_tick` is exactly one segment — there is no
+separate "did the state change" test to reconcile with this one.
 
 ---
 
