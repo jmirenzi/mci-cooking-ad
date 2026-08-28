@@ -453,6 +453,62 @@ def flag_joint(trace, joint_log_probs, r_hat, log_trans_marginal, alpha=DEFAULT_
     return flags
 
 
+def threshold_tables_joint_per_channel(joint_log_probs, r_hat, log_trans_marginal, alphas):
+    """quantile.threshold_tables_joint with each of the five quantile-table channels built at ITS
+    OWN alpha, rather than one shared scalar for all seven."""
+    log_trans_r = joint_log_probs.log_trans[r_hat]
+    return quantile.ThresholdTables(
+        emit=quantile.joint_quantile_threshold(
+            joint_log_probs.log_emit_v, joint_log_probs.log_emit_n, alphas["s_emit"]),
+        verb=quantile.categorical_quantile_threshold(joint_log_probs.log_emit_v, alphas["s_verb"]),
+        noun=quantile.categorical_quantile_threshold(joint_log_probs.log_emit_n, alphas["s_noun"]),
+        transition=quantile.transition_quantile_threshold(log_trans_r, alphas["s_transition"]),
+        recipe=quantile.excess_quantile_threshold(
+            log_trans_r, log_trans_marginal, alphas["s_recipe_transition"]),
+    )
+
+
+def flag_joint_per_channel(trace, joint_log_probs, r_hat, log_trans_marginal, alphas):
+    """flag_joint with a per-channel alpha dict over all 7 CHANNELS instead of one shared scalar.
+
+    Why this exists: one shared alpha assumes every channel's false-alarm cost is the same, and
+    measurement says otherwise. Swept per channel against the TICK objective on the train split
+    (run_threshold_sweep_coordinate.py), s_temporal at 1e-5 rather than 5e-3 removes 37% of all
+    false-positive ticks on held-out test for 0.006 recall, leaving trial-located precision and
+    the healthy false-alarm rate unmoved. The other six channels' optima are either negligible or
+    buy recall by raising the healthy false-alarm rate, which is the wrong trade here.
+
+    `alphas` must carry every key in CHANNELS; per_channel_alphas() fills the defaults.
+    """
+    tables = threshold_tables_joint_per_channel(joint_log_probs, r_hat, log_trans_marginal, alphas)
+    # The two duration channels are gated on -log(alpha) directly rather than through a quantile
+    # table. `alpha` below is inert: _duration_thresholds only consults it when `thresholds` is
+    # empty, and both duration keys are always supplied here.
+    thresholds = {
+        "s_temporal": -float(np.log(alphas["s_temporal"])),
+        "s_dur_two": -float(np.log(alphas["s_dur_two"])),
+    }
+    flags = _base_flags(trace, tables, DEFAULT_ALPHA, thresholds)
+
+    from_state_valid = trace.from_state != -1
+    from_state_safe = np.where(from_state_valid, trace.from_state, 0)
+    flags["s_recipe_transition"] = from_state_valid & (
+        trace.s_recipe_transition > tables.recipe[from_state_safe]
+    )
+    return flags
+
+
+def per_channel_alphas(overrides=None, alpha=DEFAULT_ALPHA):
+    """Every channel at `alpha`, with `overrides` applied on top. Rejects unknown channel names
+    rather than silently ignoring a typo that would leave a channel at its default."""
+    alphas = {ch: alpha for ch in CHANNELS}
+    for ch, a in (overrides or {}).items():
+        if ch not in alphas:
+            raise ValueError(f"unknown channel: {ch!r} (expected one of {CHANNELS})")
+        alphas[ch] = float(a)
+    return alphas
+
+
 def belief_diagnostic(traces, cutoff=0.8):
     """Required diagnostic for the z_star-indexed threshold approximation (flag()/flag_joint()
     index by the hard Viterbi state, which is only exact when the filtered belief is

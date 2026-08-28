@@ -152,26 +152,59 @@ def steps_and_truth(traj, degraded, lexicon, unit="step"):
 # the HSMM arm
 # --------------------------------------------------------------------------------------------
 
-def _hsmm_flags(trials, model, chunk_size, alpha=surprise.DEFAULT_ALPHA):
+# Per-channel alpha overrides applied on top of --alpha for the joint HSMM arm.
+#
+# s_temporal at 1e-5 rather than the shared 5e-3 is a measured result, not a guess. Swept per
+# channel against the TICK objective on the TRAIN split and confirmed on held-out test
+# (train-fit model, train-selected alpha, test trials):
+#
+#     config                 tick P   tick R   fp    trial-loc P   healthy FPR
+#     all channels 5e-3       0.351    0.495   444        0.664         0.196
+#     s_temporal 1e-5         0.460    0.489   278        0.660         0.196
+#
+# 37% of all false-positive ticks removed for 0.006 recall, with trial-located precision and the
+# healthy false-alarm rate both unmoved -- the other six channels already cover what s_temporal
+# finds. It is not entirely free: repetition recall falls 0.196 -> 0.175 and transposition
+# 0.526 -> 0.515, which is the s_temporal contribution docs/eval.md describes.
+#
+# Confined to THIS script deliberately. surprise.DEFAULT_ALPHA is untouched, so run_evaluation.py
+# and every tick-level number in docs/eval.md still describe the same detector they always did.
+# Pass --channel-alpha s_temporal=5e-3 to reproduce the old behaviour here.
+DEFAULT_CHANNEL_ALPHA = {"s_temporal": 1e-5}
+
+
+def _hsmm_flags(trials, model, chunk_size, alpha=surprise.DEFAULT_ALPHA, channel_alpha=None):
     """(flags, traces) for a list of trajectory-shaped dicts, cascade or joint."""
     if model["kind"] == "cascade":
         traces, log_probs, recipe_log_trans = batch.compute_traces(
             model["hsmm"], model["recipe"], trials, model["d_max"], chunk_size=chunk_size
         )
+        if channel_alpha:
+            # The per-channel flagger is joint-only: it builds its tables from
+            # JointHSMMLogProbs. Refusing beats silently ignoring the overrides and reporting
+            # numbers that look tuned but are not.
+            raise SystemExit("error: --channel-alpha is only supported for the joint model; "
+                             "drop --cascade or drop the overrides")
         return [surprise.flag(t, log_probs, recipe_log_trans, alpha=alpha) for t in traces], traces
     traces, log_probs, r_hat, log_trans_marginal = batch.compute_traces_joint(
         model["joint"], trials, model["d_max"], chunk_size=chunk_size
     )
-    flags = [surprise.flag_joint(t, log_probs, int(r_hat[i]), log_trans_marginal, alpha=alpha)
-             for i, t in enumerate(traces)]
+    if channel_alpha:
+        alphas = surprise.per_channel_alphas(channel_alpha, alpha)
+        flags = [surprise.flag_joint_per_channel(t, log_probs, int(r_hat[i]),
+                                                 log_trans_marginal, alphas)
+                 for i, t in enumerate(traces)]
+    else:
+        flags = [surprise.flag_joint(t, log_probs, int(r_hat[i]), log_trans_marginal, alpha=alpha)
+                 for i, t in enumerate(traces)]
     return flags, traces
 
 
 def hsmm_arm(pool, model, lexicon, chunk_size, alpha=surprise.DEFAULT_ALPHA,
-             unit="step", tol=None):
+             unit="step", tol=None, channel_alpha=None):
     """Score the HSMM through the step layer on the shared pool."""
     healthy = [t for t, _ in pool]
-    healthy_flags, healthy_traces = _hsmm_flags(healthy, model, chunk_size, alpha)
+    healthy_flags, healthy_traces = _hsmm_flags(healthy, model, chunk_size, alpha, channel_alpha)
     healthy_verdicts = [
         element_metrics.step_verdicts_from_flags(
             f, textify.elements_from_trajectory(t, lexicon, unit), trace, lexicon
@@ -183,7 +216,7 @@ def hsmm_arm(pool, model, lexicon, chunk_size, alpha=surprise.DEFAULT_ALPHA,
     artifact_steps = {}
     for error_type in error_injection.ERROR_TYPES:
         trials = [d[error_type] for _, d in pool]
-        flags, traces = _hsmm_flags(trials, model, chunk_size, alpha)
+        flags, traces = _hsmm_flags(trials, model, chunk_size, alpha, channel_alpha)
         rows = []
         debris_rows = []
         for (traj, degraded), f, trace in zip(pool, flags, traces):
@@ -443,6 +476,11 @@ def main():
                              "so comparing the two at one alpha compares them at whatever point "
                              "that alpha happens to put the HSMM on ITS OWN curve -- match a "
                              "recall or a false-alarm rate before reading a precision gap")
+    parser.add_argument("--channel-alpha", action="append", default=None, metavar="CHANNEL=ALPHA",
+                        help="per-channel alpha override for the joint HSMM arm, repeatable "
+                             f"(default: {DEFAULT_CHANNEL_ALPHA}). Pass 's_temporal=5e-3' to "
+                             "restore the single shared alpha. See DEFAULT_CHANNEL_ALPHA for the "
+                             "measurement behind the default")
     parser.add_argument("--chunk-size", type=int, default=16)
     parser.add_argument("--min-run", type=int, default=10,
                         help="tick-level persistence requirement applied BEFORE collapsing HSMM "
@@ -450,6 +488,21 @@ def main():
                              "why a plain per-step OR without it is not a fair reading of the "
                              "HSMM")
     args = parser.parse_args()
+
+    if args.channel_alpha is None:
+        args.channel_alpha = dict(DEFAULT_CHANNEL_ALPHA)
+    else:
+        parsed = {}
+        for item in args.channel_alpha:
+            if "=" not in item:
+                parser.error(f"--channel-alpha expects CHANNEL=ALPHA, got {item!r}")
+            ch, _, a = item.partition("=")
+            parsed[ch.strip()] = float(a)
+        try:
+            surprise.per_channel_alphas(parsed)      # validates the channel names
+        except ValueError as e:
+            parser.error(str(e))
+        args.channel_alpha = parsed
 
     llm_client.load_env_file(args.env_file)
 
@@ -586,12 +639,23 @@ def main():
 
     for name, pool in pools.items():
         if not args.skip_hsmm:
-            print(f"\n[{name}] HSMM arm ({model['kind']})")
+            # The arm KEY carries the non-default alphas, so a tuned run lands beside the
+            # baseline one in the same report instead of overwriting it -- these are two
+            # operating points of one detector on one pool, and the comparison is the point.
+            # (--alpha is not in POOL_DEFINING_ARGS, so without this a re-run at a different
+            # threshold would silently replace the arm it should be compared against.)
+            suffix = "".join(f"@{ch}={a:g}" for ch, a in sorted(args.channel_alpha.items()))
+            arm = f"{name}/hsmm-{model['kind']}{suffix}"
+            print(f"\n[{name}] HSMM arm ({model['kind']}) "
+                  f"alpha={args.alpha:g} channel_alpha={args.channel_alpha or 'none'}")
             report = hsmm_arm(pool, model, lexicon, args.chunk_size, args.alpha,
-                              args.unit, args.tol)
-            reports[f"{name}/hsmm-{model['kind']}"] = report
-            print_report(report, f"{name} / hsmm-{model['kind']}")
-            plotting.save_step_figures(report, args.figures_dir, f"{name}_hsmm_{model['kind']}")
+                              args.unit, args.tol, args.channel_alpha)
+            report["alpha"] = args.alpha
+            report["channel_alpha"] = args.channel_alpha
+            reports[arm] = report
+            print_report(report, arm)
+            plotting.save_step_figures(report, args.figures_dir,
+                                       f"{name}_hsmm_{model['kind']}{suffix}".replace("@", "_"))
 
         for variant in variants:
             tag = f"{name}/llm-{variant}"

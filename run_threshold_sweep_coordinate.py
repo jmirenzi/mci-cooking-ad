@@ -69,37 +69,10 @@ ALPHAS = sorted(
 )
 
 
-def _mixed_tables(joint_log_probs, r_hat, log_trans_marginal, alphas):
-    """Mirrors quantile.threshold_tables_joint, but each of the 5 quantile-table channels is
-    built at ITS OWN alpha (from `alphas`) instead of one shared value."""
-    log_trans_r = joint_log_probs.log_trans[r_hat]
-    return quantile.ThresholdTables(
-        emit=quantile.joint_quantile_threshold(joint_log_probs.log_emit_v, joint_log_probs.log_emit_n,
-                                               alphas["s_emit"]),
-        verb=quantile.categorical_quantile_threshold(joint_log_probs.log_emit_v, alphas["s_verb"]),
-        noun=quantile.categorical_quantile_threshold(joint_log_probs.log_emit_n, alphas["s_noun"]),
-        transition=quantile.transition_quantile_threshold(log_trans_r, alphas["s_transition"]),
-        recipe=quantile.excess_quantile_threshold(log_trans_r, log_trans_marginal, alphas["s_recipe_transition"]),
-    )
-
-
-def flag_joint_mixed(trace, joint_log_probs, r_hat, log_trans_marginal, alphas):
-    """surprise.flag_joint, but `alphas` is a dict over all 7 CHANNELS instead of one shared
-    scalar -- each channel's threshold table/duration cutoff built at its own alpha."""
-    tables = _mixed_tables(joint_log_probs, r_hat, log_trans_marginal, alphas)
-    thresholds = {
-        "s_temporal": -float(np.log(alphas["s_temporal"])),
-        "s_dur_two": -float(np.log(alphas["s_dur_two"])),
-    }
-    # The `alpha` positional arg is inert here: _duration_thresholds only falls back to it when
-    # `thresholds` is empty, and we always supply both duration keys explicitly above.
-    flags = surprise._base_flags(trace, tables, DEFAULT_ALPHA, thresholds)
-    from_state_valid = trace.from_state != -1
-    from_state_safe = np.where(from_state_valid, trace.from_state, 0)
-    flags["s_recipe_transition"] = from_state_valid & (
-        trace.s_recipe_transition > tables.recipe[from_state_safe]
-    )
-    return flags
+# The per-channel flagger lives in anomaly/surprise.py now, so this sweep and run_llm_eval.py
+# cannot drift apart on what a per-channel alpha means.
+_mixed_tables = surprise.threshold_tables_joint_per_channel
+flag_joint_mixed = surprise.flag_joint_per_channel
 
 
 def _union_mask(flags):
@@ -148,20 +121,32 @@ def _prepare_trial(traj, degraded, lexicon, is_degraded, tol=DEFAULT_TICK_TOL):
     n_ticks = len(v_ids)
     steps = textify.steps_from_ids(v_ids, n_ids, lexicon)
 
-    hit = np.zeros(n_ticks, dtype=bool)
-    if is_degraded:
-        hit = _hit_mask(n_ticks, degraded["anomaly_ticks"], tol)
-        t0, t1 = degraded["window"]
-        window = np.zeros(n_ticks, dtype=bool)
-        window[int(t0) : int(t1) + 1] = True
-        in_range = hit | window
-    else:
-        in_range = hit                      # healthy: nothing is in range, every flag is a stray
-    stray = ~in_range
+    ticks = textify.ticks_from_ids(v_ids, n_ids, lexicon)
 
-    # Step-space projections of the same three regions, so both units are scored under one rule.
+    def _scoreable(elements):
+        """element_metrics.evaluate_steps' `scoreable` set as a mask: elements that are neither
+        ground truth nor debris, and so are the only ones a flag can be charged a false positive
+        on. Built with the real functions rather than approximated as "outside the window" --
+        substitution's debris includes the two elements BORDERING the edited segment, which lie
+        outside the window, and treating those as scoreable put this 4 false positives adrift of
+        the metric it is supposed to be sweeping.
+        """
+        mask = np.ones(len(elements), dtype=bool)
+        if not is_degraded:
+            return mask
+        gt = textify.gt_steps_for_ticks(elements, degraded["anomaly_ticks"])
+        debris = textify.injection_touched_steps(
+            elements, degraded["tick_map"], degraded["edited_ticks"], gt, window=degraded["window"]
+        )
+        for i in set(gt) | set(debris):
+            mask[i] = False
+        return mask
+
+    hit = (_hit_mask(n_ticks, degraded["anomaly_ticks"], tol) if is_degraded
+           else np.zeros(n_ticks, dtype=bool))
+    stray = _scoreable(ticks)                  # tick element i IS tick i, so this is a tick mask
+    step_stray = _scoreable(steps)
     step_hit = np.array([bool(hit[s.tick_start : s.tick_end].any()) for s in steps])
-    step_stray = np.array([bool(stray[s.tick_start : s.tick_end].all()) for s in steps])
 
     return {"n_ticks": n_ticks, "steps": steps, "hit": hit, "stray": stray,
             "step_hit": step_hit, "step_stray": step_stray, "is_degraded": is_degraded}
@@ -329,6 +314,29 @@ def main():
                   f"F1={f1:.4f} | trial_loc prec={tl['precision']:.3f} rec={tl['recall']:.3f} "
                   f"healthy_fpr={scored['trial']['fpr']:.3f}", flush=True)
         results["per_channel"][varied] = rows
+
+    # ---- do the per-channel wins COMPOSE? ---------------------------------------------------
+    # A coordinate pass measures each channel against the all-default baseline and nothing else,
+    # so seven individually-better alphas are seven separate claims, not one joint result. Two
+    # channels whose gains come from suppressing the SAME false positives would double-count.
+    # Scoring the argmax combination is what turns the pass into a proposal.
+    def _f1(row):
+        p_, r_ = row["precision"], row["recall"]
+        return 2 * p_ * r_ / (p_ + r_) if (p_ + r_) else 0.0
+
+    combined = {ch: max(results["per_channel"][ch], key=lambda r: _f1(r["tick"]))["alpha"]
+                for ch in CHANNELS}
+    combined_scored = score_union(groups, joint_log_probs, log_trans_marginal, combined)
+    results["combined"] = {"alphas": combined, **combined_scored}
+    ct, bt = combined_scored["tick"], baseline["tick"]
+    print(f"\ncombined (per-channel argmax on tick F1): "
+          f"{ {k: f'{v:.0e}' for k, v in combined.items()} }")
+    print(f"  tick  P={ct['precision']:.4f} R={ct['recall']:.3f} F1={_f1(ct):.4f}   "
+          f"(baseline F1={_f1(bt):.4f}, sum of individual gains would be "
+          f"{sum(_f1(max(results['per_channel'][ch], key=lambda r: _f1(r['tick']))['tick']) - _f1(bt) for ch in CHANNELS):+.4f})")
+    print(f"  trial_loc P={combined_scored['trial_loc']['precision']:.3f} "
+          f"R={combined_scored['trial_loc']['recall']:.3f}  "
+          f"healthy_fpr={combined_scored['trial']['fpr']:.3f}", flush=True)
 
     with open(args.out, "w") as f:
         json.dump({"config": vars(args), **results}, f, indent=2)
