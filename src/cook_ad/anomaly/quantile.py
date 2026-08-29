@@ -2,6 +2,8 @@ from typing import NamedTuple
 
 import numpy as np
 
+from cook_ad.hsmm.params import FLOOR
+
 # Every public function here takes already-normalized log-probability tables (the output of
 # params.to_log_probs / recipe_hmm.to_log_probs, which floor via cook_ad.hsmm.params.FLOOR
 # before their own log()). Nothing in this module takes a fresh log of a raw probability, so
@@ -54,6 +56,38 @@ def categorical_quantile_threshold(log_probs, alpha):
     scores = -log_probs
     k = log_probs.shape[0]
     return np.array([_tail_threshold(scores[i], probs[i], alpha) for i in range(k)])
+
+
+def pair_quantile_threshold(pi_all, log_emit_v, log_emit_n, alpha, chunk=64):
+    """Per-tick (T,) thresholds for the pair channel s_pair = s_emit - s_verb - s_noun.
+
+    Per tick, not per state, and it has to be: under a single state the emission is a product by
+    construction, so PMI(v,n | Z=k) is identically 0 and a per-state null would be degenerate.
+    All of s_pair's signal comes from the predictive MIXTURE, which is not a product even though
+    every component is. Exact discrete tail as elsewhere in this module, over the tick's (V,N)
+    mixture joint. O(T * V * N) with one sort per tick, so this channel dominates the runtime of
+    a sweep.
+    """
+    pi_all = np.asarray(pi_all, dtype=np.float64)
+    p_v = np.exp(np.asarray(log_emit_v, dtype=np.float64))   # (K,V)
+    p_n = np.exp(np.asarray(log_emit_n, dtype=np.float64))   # (K,N)
+    out = np.empty(pi_all.shape[0], dtype=np.float64)
+
+    for start in range(0, pi_all.shape[0], chunk):
+        w = np.exp(pi_all[start : start + chunk])                    # (t,K)
+        joint = np.einsum("tk,kv,kn->tvn", w, p_v, p_n)              # (t,V,N) mixture joint
+        joint = np.maximum(joint, 0.0)
+        total = joint.sum(axis=(1, 2), keepdims=True)
+        joint = joint / np.maximum(total, FLOOR)                     # pi_all may not sum to 1 exactly
+        marg_v = joint.sum(axis=2)[:, :, None]
+        marg_n = joint.sum(axis=1)[:, None, :]
+        # -PMI, so larger = less compatible, matching every other channel's convention.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            score = np.log(np.maximum(marg_v, FLOOR)) + np.log(np.maximum(marg_n, FLOOR)) \
+                - np.log(np.maximum(joint, FLOOR))
+        for i in range(joint.shape[0]):
+            out[start + i] = _tail_threshold(score[i].ravel(), joint[i].ravel(), alpha)
+    return out
 
 
 def joint_quantile_threshold(log_emit_v, log_emit_n, alpha):

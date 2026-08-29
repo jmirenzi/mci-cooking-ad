@@ -7,7 +7,7 @@ from jax.scipy.special import logsumexp
 from tqdm.auto import tqdm
 
 from cook_ad.hsmm import durations, emissions, joint_params, messages
-from cook_ad.hsmm.em import pad_batch  # noqa: F401 -- re-exported, same batch layout as the cascade HSMM
+from cook_ad.hsmm.em import _chunk_ticks, _length_order, pad_batch  # noqa: F401 -- pad_batch re-exported
 from cook_ad.hsmm.joint_params import JointHSMMParams
 
 jax.config.update("jax_enable_x64", True)
@@ -76,12 +76,16 @@ def e_step(joint_hsmm_params, verb_ids, noun_ids, mask, d_max, temperature=1.0, 
     n = verb_ids.shape[0]
     total_stats = None
     total_trial_ll = 0.0
+    t_max = verb_ids.shape[1]
+    order = _length_order(mask)
     for start in range(0, n, chunk_size):
         end = min(start + chunk_size, n)
+        idx = order[start:end]
+        t_used = _chunk_ticks(mask[idx], t_max)
         chunk_stats, chunk_ll = _e_step_chunk(
             log_probs.log_pi, log_probs.log_init, log_probs.log_trans,
             log_emit_v, log_emit_n, log_dur_pmf, log_dur_survival,
-            verb_ids[start:end], noun_ids[start:end], mask[start:end], d_max,
+            verb_ids[idx, :t_used], noun_ids[idx, :t_used], mask[idx, :t_used], d_max,
         )
         if total_stats is None:
             total_stats = chunk_stats
@@ -121,8 +125,15 @@ def m_step(joint_hsmm_params, stats, alpha_pi, alpha_init, alpha_trans, alpha_em
     new_trans_counts = (alpha_trans / k + stats["trans_counts"]) * (1.0 - jnp.eye(k))[None, :, :]
     prior_v = alpha_emit_v / n_verb if emit_prior_v is None else emit_prior_v
     prior_n = alpha_emit_n / n_noun if emit_prior_n is None else emit_prior_n
-    new_verb_counts = prior_v + stats["verb_counts"]
-    new_noun_counts = prior_n + stats["noun_counts"]
+    # Latent-intended-token mapping, as in em.m_step; a no-op without a kernel.
+    log_b_v = joint_params.params._row_normalize(joint_hsmm_params.verb_counts)
+    log_b_n = joint_params.params._row_normalize(joint_hsmm_params.noun_counts)
+    verb_stats = joint_params.params.latent_counts(
+        stats["verb_counts"], log_b_v, joint_hsmm_params.kernel_v)
+    noun_stats = joint_params.params.latent_counts(
+        stats["noun_counts"], log_b_n, joint_hsmm_params.kernel_n)
+    new_verb_counts = prior_v + verb_stats
+    new_noun_counts = prior_n + noun_stats
 
     dur_r, dur_p, global_r, global_p = durations.fit_durations_shrunk(
         stats["xi_dur"], stats["cens"], joint_hsmm_params.dur_r, joint_hsmm_params.dur_p, d_max, kappa,
@@ -130,7 +141,8 @@ def m_step(joint_hsmm_params, stats, alpha_pi, alpha_init, alpha_trans, alpha_em
     )
 
     new_params = JointHSMMParams(
-        new_init_counts, new_trans_counts, new_verb_counts, new_noun_counts, dur_r, dur_p, new_pi_counts
+        new_init_counts, new_trans_counts, new_verb_counts, new_noun_counts, dur_r, dur_p,
+        new_pi_counts, joint_hsmm_params.kernel_v, joint_hsmm_params.kernel_n,
     )
     return new_params, global_r, global_p
 

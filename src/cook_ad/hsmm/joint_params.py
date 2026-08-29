@@ -17,6 +17,9 @@ class JointHSMMParams(NamedTuple):
     dur_r: jnp.ndarray          # (K_R,K)    NB dispersion, point estimate
     dur_p: jnp.ndarray          # (K_R,K)    NB success-prob, point estimate
     pi_counts: jnp.ndarray      # (K_R,)     Dirichlet pseudocounts, recipe-mixture dist
+    # See params.HSMMParams -- emissions are shared across recipes, so the kernels are too.
+    kernel_v: jnp.ndarray = None   # (V,V) row-stochastic, or None == identity
+    kernel_n: jnp.ndarray = None   # (N,N) row-stochastic, or None == identity
 
 
 class JointHSMMLogProbs(NamedTuple):
@@ -40,8 +43,10 @@ def to_log_probs_joint(joint_params: JointHSMMParams, d_max: int) -> JointHSMMLo
     log_pi = _row_normalize(joint_params.pi_counts[None, :], FLOOR)[0]
     log_init = _row_normalize(joint_params.init_counts, FLOOR)
     log_trans = jax.vmap(lambda c: _row_normalize(c, FLOOR, mask_diag=True))(joint_params.trans_counts)
-    log_emit_v = _row_normalize(joint_params.verb_counts, FLOOR)
-    log_emit_n = _row_normalize(joint_params.noun_counts, FLOOR)
+    log_emit_v = params.compose_kernel(_row_normalize(joint_params.verb_counts, FLOOR),
+                                      joint_params.kernel_v)
+    log_emit_n = params.compose_kernel(_row_normalize(joint_params.noun_counts, FLOOR),
+                                      joint_params.kernel_n)
     log_dur_pmf, log_dur_survival = jax.vmap(durations.duration_tables, in_axes=(0, 0, None))(
         joint_params.dur_r, joint_params.dur_p, d_max
     )
@@ -78,7 +83,8 @@ def collapse_to_marginal(joint_params: JointHSMMParams) -> HSMMParams:
     dur_r = jnp.einsum("r,rk->k", pi, joint_params.dur_r)
     dur_p = jnp.einsum("r,rk->k", pi, joint_params.dur_p)
     return HSMMParams(
-        init_counts, trans_counts, joint_params.verb_counts, joint_params.noun_counts, dur_r, dur_p
+        init_counts, trans_counts, joint_params.verb_counts, joint_params.noun_counts, dur_r, dur_p,
+        joint_params.kernel_v, joint_params.kernel_n,
     )
 
 
@@ -93,17 +99,20 @@ def select_recipe(joint_params: JointHSMMParams, r_hat: int) -> HSMMParams:
         joint_params.init_counts[r_hat], joint_params.trans_counts[r_hat],
         joint_params.verb_counts, joint_params.noun_counts,
         joint_params.dur_r[r_hat], joint_params.dur_p[r_hat],
+        joint_params.kernel_v, joint_params.kernel_n,
     )
 
 
 def save_params(joint_params: JointHSMMParams, path):
     import numpy as np
 
-    np.savez(path, **{name: np.asarray(value) for name, value in joint_params._asdict().items()})
+    np.savez(path, **{name: np.asarray(value) for name, value in joint_params._asdict().items()
+                      if value is not None})
 
 
 def load_params(path) -> JointHSMMParams:
     import numpy as np
 
     with np.load(path) as data:
-        return JointHSMMParams(**{name: jnp.asarray(data[name]) for name in JointHSMMParams._fields})
+        return JointHSMMParams(**{name: jnp.asarray(data[name]) for name in JointHSMMParams._fields
+                                  if name in data})

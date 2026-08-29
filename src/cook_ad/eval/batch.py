@@ -55,7 +55,8 @@ def _pad(sequences, t_max):
     return jnp.asarray(verb), jnp.asarray(noun), jnp.asarray(mask)
 
 
-def compute_traces(hsmm_params, recipe_params, sequences, d_max, chunk_size=16):
+def compute_traces(hsmm_params, recipe_params, sequences, d_max, chunk_size=16,
+                   keep_pi_all=False):
     """Batched analogue of surprise.compute_trace over many trials. The three jax-heavy ops --
     predictive_occupancy, Viterbi segmentation, and the recipe forward-backward -- are run
     vmapped over a padded batch (padded to a single global T_max so the big ops compile ONCE,
@@ -96,12 +97,14 @@ def compute_traces(hsmm_params, recipe_params, sequences, d_max, chunk_size=16):
                 surprise.assemble_trace(
                     hsmm_params, log_probs, rlog_trans, pi[i][:length],
                     s["verb_ids"], s["noun_ids"], seg_results[i], seg_recipe_ids,
+                    keep_pi_all=keep_pi_all,
                 )
             )
     return traces, log_probs, rlog_trans
 
 
-def compute_traces_joint(joint_hsmm_params, sequences, d_max, chunk_size=16, r_hat=None):
+def compute_traces_joint(joint_hsmm_params, sequences, d_max, chunk_size=16, r_hat=None,
+                         keep_pi_all=False):
     """Joint-model analogue of compute_traces. Recipe inference is now a direct EM readout
     (joint_em.infer_recipe) rather than a second forward-backward pass over segment symbols,
     so it's computed once for the whole dataset up front -- it's cheap (forward-pass only, see
@@ -154,6 +157,7 @@ def compute_traces_joint(joint_hsmm_params, sequences, d_max, chunk_size=16, r_h
                 surprise.assemble_trace_joint(
                     joint_hsmm_params, log_probs, int(r_hat_chunk[i]), log_trans_marginal,
                     pi[i][:length], s["verb_ids"], s["noun_ids"], seg_results[i],
+                    keep_pi_all=keep_pi_all,
                 )
             )
     return traces, log_probs, r_hat, log_trans_marginal

@@ -299,5 +299,7 @@ def test_dead_recipe_stays_finite():
     )
 
     for field in jp2:
+        if field is None:
+            continue   # kernel_v/kernel_n: absent == identity
         assert jnp.all(jnp.isfinite(field))
     assert jp2.pi_counts[2] < jp2.pi_counts[0]

@@ -15,6 +15,10 @@ import time
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
+from cook_ad.xla_env import disable_gpu_autotuning  # noqa: E402 -- must precede the jax import
+
+disable_gpu_autotuning()
+
 import jax
 import numpy as np
 
@@ -52,6 +56,16 @@ def main():
                     help="Dirichlet concentration for the per-recipe transition rows; alpha/K "
                          "per cell, so smaller = sparser A and a sharper s_transition null")
     ap.add_argument("--kappa", type=float, default=None, help="override duration.shrinkage_kappa")
+    ap.add_argument("--idf-recipes", action="store_true", default=None,
+                    help="TF-IDF weight the bag-of-pairs histograms the recipe clustering runs "
+                         "on. Defaults to the config's joint_em.idf_recipes. Off for Breakfast "
+                         "(its vocabulary is almost all goal-diagnostic); on for EPIC, where "
+                         "equipment and environment nouns dominate and are identical across "
+                         "dishes -- see recipe/lexical_init.cluster_recipes.")
+    ap.add_argument("--recipe-features", choices=["pairs", "nouns"], default=None,
+                    help="histogram the recipe clustering runs on. Defaults to the config's "
+                         "joint_em.recipe_features. Pair histograms are too sparse on a corpus "
+                         "with thousands of distinct pairs -- see cluster_recipes.")
     ap.add_argument("--init-prior-scale", type=float, default=1.0,
                     help="scale on the Dirichlet prior added to the ITERATION-0 init/trans/pi "
                          "counts (the M-step's own prior is unaffected). 0.0 is what the best "
@@ -66,8 +80,18 @@ def main():
     kappa = args.kappa if args.kappa is not None else cfg["duration"]["shrinkage_kappa"]
     alpha_pi = cfg["prior"]["alpha_pi"]
     jcfg = cfg["joint_em"]
-    base_chunk = args.chunk_size if args.chunk_size is not None else cfg["em"]["chunk_size"]
-    chunk_size = max(1, base_chunk // k_recipe)
+    # joint_em.chunk_size, when the config sets it, wins over the em.chunk_size // k_recipe
+    # derivation. That derivation exists because the joint E-step's (chunk,K_R,T,K) gamma costs
+    # an extra K_R-fold in memory, and it lands on 1 for every config in the repo (8 // 16 = 0).
+    # 1 is fine at Breakfast's K=64 and is actively pathological at larger K: measured on EPIC,
+    # K=128 with chunk 1 does not finish XLA compilation in 4 minutes, while the SAME model at
+    # chunk 2 compiles in 33s. Compile cost at these shapes is not monotone in chunk size, so
+    # the working value has to be settable per corpus rather than derived.
+    if cfg.get("joint_em", {}).get("chunk_size") is not None and args.chunk_size is None:
+        chunk_size = int(cfg["joint_em"]["chunk_size"])
+    else:
+        base_chunk = args.chunk_size if args.chunk_size is not None else cfg["em"]["chunk_size"]
+        chunk_size = max(1, base_chunk // k_recipe)
     global_damping = args.global_damping if args.global_damping is not None else jcfg.get("global_damping", 0.0)
 
     sequences = json.load(open(args.sequences))
@@ -80,12 +104,21 @@ def main():
     print(f"trials: {len(sequences)}  K={k_subtask} K_R={k_recipe} chunk={chunk_size}", flush=True)
 
     t0 = time.time()
+    # CLI wins, then the config, then the Breakfast default. Both must move together to help on
+    # EPIC -- see recipe/lexical_init.cluster_recipes.
+    idf_recipes = (args.idf_recipes if args.idf_recipes is not None
+                   else bool(cfg.get("joint_em", {}).get("idf_recipes", False)))
+    recipe_features = (args.recipe_features
+                       or cfg.get("joint_em", {}).get("recipe_features", "pairs"))
+    print(f"recipe clustering: features={recipe_features} idf={idf_recipes}", flush=True)
+
     init_params, info = lexical_init.lexical_to_joint(
         sequences, k_subtask, k_recipe, d_max, cfg["vocab"]["verbs"], cfg["vocab"]["nouns"],
         kappa, seed=args.seed, min_ticks=args.min_pair_ticks,
         anchor=args.anchor, background=args.background,
         alpha_init=args.alpha_init, alpha_trans=args.alpha_trans, alpha_pi=alpha_pi,
-        init_prior_scale=args.init_prior_scale,
+        init_prior_scale=args.init_prior_scale, idf_recipes=idf_recipes,
+        recipe_features=recipe_features,
     )
     print(f"lexical warm start: {time.time() - t0:.1f}s, "
           f"{len(info['pairs'])} (verb,noun) states used of K={k_subtask}", flush=True)

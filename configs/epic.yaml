@@ -1,0 +1,57 @@
+# EPIC-KITCHENS-100, annotations only. See src/cook_ad/data/parse_epic.py for why each of the
+# EPIC-specific values below is a decision rather than a default.
+
+tick_seconds: 0.5   # not Breakfast's 1s: at 1s, 25% of narrations are shorter than one tick and
+                    # vanish, against 1.9% here. Finer buys little and scales message passing.
+
+vocab:
+  verbs: 98    # 97 EPIC verb classes + "stall" (SIL)
+  nouns: 306   # 305 EPIC noun classes (v2) + "idle" (SIL)
+
+k_subtask: 64   # weak-limit nominal. NOT one-state-per-(verb,noun) as on Breakfast: EPIC has
+                # 3806 distinct pairs, so the subtask layer must discover groupings rather than
+                # be handed them. 64 rather than the 128 that pair coverage alone would argue
+                # for (57% vs 68%), because K also sets the per-recipe transition matrix size
+                # and that is what is starved -- at 128 only 2.1% of its cells survive the MAP
+                # mode, against 31% for Breakfast at 64.
+k_recipe: 16    # weak-limit nominal, as on Breakfast. EPIC has no recipe annotation, so the
+                # recipe layer is fully unsupervised; labels.json carries a derived dish label
+                # to score it against.
+
+prior:
+  alpha_pi: 1.0
+
+duration:
+  d_max_ticks: 200        # 100s at a 0.5s tick, sized against the segments that actually exist
+                          # in the tick stream (p99 = 48 ticks, so this censors ~0%). Raise it
+                          # if the fitted subtasks turn out long.
+  shrinkage_kappa: 5.0
+
+em:
+  restarts: 10
+  annealing: false
+  chunk_size: 2
+
+joint_em:
+  warm_start: false       # no cascade artifacts exist for EPIC; use run_joint_lexical.py
+  chunk_size: 2           # set explicitly: run_joint_lexical otherwise derives
+                          # max(1, em.chunk_size // k_recipe) = 1, and compile cost at these
+                          # shapes is not monotone in chunk size, so it has to be measured.
+  recipe_features: nouns  # not the default (v,n)-pair histogram, which is far too sparse here.
+  idf_recipes: true       # equipment nouns dominate and barely vary with the dish.
+                          # Both must move together -- see recipe/lexical_init.cluster_recipes.
+  n_restarts: 1
+  max_iters: 100
+  tol: 1.0e-4
+  checkpoint_every: 5
+  global_damping: 0.7
+
+ambient_gaps:
+  inject_synthetic_gaps: false
+  sil_verb: "stall"       # not an EPIC verb class
+  sil_noun: "idle"        # NOT "kitchen" -- that IS an EPIC noun class; build_vocab raises
+
+data:
+  annotations_root: "dataset/epic_kitchens/annotations"
+  min_session_minutes: 2   # short enough to be plausibly single-purpose, since the joint model
+  max_session_minutes: 15  # assumes one recipe latent per trial. Keeps 357 of 633.

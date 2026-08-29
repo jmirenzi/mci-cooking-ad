@@ -57,6 +57,8 @@ def test_breakdown_updates_nothing():
 
     assert rec["flagged"] and not rec["updated"]
     for field in params.HSMMParams._fields:
+        if getattr(dual.live, field) is None:
+            continue   # kernel_v/kernel_n: absent == identity, and never touched by an update
         assert jnp.array_equal(getattr(new_dual.live, field), getattr(dual.live, field))
         assert jnp.array_equal(getattr(new_dual.frozen, field), getattr(dual.frozen, field))
 

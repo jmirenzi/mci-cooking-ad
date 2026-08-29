@@ -141,6 +141,8 @@ def test_narrate_query_event_routes_to_state_manager():
     assert rec["updated"]
 
     for field in params.HSMMParams._fields:
+        if getattr(dual.live, field) is None:
+            continue   # kernel_v/kernel_n: absent == identity
         old = np.asarray(getattr(dual.live, field))
         new = np.asarray(getattr(new_dual.live, field))
         if field == "noun_counts":
