@@ -327,3 +327,35 @@ to 0.94; with it off, `trial_loc` train accuracy is **0.556 against 0.518**. The
 differ in transition sparsity (median row entropy 0.470 vs 0.518), the quantity
 $s_{\text{transition}}$ reads. That is an observation, not a derivation. The knob exists so the
 choice is explicit; it defaults to the coherent value, not the winning one.
+
+### `noun_tilt_init`
+
+Seeds `JointHSMMParams.noun_tilt` (the recipe-modulated emission, [`hsmm.md`](hsmm.md) §6) from
+the *same* `cluster_recipes` assignment this module already computes for the dynamics warm start —
+$a_r[n] = \log(\text{cluster-}r\text{ noun freq}) - \log(\text{global noun freq})$, centred and
+clipped to `noun_tilt_clip`. Off by default; `run_joint_lexical.py --noun-tilt` turns it on and
+defaults `--tilt-steps` to 1 so the seed keeps moving under EM rather than sitting frozen.
+
+## 5. Where a recipe prior for `lam` could come from — deferred
+
+[`hsmm.md`](hsmm.md)'s anchoring dial (`lam`) consumes a per-trial recipe log-prior; where that
+prior comes from is a separate, **lower-priority and unimplemented** question from the mechanism
+itself. `run_joint_lexical.py --recipe-prior warmstart` (a one-hot-ish prior built from this
+module's own cluster assignment) is enough to exercise the dial and needs no new source, but it
+recycles the warm start rather than adding independent signal.
+
+The candidate idea, if the recipe layer is still flat after `noun_tilt` and `lam` are both in use:
+a *semi-supervised* prior derived from the session's own content — on EPIC, the working proxy is
+`parse_epic.derive_dish_labels`'s top-TF-IDF food noun per session, computed from the noun bag and
+therefore available for a brand-new live session too (a feature, not a withheld label). Two things
+would need to be handled, not assumed away:
+
+- **Circularity.** The derived dish label used to *score* recipe ARI is itself food-noun TF-IDF, so
+  a prior built the same way scores close to a method graded against itself. Any evaluation of this
+  idea needs a target that does not share the construction (per-tick subtask ARI,
+  `participant_label` as a negative control, or `run_detect_eval.py` accuracy) — or has to say
+  plainly that the ARI number is inflated.
+- **Abstain, don't fabricate.** 33 of 357 EPIC sessions mention no food noun at all
+  (`parse_epic.NO_DISH`); sessions that are not cooking still mention *something*. A prior built
+  this way needs a genuine abstain path (a uniform row, contributing nothing to $\log\rho$), not a
+  confident hint manufactured from noise.

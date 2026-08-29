@@ -109,3 +109,35 @@ def test_prior_keeps_a_once_seen_transition_above_a_never_seen_one(sequences):
     assert once_seen > never_seen + 1.0, (
         f"once-seen {once_seen:.2f} must beat never-seen {never_seen:.2f} by a real margin"
     )
+
+
+def test_noun_tilt_init_favours_each_recipes_own_nouns(sequences):
+    """noun_tilt_init=True must seed a_r[n] so each recipe's own, distinguishing nouns (A: 0, 2;
+    B: 3, 4 -- noun 1 is shared, deliberately not tested here) are favoured over the other
+    recipe's -- the natural iteration-0 value: "this cluster is pasta-heavy" read directly off
+    the same per-trial noun bag cluster_recipes itself clustered on."""
+    jp, info = lexical_init.lexical_to_joint(
+        sequences, k_subtask=8, k_recipe=2, d_max=15, vocab_verbs=V, vocab_nouns=N, kappa=1.0,
+        seed=0, noun_tilt_init=True,
+    )
+    assert jp.noun_tilt is not None
+    assert jp.noun_tilt.shape == (2, N)
+
+    a_cluster = info["assign"][0]  # sequences[0] is an "A" trial (see the fixture)
+    b_cluster = info["assign"][6]  # sequences[6] is a "B" trial
+    assert a_cluster != b_cluster
+
+    tilt = np.asarray(jp.noun_tilt)
+    assert tilt[a_cluster, 0] > tilt[a_cluster, 3]
+    assert tilt[a_cluster, 2] > tilt[a_cluster, 3]
+    assert tilt[b_cluster, 3] > tilt[b_cluster, 0]
+    assert tilt[b_cluster, 4] > tilt[b_cluster, 0]
+
+
+def test_noun_tilt_init_off_by_default(sequences):
+    """noun_tilt_init defaults False -- lexical_to_joint's return type is unchanged for every
+    existing caller unless they explicitly opt in."""
+    jp, _info = lexical_init.lexical_to_joint(
+        sequences, k_subtask=8, k_recipe=2, d_max=15, vocab_verbs=V, vocab_nouns=N, kappa=1.0, seed=0,
+    )
+    assert jp.noun_tilt is None

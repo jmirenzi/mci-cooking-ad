@@ -550,13 +550,20 @@ one **discrete recipe latent per trial**. Parameters:
 ```python
 JointHSMMParams(init_counts (K_R,K), trans_counts (K_R,K,K),
                 verb_counts (K,V),   noun_counts (K,N),      # ← SHARED
-                dur_r (K_R,K), dur_p (K_R,K), pi_counts (K_R,))
+                dur_r (K_R,K), dur_p (K_R,K), pi_counts (K_R,),
+                kernel_v=None, kernel_n=None,                 # ← SHARED, optional (see kernel.py)
+                noun_tilt=None)                                # ← per-recipe, optional (§6.1)
 ```
 
 Emissions are **shared across recipes**; dynamics (init, transitions, durations) are per-recipe.
 That is the whole modelling claim: *"pour milk" looks the same in cereals and in coffee; what
 differs is when you do it and how long it takes.* Sharing emissions also keeps the E-step cheap —
 `loglik` is computed once per trial and broadcast across all $K_R$ forward-backward passes.
+
+`kernel_v` / `kernel_n` are the fixed semantic-neighbourhood kernel (see `kernel.py`'s module
+docstring) — shared, like the emission counts they modulate, since they describe vocabulary
+structure, not recipe identity. `noun_tilt` (below) is the one field that breaks the "content is
+recipe-agnostic" rule on purpose.
 
 `to_log_probs_joint` mirrors `to_log_probs` with `vmap` wherever the helper assumes a single
 recipe's rank (`mask_diag` builds `jnp.eye(counts.shape[0])`, so it must see a `(K,K)` slice, not
@@ -602,6 +609,103 @@ Dirichlet MAP per recipe for init/trans/$\pi$, shared MAP for emissions, and
 M-step**, $\mathcal L$ can dip slightly; `run_joint_em` therefore *warns* rather than raises when
 the objective decreases by more than `tol`. (The saved full-scale history shows exactly this:
 a rise to about $-16431$, then sub-nat oscillation.)
+
+### Recipe-modulated emissions — `noun_tilt`
+
+**The problem this solves.** Emissions are shared, so a recipe is distinguished only by its
+init/trans/duration tables — content reaches the recipe latent only indirectly, via which states
+a recipe happens to favour. That indirect path is starved at any real $K$: `params._row_normalize`'s
+MAP mode floors any transition cell observed once or never, and most per-recipe transition cells
+land there (measured on EPIC at $K{=}128$: 2.1% of cells survive; Breakfast at $K{=}64$: 31.3%).
+With the recipe-conditioned transition likelihood mostly floor, $\rho$ is close to noise.
+
+**The fix.** `noun_tilt` $\in \mathbb R^{K_R \times N}$ gives the recipe latent one *direct* channel
+into content: a rank-1 per-recipe reweighting of the shared noun table,
+
+$$
+P_r(n\mid k) \;=\; \operatorname*{softmax}_n\bigl(\log P(n\mid k) + a_r[n]\bigr),
+\qquad
+\log Z_r[k] \;=\; \operatorname*{logsumexp}_n\bigl(\log P(n\mid k) + a_r[n]\bigr),
+$$
+
+so the tick loglik under recipe $r$ is
+
+$$
+\log L_r(t,k) \;=\; \log L_{\text{shared}}(t,k) \;+\; a_r[n_t] \;-\; \log Z_r[k].
+$$
+
+`joint_params.tilt_terms(log_emit_n, noun_tilt, k_r)` computes $(a_r, \log Z_r)$ (or an all-zero
+pair when `noun_tilt is None`, making the term an exact no-op — `test_noun_tilt_zero_matches_none_in_e_step`).
+`joint_params.log_emit_n_recipe(log_probs, r)` returns the resulting $(K,N)$ table for one recipe.
+
+**The cost stays $O(\text{chunk}\times K_R \times T)$, not $K_R$-fold on `sequence_loglik`.**
+$\log L_r(t,k)$ splits into a $(t)$-only term ($\log L_{\text{shared}}$, still computed exactly
+once per trial) plus a $(t,k)$-only broadcast add ($a_r[n_t] - \log Z_r[k]$) formed inside the
+recipe `vmap`, at the `(chunk,K_R,T,K)` shape `gamma` already occupies. `_e_step_chunk` and
+`_recipe_logz_chunk` (decode) apply this identically — they must, or `infer_recipe`'s $\hat r$
+stops matching the $\rho$ training actually converged to.
+
+**Why it works.** Because every HSMM path covers every tick exactly once, $\sum_t a_r[n_t]$
+contributes additively to $\log Z_{ir}$ — the rho-weighted noun bag lands directly in the recipe
+responsibility, bypassing the starved transition channel entirely.
+
+**M-step: a GIS coordinate step, not an exact solve.** `m_step`'s `tilt_steps` (default 0, a
+no-op) runs that many generalized-iterative-scaling updates *after* the shared `noun_counts`
+update, matching the model's predicted per-recipe noun marginal to the $\rho$-weighted noun bag
+(`stats["tilt_noun_counts"]`) and per-recipe state occupancy (`stats["occ"]`):
+
+$$
+a_r \;\mathrel{+}=\; \eta \Bigl(\log \hat c_r \;-\; \log q_r\Bigr), \qquad
+q_r[n] = \operatorname*{logsumexp}_k\bigl(\log\widehat{\text{occ}}_r[k] + \log P_r(n\mid k)\bigr),
+$$
+
+then re-centred (the shift is unidentifiable — $\log Z_r$ absorbs any constant) and clipped to
+$\pm$`tilt_max`. Because this holds the just-updated shared `noun_counts` fixed rather than
+re-solving jointly, the M-step is only *approximately* exact — the same status as the shrinkage
+duration fit, and for the same reason `run_joint_em` warns rather than raises on a small decrease.
+
+**Not free everywhere.** `select_recipe` / `collapse_to_marginal` return only the shared emission
+counts (there is no per-recipe axis to hold a tilt), so both `warnings.warn` when `noun_tilt is
+not None` — propagating the tilt into `surprise`/`quantile`/`narrate` is not yet done.
+
+**Seeding.** `lexical_init.lexical_to_joint(..., noun_tilt_init=True)` seeds $a_r$ from the SAME
+cluster assignment `cluster_recipes` already computed — $a_r[n] = \log(\text{cluster-}r\text{ noun
+freq}) - \log(\text{global noun freq})$, centred and clipped to `noun_tilt_clip` — needing no
+extra pass over the data.
+
+### The anchoring dial — `lam`
+
+A per-trial external recipe prior, added to the E-step's responsibility term with a strength dial:
+
+$$
+\log \rho_{ir} \;=\; \log \pi_r + \log Z_{ir} + \lambda \cdot \log(\text{prior}_{ir}).
+$$
+
+One parameter spans three behaviours: $\lambda{=}0$ is unchanged; small $\lambda$ biases the
+assignment toward the prior while the likelihood can still override it; large $\lambda$ freezes
+the assignment to the prior. "Freeze the recipe assignment for $N$ iterations, then release it" is
+therefore a *schedule* over $\lambda$ (`make_lam_schedule`, forms `const`/`geom`/`linear`/`freeze`),
+not separate machinery — freezing only changes the EM *path*, not the fixed point at $\lambda{=}0$.
+
+**Validity.** At a fixed $\lambda$, $\exp(\lambda \log\text{prior}_{ir})$ is a $\theta$-independent
+per-$(i,r)$ constant folded into the generative model, so EM's usual monotonicity argument still
+applies to an exact M-step — `test_objective_non_decreasing_at_constant_lam`. A *moving* $\lambda$
+changes the objective between iterations by construction, so `run_joint_em` suppresses its
+decrease-warning on any iteration where $\lambda$ actually moved (a "decrease" there is comparing
+two different objectives, not a broken M-step) and does not treat that iteration as convergence.
+
+**The reordering trap.** `e_step` sorts trials by length before chunking (`_length_order`) so
+chunks are length-homogeneous, and slices `verb_ids`/`noun_ids`/`mask` with that permutation —
+`recipe_log_prior` must use the *same* permutation or it silently applies to the wrong trial
+(`test_lam_prior_respects_the_length_reorder`). `infer_recipe`, by contrast, does **not** reorder
+(decode's per-chunk cost is cheap enough that the reorder isn't worth the bookkeeping), so there
+`recipe_log_prior` is sliced plain `[start:end]` — using `_length_order` there would be the bug.
+
+**Where the prior comes from is a separate question.** `run_joint_lexical.py --recipe-prior
+warmstart` builds a one-hot-ish prior from the lexical warm start's own cluster assignment — needs
+no new source, so it is enough to exercise the dial, but is not a semi-supervised signal from
+session content. See `docs/recipe.md` §4 for that (deferred, lower-priority) idea and the
+circularity it would need to address.
 
 ### Per-state emission priors — `emit_prior_v` / `emit_prior_n`
 

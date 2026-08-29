@@ -155,6 +155,30 @@ def cluster_recipes(sequences, k_recipe, seed=0, n_init=20, idf=False, features=
     return best_assign, best_c
 
 
+def _noun_tilt_init(sequences, assign, k_recipe, vocab_nouns, clip):
+    """a_r[n] = log(cluster-r noun freq) - log(global noun freq), centered and clipped -- the
+    natural iteration-0 value for `joint_params.JointHSMMParams.noun_tilt`: "this cluster is
+    pasta-heavy" read directly off the same per-trial noun bag `cluster_recipes` itself
+    clustered on, so it needs no extra pass over the data beyond what already ran. Centering
+    removes the shift non-identifiability the tilt normalizer absorbs (see joint_em.m_step's
+    docstring); clipping matches the M-step GIS update's own `tilt_max` bound so the seed does
+    not start outside the range the M-step would ever move it to."""
+    counts = np.zeros((k_recipe, vocab_nouns))
+    for seq, r in zip(sequences, assign):
+        for n in seq["noun_ids"]:
+            counts[int(r), int(n)] += 1.0
+    global_counts = counts.sum(axis=0)
+
+    counts = counts + 1e-3
+    global_counts = global_counts + 1e-3
+    log_recipe = np.log(counts / counts.sum(axis=-1, keepdims=True))
+    log_global = np.log(global_counts / global_counts.sum())
+    a = log_recipe - log_global[None, :]
+    a = a - a.mean(axis=-1, keepdims=True)
+    a = np.clip(a, -clip, clip)
+    return jnp.asarray(a)
+
+
 def _init_trans_dur_counts(segments_by_trial, assign, k_subtask, k_recipe, d_max):
     init_counts = np.zeros((k_recipe, k_subtask))
     trans_counts = np.zeros((k_recipe, k_subtask, k_subtask))
@@ -175,7 +199,8 @@ def _init_trans_dur_counts(segments_by_trial, assign, k_subtask, k_recipe, d_max
 def lexical_to_joint(sequences, k_subtask, k_recipe, d_max, vocab_verbs, vocab_nouns, kappa,
                      seed=0, min_ticks=MIN_PAIR_TICKS, anchor=ANCHOR_MASS,
                      background=BACKGROUND_MASS, alpha_init=0.5, alpha_trans=0.5, alpha_pi=1.0,
-                     init_prior_scale=1.0, idf_recipes=False, recipe_features="pairs"):
+                     init_prior_scale=1.0, idf_recipes=False, recipe_features="pairs",
+                     noun_tilt_init=False, noun_tilt_clip=5.0):
     """Build a `JointHSMMParams` whose states are the observed (v,n) pairs and whose per-recipe
     dynamics come from the bag-of-pairs clustering. Drop-in replacement for
     `warm_start.cascade_to_joint` -- same return type, and it needs no cascade artifacts at all.
@@ -184,6 +209,11 @@ def lexical_to_joint(sequences, k_subtask, k_recipe, d_max, vocab_verbs, vocab_n
     prior matrices, so a caller can hand the same anchors to `joint_em.run_joint_em`.
 
     `idf_recipes` / `recipe_features` are passed through to `cluster_recipes`.
+
+    `noun_tilt_init`: seed `JointHSMMParams.noun_tilt` from the SAME cluster assignment (see
+    `_noun_tilt_init`), rather than leaving it `None`. Off by default -- existing callers get an
+    unmodified return type. `noun_tilt_clip` is the seed's clip bound; keep it matched to
+    whatever `tilt_max` the caller will use in `joint_em.run_joint_em`.
 
     `init_prior_scale` scales the Dirichlet prior on the iteration-0 counts only. 1.0 is coherent
     and is the default, but **0.0 is what the best-measured detector uses** -- it ends at a lower
@@ -233,6 +263,11 @@ def lexical_to_joint(sequences, k_subtask, k_recipe, d_max, vocab_verbs, vocab_n
     p_over_r = jax.vmap(durations.update_p_given_r, in_axes=(0, 0, 0))
     dur_p = p_over_r(n_tot, s_tot, dur_r)
 
+    noun_tilt = (
+        _noun_tilt_init(sequences, assign, k_recipe, vocab_nouns, noun_tilt_clip)
+        if noun_tilt_init else None
+    )
+
     jp = JointHSMMParams(
         init_counts=jnp.asarray(init_counts),
         trans_counts=jnp.asarray(trans_counts) * (1.0 - jnp.eye(k_subtask))[None, :, :],
@@ -241,6 +276,7 @@ def lexical_to_joint(sequences, k_subtask, k_recipe, d_max, vocab_verbs, vocab_n
         dur_r=dur_r,
         dur_p=dur_p,
         pi_counts=jnp.asarray(pi_counts),
+        noun_tilt=noun_tilt,
     )
     info = {
         "pairs": pairs,
