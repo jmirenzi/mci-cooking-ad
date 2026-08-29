@@ -45,6 +45,12 @@ CHANNELS = (
     "s_emit", "s_verb", "s_noun", "s_temporal", "s_dur_two", "s_transition", "s_recipe_transition",
 )
 
+# s_pair is deliberately NOT in CHANNELS: every scorecard ORs CHANNELS for its headline `raw`
+# number, so an eighth channel there would move every recorded result. Opt in with
+# CHANNELS_WITH_PAIR, and note flagging it needs a trace carrying pi_all (keep_pi_all=True).
+PAIR_CHANNEL = "s_pair"
+CHANNELS_WITH_PAIR = CHANNELS + (PAIR_CHANNEL,)
+
 # s_emit/s_verb/s_noun are computed against the pi_all MIXTURE (emission_surprise) but
 # calibrated per-state against z_star's own SINGLE-state distribution (quantile.py). Since
 #     mixture = sum_k pi_k P(o|k) >= pi_{z*} P(o|z*)
@@ -86,6 +92,10 @@ class SurpriseTrace(NamedTuple):
     from_recipe: np.ndarray            # (T,) previous segment's recipe id at segment-start ticks (cascade only), -1 elsewhere
     belief_concentration: np.ndarray   # (T,) max_k P(Z_t=k|o_{<t}), diagnostic for the z_star-indexed threshold approximation
     pi_at_zstar: np.ndarray             # (T,) P(Z_t=z_star_t|o_{<t}) -- the mixture weight ON z_star specifically, used to cancel dilution in emission_thresholds
+    # Defaulted, so NamedTuple requires them last -- s_pair sits here rather than beside
+    # s_verb/s_noun where it belongs. Every real assembly path sets both.
+    s_pair: np.ndarray = None           # (T,) s_emit - s_verb - s_noun = -PMI(v,n): both words ordinary, pair wrong
+    pi_all: np.ndarray = None           # (T,K) predictive occupancy, kept only on keep_pi_all -- s_pair's null needs it
 
 
 def emission_surprise(pi_all, log_emit_v, log_emit_n, verb_ids, noun_ids):
@@ -450,6 +460,16 @@ def flag_joint(trace, joint_log_probs, r_hat, log_trans_marginal, alpha=DEFAULT_
     flags["s_recipe_transition"] = from_state_valid & (
         trace.s_recipe_transition > tables.recipe[from_state_safe]
     )
+
+    # Only when the trace kept pi_all: s_pair's null is the tick's own mixture and no per-state
+    # table can stand in for it. Absent pi_all the channel is not offered at all.
+    if trace.pi_all is not None:
+        flags[PAIR_CHANNEL] = _exceeds(
+            trace.s_pair,
+            quantile.pair_quantile_threshold(
+                trace.pi_all, joint_log_probs.log_emit_v, joint_log_probs.log_emit_n, alpha
+            ),
+        )
     return flags
 
 
@@ -531,7 +551,7 @@ def belief_diagnostic(traces, cutoff=0.8):
 
 
 def assemble_trace(hsmm_params, log_probs, recipe_log_trans, pi_all, verb_ids, noun_ids,
-                   seg_result, seg_recipe_ids):
+                   seg_result, seg_recipe_ids, keep_pi_all=False):
     """Pure per-trial assembly of a SurpriseTrace from already-computed jax quantities
     (pi_all, the Viterbi seg_result, and the per-segment recipe ids). Everything here is cheap
     numpy over one trial's true length -- factored out so both the single-trial `compute_trace`
@@ -544,6 +564,7 @@ def assemble_trace(hsmm_params, log_probs, recipe_log_trans, pi_all, verb_ids, n
         jnp.asarray(pi_all), log_probs.log_emit_v, log_probs.log_emit_n,
         jnp.asarray(verb_ids), jnp.asarray(noun_ids),
     )
+    s_pair = np.asarray(s_emit) - np.asarray(s_verb) - np.asarray(s_noun)
 
     log_emit_v_np = np.asarray(log_probs.log_emit_v)
     log_emit_n_np = np.asarray(log_probs.log_emit_n)
@@ -595,11 +616,13 @@ def assemble_trace(hsmm_params, log_probs, recipe_log_trans, pi_all, verb_ids, n
         from_recipe=from_recipe,
         belief_concentration=belief_concentration,
         pi_at_zstar=pi_at_zstar,
+        s_pair=s_pair,
+        pi_all=np.asarray(pi_all) if keep_pi_all else None,
     )
 
 
 def assemble_trace_joint(joint_hsmm_params, joint_log_probs, r_hat, log_trans_marginal, pi_all,
-                          verb_ids, noun_ids, seg_result):
+                          verb_ids, noun_ids, seg_result, keep_pi_all=False):
     """Joint-model analogue of assemble_trace: identical per-channel logic, but every
     recipe-conditioned table (trans, duration) is sliced from the K_R-indexed
     joint_log_probs/joint_hsmm_params at this trial's MAP recipe r_hat, while emissions stay
@@ -629,6 +652,7 @@ def assemble_trace_joint(joint_hsmm_params, joint_log_probs, r_hat, log_trans_ma
         jnp.asarray(pi_all), joint_log_probs.log_emit_v, joint_log_probs.log_emit_n,
         jnp.asarray(verb_ids), jnp.asarray(noun_ids),
     )
+    s_pair = np.asarray(s_emit) - np.asarray(s_verb) - np.asarray(s_noun)
 
     log_emit_v_np = np.asarray(joint_log_probs.log_emit_v)
     log_emit_n_np = np.asarray(joint_log_probs.log_emit_n)
@@ -677,6 +701,8 @@ def assemble_trace_joint(joint_hsmm_params, joint_log_probs, r_hat, log_trans_ma
         from_recipe=from_recipe,
         belief_concentration=belief_concentration,
         pi_at_zstar=pi_at_zstar,
+        s_pair=s_pair,
+        pi_all=np.asarray(pi_all) if keep_pi_all else None,
     )
 
 
@@ -773,4 +799,14 @@ def flag_joint_cached(cache, trace, joint_log_probs, r_hat, log_trans_marginal,
     flags["s_recipe_transition"] = from_state_valid & (
         trace.s_recipe_transition > tables.recipe[from_state_safe]
     )
+
+    # Only when the trace kept pi_all: s_pair's null is the tick's own mixture and no per-state
+    # table can stand in for it. Absent pi_all the channel is not offered at all.
+    if trace.pi_all is not None:
+        flags[PAIR_CHANNEL] = _exceeds(
+            trace.s_pair,
+            quantile.pair_quantile_threshold(
+                trace.pi_all, joint_log_probs.log_emit_v, joint_log_probs.log_emit_n, alpha
+            ),
+        )
     return flags

@@ -91,19 +91,42 @@ def hard_segments(sequences, pairs):
     return out
 
 
-def cluster_recipes(sequences, k_recipe, seed=0, n_init=20):
+def cluster_recipes(sequences, k_recipe, seed=0, n_init=20, idf=False, features="pairs"):
     """Trial-level recipe clusters by spherical k-means on L1-normalised (v,n)-pair histograms.
     A recipe is characterised by which actions it contains, which the bag of pairs states
     directly. Returns (assignments (N,), centroids). Empty clusters are re-seeded at the trial
     furthest from its own centroid, so the weak-limit prior -- not this function -- is what kills
     a recipe off.
+
+    `features` selects the histogram -- "pairs" (one dimension per observed (v,n) pair) or
+    "nouns" -- and `idf` weights each dimension by log(N / #trials containing it).
+
+    Both default to the Breakfast setting, and on a corpus like EPIC both have to move together:
+    pair histograms are far too sparse there (3806 distinct pairs, ~48 non-zero dimensions per
+    trial), and without IDF the histogram is dominated by equipment and environment nouns whose
+    distribution barely varies with the goal. Measured against derived dish labels, k_recipe=16:
+    pairs/no-idf -0.009, pairs/idf 0.061, nouns/no-idf 0.064, nouns/idf 0.538. Breakfast has
+    neither problem, so its defaults stay put.
     """
-    pairs, _ = observed_pairs(sequences, min_ticks=1)
-    index = {p: i for i, p in enumerate(pairs)}
-    x = np.zeros((len(sequences), len(pairs)))
+    if features == "pairs":
+        keys, _ = observed_pairs(sequences, min_ticks=1)
+        tokens = lambda seq: (zip(seq["verb_ids"], seq["noun_ids"]))          # noqa: E731
+        key_of = lambda tok: (int(tok[0]), int(tok[1]))                        # noqa: E731
+    elif features == "nouns":
+        keys = sorted({int(n) for seq in sequences for n in seq["noun_ids"]})
+        tokens = lambda seq: seq["noun_ids"]                                   # noqa: E731
+        key_of = int
+    else:
+        raise ValueError(f"unknown features: {features!r} (expected 'pairs' or 'nouns')")
+
+    index = {k: i for i, k in enumerate(keys)}
+    x = np.zeros((len(sequences), len(keys)))
     for i, seq in enumerate(sequences):
-        for v, n in zip(seq["verb_ids"], seq["noun_ids"]):
-            x[i, index[(int(v), int(n))]] += 1.0
+        for tok in tokens(seq):
+            x[i, index[key_of(tok)]] += 1.0
+    if idf:
+        doc_freq = (x > 0).sum(axis=0)
+        x = x * np.log(len(sequences) / np.maximum(doc_freq, 1))
     x = x / np.maximum(x.sum(axis=1, keepdims=True), 1e-12)
     x = x / np.maximum(np.linalg.norm(x, axis=1, keepdims=True), 1e-12)
 
@@ -152,13 +175,15 @@ def _init_trans_dur_counts(segments_by_trial, assign, k_subtask, k_recipe, d_max
 def lexical_to_joint(sequences, k_subtask, k_recipe, d_max, vocab_verbs, vocab_nouns, kappa,
                      seed=0, min_ticks=MIN_PAIR_TICKS, anchor=ANCHOR_MASS,
                      background=BACKGROUND_MASS, alpha_init=0.5, alpha_trans=0.5, alpha_pi=1.0,
-                     init_prior_scale=1.0):
+                     init_prior_scale=1.0, idf_recipes=False, recipe_features="pairs"):
     """Build a `JointHSMMParams` whose states are the observed (v,n) pairs and whose per-recipe
     dynamics come from the bag-of-pairs clustering. Drop-in replacement for
     `warm_start.cascade_to_joint` -- same return type, and it needs no cascade artifacts at all.
 
     Returns (params, info); `info` carries the pair list, the cluster assignment and the emission
     prior matrices, so a caller can hand the same anchors to `joint_em.run_joint_em`.
+
+    `idf_recipes` / `recipe_features` are passed through to `cluster_recipes`.
 
     `init_prior_scale` scales the Dirichlet prior on the iteration-0 counts only. 1.0 is coherent
     and is the default, but **0.0 is what the best-measured detector uses** -- it ends at a lower
@@ -173,7 +198,8 @@ def lexical_to_joint(sequences, k_subtask, k_recipe, d_max, vocab_verbs, vocab_n
         pairs, k_subtask, vocab_verbs, vocab_nouns, anchor=anchor, background=background
     )
     segments_by_trial = hard_segments(sequences, pairs)
-    assign, _ = cluster_recipes(sequences, k_recipe, seed=seed)
+    assign, _ = cluster_recipes(sequences, k_recipe, seed=seed, idf=idf_recipes,
+                                features=recipe_features)
 
     init_counts, trans_counts, dur_hist = _init_trans_dur_counts(
         segments_by_trial, assign, k_subtask, k_recipe, d_max

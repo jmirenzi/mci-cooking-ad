@@ -64,6 +64,30 @@ def _e_step_chunk(log_init, log_trans, log_emit_v, log_emit_n, log_dur_pmf, log_
     return stats, jnp.sum(log_z)
 
 
+# Chunks are trimmed to their own longest sequence, rounded up to the next power of two.
+# pad_batch pads everything to the batch's global T_max, so on a corpus with a wide length
+# spread most chunks are mostly padding the mask then discards. Powers of two rather than a
+# fixed stride because each distinct trimmed length is a separate XLA compilation, and one
+# compilation here costs tens of seconds -- a finer stride spends more on compiling than the
+# trimming saves.
+TICK_BUCKET_MIN = 256
+
+
+def _chunk_ticks(mask_chunk, t_max):
+    """Ticks this chunk needs: its longest true length, rounded up to a power of two."""
+    used = int(jnp.max(jnp.sum(mask_chunk, axis=-1)))
+    bucket = TICK_BUCKET_MIN
+    while bucket < used:
+        bucket *= 2
+    return int(min(bucket, t_max))
+
+
+def _length_order(mask):
+    """Sequence indices sorted by true length, so chunks are length-homogeneous. Safe to
+    reorder: e_step accumulates sums over sequences and returns nothing per-sequence."""
+    return jnp.argsort(jnp.sum(mask, axis=-1))
+
+
 def e_step(hsmm_params, verb_ids, noun_ids, mask, d_max, temperature=1.0, chunk_size=8):
     """to_log_probs -> (if annealing) temper emission/duration terms -> chunked vmap of
     emissions + forward/backward/combination across the batch axis -> sum sufficient stats.
@@ -84,12 +108,16 @@ def e_step(hsmm_params, verb_ids, noun_ids, mask, d_max, temperature=1.0, chunk_
     n = verb_ids.shape[0]
     total_stats = None
     total_loglik = 0.0
+    t_max = verb_ids.shape[1]
+    order = _length_order(mask)
     for start in range(0, n, chunk_size):
         end = min(start + chunk_size, n)
+        idx = order[start:end]
+        t_used = _chunk_ticks(mask[idx], t_max)
         chunk_stats, chunk_loglik = _e_step_chunk(
             log_probs.log_init, log_probs.log_trans, log_emit_v, log_emit_n,
             log_dur_pmf, log_dur_survival,
-            verb_ids[start:end], noun_ids[start:end], mask[start:end], d_max,
+            verb_ids[idx, :t_used], noun_ids[idx, :t_used], mask[idx, :t_used], d_max,
         )
         if total_stats is None:
             total_stats = chunk_stats
@@ -113,8 +141,14 @@ def m_step(hsmm_params, stats, alpha_init, alpha_trans, alpha_emit_v, alpha_emit
 
     new_init_counts = alpha_init / k + stats["init_counts"]
     new_trans_counts = (alpha_trans / k + stats["trans_counts"]) * (1.0 - jnp.eye(k))
-    new_verb_counts = alpha_emit_v / n_verb + stats["verb_counts"]
-    new_noun_counts = alpha_emit_n / n_noun + stats["noun_counts"]
+    # E-step counts are over the observed token; the categorical being re-estimated is over
+    # the latent intended one. A no-op without a kernel.
+    log_b_v = params._row_normalize(hsmm_params.verb_counts)
+    log_b_n = params._row_normalize(hsmm_params.noun_counts)
+    verb_stats = params.latent_counts(stats["verb_counts"], log_b_v, hsmm_params.kernel_v)
+    noun_stats = params.latent_counts(stats["noun_counts"], log_b_n, hsmm_params.kernel_n)
+    new_verb_counts = alpha_emit_v / n_verb + verb_stats
+    new_noun_counts = alpha_emit_n / n_noun + noun_stats
 
     n_hat = durations.impute_censored_histogram(
         stats["xi_dur"], stats["cens"], hsmm_params.dur_r, hsmm_params.dur_p, d_max
@@ -123,7 +157,8 @@ def m_step(hsmm_params, stats, alpha_init, alpha_trans, alpha_emit_v, alpha_emit
     new_r = durations.newton_update_r(n_hat, n_hat_total, s_hat, hsmm_params.dur_r, n_iters=5)
     new_p = durations.update_p_given_r(n_hat_total, s_hat, new_r)
 
-    return params.HSMMParams(new_init_counts, new_trans_counts, new_verb_counts, new_noun_counts, new_r, new_p)
+    return params.HSMMParams(new_init_counts, new_trans_counts, new_verb_counts, new_noun_counts,
+                             new_r, new_p, hsmm_params.kernel_v, hsmm_params.kernel_n)
 
 
 def _anneal_schedule(iteration, t_start=2.0, decay=0.9):

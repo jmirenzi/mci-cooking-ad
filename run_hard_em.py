@@ -21,6 +21,10 @@ import time
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
+from cook_ad.xla_env import disable_gpu_autotuning  # noqa: E402 -- must precede the jax import
+
+disable_gpu_autotuning()
+
 import jax
 import jax.numpy as jnp
 import numpy as np

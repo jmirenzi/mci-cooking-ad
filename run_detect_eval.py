@@ -24,7 +24,7 @@ from cook_ad.anomaly import narrate, quantile, surprise
 from cook_ad.data import split as split_mod
 from cook_ad.data.config import load_config
 from cook_ad.eval import batch
-from cook_ad.hsmm import joint_params
+from cook_ad.hsmm import joint_params, kernel as kernel_mod
 from cook_ad.llm import textify
 from cook_ad.synthetic import error_injection, generate
 
@@ -34,6 +34,11 @@ CHANNELS = surprise.CHANNELS
 # 2.5 in alpha, which is wider than the differences between the models being compared.
 ALPHAS = [0.5, 0.35, 0.2, 0.15, 0.1, 0.07, 0.05, 0.035, 0.02, 0.015, 0.01, 0.007, 0.005,
           0.003, 0.002, 1e-3, 5e-4, 1e-4, 1e-5, 1e-7, 1e-10]
+
+
+def _short(name):
+    """substitution and substitution_near both truncate to 'subs' on a plain name[:4]."""
+    return "sub~" if name == "substitution_near" else name[:4]
 
 
 def positive_ticks(degraded, lexicon):
@@ -68,6 +73,29 @@ def main():
                          "normally graded on two different (though closely related) sets of "
                          "degraded streams; pointing every model at one common source makes the "
                          "comparison exact. Scoring always uses --joint-params.")
+    ap.add_argument("--embeddings", default=None,
+                    help="attach a similarity kernel built from this embeddings.npz to the "
+                         "SCORING model. Point --traj-params at the unkernelled baseline so "
+                         "every arm is graded on one common set of degraded streams.")
+    ap.add_argument("--kernel-tau", type=float, default=0.05)
+    ap.add_argument("--kernel-lam", type=float, default=0.15,
+                    help="total mass the intended noun leaks to its neighbours")
+    ap.add_argument("--kernel-lam-verb", type=float, default=0.0,
+                    help="same for verbs; 0 by default -- the verb embedding space does not "
+                         "pass tools_embed_vocab.py's nearest-neighbour gate")
+    ap.add_argument("--kernel-uniform", action="store_true",
+                    help="ablation: spread kernel-lam uniformly instead of semantically, "
+                         "separating 'semantics helped' from 'any leaked mass helped'")
+    ap.add_argument("--near-subs", action="store_true",
+                    help="add a substitution_near group: replace the segment's noun with its "
+                         "nearest embedding neighbour instead of an unseen token. Needs "
+                         "--embeddings, which the baseline arm also uses so both are scored "
+                         "on the same streams.")
+    ap.add_argument("--with-pair", action="store_true",
+                    help="score the verb-noun compatibility channel s_pair alongside the "
+                         "usual seven. Off by default: it changes the headline `raw` number, "
+                         "which every recorded result was measured without. Needs pi_all, so "
+                         "the run costs noticeably more.")
     ap.add_argument("--tag", default="eval")
     ap.add_argument("--out-dir", default="runs")
     args = ap.parse_args()
@@ -75,6 +103,14 @@ def main():
     d_max = load_config(args.config)["duration"]["d_max_ticks"]
     vocab = json.load(open(args.vocab))
     jp = joint_params.load_params(args.joint_params)
+    if args.embeddings and (args.kernel_lam > 0 or args.kernel_lam_verb > 0):
+        s_v, s_n = kernel_mod.kernels_from_embeddings(
+            args.embeddings, args.kernel_tau, args.kernel_lam,
+            lam_verb=args.kernel_lam_verb, uniform=args.kernel_uniform,
+        )
+        jp = jp._replace(kernel_v=s_v, kernel_n=s_n)
+        print(f"[{args.tag}] kernel attached: tau={args.kernel_tau} lam={args.kernel_lam} "
+              f"lam_verb={args.kernel_lam_verb} uniform={args.kernel_uniform}", flush=True)
     marg = joint_params.collapse_to_marginal(jp)
     lexicon = narrate.Lexicon(vocab, marg)
 
@@ -93,15 +129,30 @@ def main():
 
     # groups[name] = list of (trace, r_hat, positive_tick_mask)
     groups = {}
+    channels = surprise.CHANNELS_WITH_PAIR if args.with_pair else CHANNELS
     traces, log_probs, r_hat, log_trans_marginal = batch.compute_traces_joint(
-        jp, usable, d_max, chunk_size=args.chunk_size
+        jp, usable, d_max, chunk_size=args.chunk_size, keep_pi_all=args.with_pair
     )
     groups["healthy"] = [
         (t, int(r), np.zeros(len(u["verb_ids"]), dtype=bool)) for t, r, u in zip(traces, r_hat, usable)
     ]
-    for et in error_injection.ERROR_TYPES:
-        deg = [error_injection.inject(et, t, rng, traj_marg) for t in usable]
-        tr, lp2, rh, ltm = batch.compute_traces_joint(jp, deg, d_max, chunk_size=args.chunk_size)
+    # substitution_near is scored as its own group: the near-substitution the fixed-vocabulary
+    # categorical structurally cannot express (see error_injection.inject_substitution).
+    neighbours = None
+    error_types = list(error_injection.ERROR_TYPES)
+    if args.near_subs:
+        if not args.embeddings:
+            ap.error("--near-subs needs --embeddings")
+        emb_v, emb_n = kernel_mod.load_embeddings(args.embeddings)
+        neighbours = {"noun": kernel_mod.nearest_neighbours(emb_n)}
+        error_types.append("substitution_near")
+
+    for et in error_types:
+        base_et, sel = ("substitution", "near") if et == "substitution_near" else (et, "random")
+        deg = [error_injection.inject(base_et, t, rng, traj_marg, select=sel, neighbours=neighbours)
+               for t in usable]
+        tr, lp2, rh, ltm = batch.compute_traces_joint(
+            jp, deg, d_max, chunk_size=args.chunk_size, keep_pi_all=args.with_pair)
         groups[et] = [(t, int(r), positive_ticks(d, lexicon)) for t, r, d in zip(tr, rh, deg)]
         # every group is scored against the SAME tables it was traced with
         log_probs, log_trans_marginal = lp2, ltm
@@ -161,12 +212,12 @@ def main():
                 "per_type": per_type,
             }
 
-        row = {"alpha": alpha, "raw": score(CHANNELS)}
-        for c in CHANNELS:
+        row = {"alpha": alpha, "raw": score(channels)}
+        for c in channels:
             row[c] = score([c])
         results.append(row)
         r = row["raw"]
-        pt = " ".join(f"{k[:4]}={v['recall']:.2f}" for k, v in r["per_type"].items() if k != "healthy")
+        pt = " ".join(f"{_short(k)}={v['recall']:.2f}" for k, v in r["per_type"].items() if k != "healthy")
         print(
             f"alpha={alpha:.0e} acc={r['accuracy']:.3f} prec={r['precision']:.3f} "
             f"rec={r['recall']:.3f} f1={r['f1']:.3f} healthyFP={r['per_type']['healthy']['stray']:.3f} | {pt}",

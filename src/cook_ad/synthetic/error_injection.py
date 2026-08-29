@@ -104,7 +104,7 @@ def _argmin_candidate(counts_row, current_id):
     return int(order[order != current_id][0])
 
 
-def inject_substitution(traj, rng, hsmm_params, select="random"):
+def inject_substitution(traj, rng, hsmm_params, select="random", neighbours=None):
     """Swap an ENTIRE segment's verb or noun for a token with no training evidence linking it to
     that state -- a clean substitution ('spreading, but with mustard, for the whole step'), not a
     single mid-step flicker. The replacement is drawn from hsmm_params.verb_counts/noun_counts --
@@ -118,7 +118,17 @@ def inject_substitution(traj, rng, hsmm_params, select="random"):
     evidence band (see _unseen_candidates) -- the honest-recall case. 'hardest' is deterministic:
     it takes whichever channel has the single least-observed cell for this state, and uses that
     exact token (_argmin_candidate) rather than a random member of the band -- the worst case a
-    substitution of this kind can look like."""
+    substitution of this kind can look like.
+
+    'near' replaces with the token's NEAREST EMBEDDING NEIGHBOUR (`neighbours`, from
+    kernel.nearest_neighbours) -- milk for water, not knife for water. Both 'random' and
+    'hardest' pick a token with no training evidence for the state, i.e. the most distant one
+    under a semantic kernel, so neither can produce a near substitution. The replacement here
+    comes from the embeddings alone and never from hsmm_params, so two models pointed at one
+    --traj-params source are graded on a byte-identical degraded stream.
+
+    `neighbours` is {channel: (W,) int array}; only the channels present are eligible, which is
+    how a noun-only near-substitution benchmark is requested."""
     verb_ids = np.array(traj["verb_ids"])
     noun_ids = np.array(traj["noun_ids"])
     bounds = _seg_bounds(traj["segments"])
@@ -128,7 +138,12 @@ def inject_substitution(traj, rng, hsmm_params, select="random"):
     start, end, state, _ = bounds[i]
 
     noun_row, verb_row = hsmm_params.noun_counts[state], hsmm_params.verb_counts[state]
-    if select == "hardest":
+    if select == "near":
+        if not neighbours:
+            raise ValueError("select='near' needs a `neighbours` table (kernel.nearest_neighbours)")
+        eligible = [c for c in ("noun", "verb") if c in neighbours]
+        channel = eligible[0] if len(eligible) == 1 else ("noun" if rng.random() < 0.5 else "verb")
+    elif select == "hardest":
         channel = "noun" if float(np.min(noun_row)) <= float(np.min(verb_row)) else "verb"
     else:
         channel = "noun" if rng.random() < 0.5 else "verb"
@@ -136,7 +151,9 @@ def inject_substitution(traj, rng, hsmm_params, select="random"):
     row, current, target = (
         (noun_row, int(noun_ids[start]), noun_ids) if channel == "noun" else (verb_row, int(verb_ids[start]), verb_ids)
     )
-    if select == "hardest":
+    if select == "near":
+        new_id = int(np.asarray(neighbours[channel])[current])
+    elif select == "hardest":
         new_id = _argmin_candidate(row, current)
     else:
         new_id = int(rng.choice(_unseen_candidates(row, current)))
@@ -145,6 +162,9 @@ def inject_substitution(traj, rng, hsmm_params, select="random"):
     edited = np.arange(start, end)
     result = _result(verb_ids, noun_ids, start, end - 1, "substitution", np.arange(T), edited_ticks=edited)
     result["channel"] = channel
+    # The token pair, so a caller can partition the injections afterwards -- e.g. separating
+    # genuine near substitutions (milk -> water) from annotation variants (egg -> eggs).
+    result["orig_id"], result["new_id"] = current, new_id
     return result
 
 
@@ -270,19 +290,19 @@ def _pick_segment(rng, valid_indices, select):
     valid_indices = list(valid_indices)
     if not valid_indices:
         raise ValueError("trajectory has no segment satisfying this injection's constraints")
-    if select == "random":
+    if select in ("random", "near"):
         return int(rng.choice(valid_indices))
     if select == "hardest":
         return valid_indices[0]
     raise ValueError(f"unknown select mode: {select!r}")
 
 
-def inject(error_type, traj, rng, hsmm_params, select="random"):
+def inject(error_type, traj, rng, hsmm_params, select="random", neighbours=None):
     """Uniform dispatch. Only substitution needs hsmm_params (to read the state's accumulated
     verb/noun counts and find a token with no training evidence); the other four are purely
     structural."""
     if error_type == "substitution":
-        return inject_substitution(traj, rng, hsmm_params, select=select)
+        return inject_substitution(traj, rng, hsmm_params, select=select, neighbours=neighbours)
     if error_type == "abandonment":
         return inject_abandonment(traj, rng, select=select)
     if error_type == "omission":

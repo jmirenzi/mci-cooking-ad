@@ -2,6 +2,7 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+from jax.scipy.special import logsumexp
 
 from cook_ad.hsmm import durations
 
@@ -15,6 +16,10 @@ class HSMMParams(NamedTuple):
     noun_counts: jnp.ndarray    # (K,N)   Dirichlet pseudocounts per row
     dur_r: jnp.ndarray          # (K,)    NB dispersion, point estimate
     dur_p: jnp.ndarray          # (K,)    NB success-prob, point estimate
+    # Fixed similarity kernels for the latent-intended-token emission (kernel.py).
+    # None == identity == the plain categorical emission.
+    kernel_v: jnp.ndarray = None   # (V,V) row-stochastic, or None
+    kernel_n: jnp.ndarray = None   # (N,N) row-stochastic, or None
 
 
 class HSMMLogProbs(NamedTuple):
@@ -82,6 +87,46 @@ def init_weak_limit_params(
     return HSMMParams(init_counts, trans_counts, verb_counts, noun_counts, dur_r, dur_p)
 
 
+def _log_kernel(kernel):
+    """log S, with exact zeros kept at -inf rather than floored.
+
+    S is a fixed known table, not an estimated distribution, so a structural zero in it is a
+    real zero. Flooring it to FLOOR instead would put -27.6 on the identity's off-diagonal --
+    above the -36 nats _row_normalize already gave unobserved cells -- so composing with the
+    identity would change a model it must leave alone.
+    """
+    k = jnp.asarray(kernel)
+    return jnp.where(k > 0, jnp.log(jnp.where(k > 0, k, 1.0)), -jnp.inf)
+
+
+def compose_kernel(log_b, kernel):
+    """log_b: (K,W) log P(intended token m | state k). kernel: (W,W) row-stochastic, or None.
+
+    Returns log (B S)[k,n] = log sum_m B[k,m] S[m,n] -- the marginal emission after integrating
+    out the latent intended token. `None` short-circuits to log_b.
+    """
+    if kernel is None:
+        return log_b
+    return logsumexp(log_b[:, :, None] + _log_kernel(kernel)[None, :, :], axis=1)
+
+
+def latent_counts(observed_counts, log_b, kernel):
+    """E-step counts over OBSERVED tokens -> expected counts over the LATENT intended token:
+
+        Chat[k,m] = sum_v C[k,v] * R[k,m,v],   R[k,m,v] = B[k,m] S[m,v] / (B S)[k,v]
+
+    R is P(m | v, k), independent of t, so C stays sufficient and the E-step needs no change.
+    This is an exact latent-variable M-step, which is what keeps EM monotone; smoothing the
+    counts directly (`counts @ S`) is not a generative model and would break that.
+    """
+    if kernel is None:
+        return observed_counts
+    log_s = _log_kernel(kernel)
+    log_joint = log_b[:, :, None] + log_s[None, :, :]              # (K,M,V) log B[k,m] S[m,v]
+    log_r = log_joint - logsumexp(log_joint, axis=1, keepdims=True)  # (K,M,V) log P(m|v,k)
+    return jnp.einsum("kv,kmv->km", observed_counts, jnp.exp(log_r))
+
+
 def _row_normalize(counts, floor=FLOOR, mask_diag=False):
     numerator = jnp.maximum(counts - 1.0, floor)
     if mask_diag:
@@ -107,8 +152,8 @@ def normalize_categoricals(params: HSMMParams, floor=FLOOR):
     """
     log_init = _row_normalize(params.init_counts, floor)
     log_trans = _row_normalize(params.trans_counts, floor, mask_diag=True)
-    log_emit_v = _row_normalize(params.verb_counts, floor)
-    log_emit_n = _row_normalize(params.noun_counts, floor)
+    log_emit_v = compose_kernel(_row_normalize(params.verb_counts, floor), params.kernel_v)
+    log_emit_n = compose_kernel(_row_normalize(params.noun_counts, floor), params.kernel_n)
     return log_init, log_trans, log_emit_v, log_emit_n
 
 
@@ -121,11 +166,15 @@ def to_log_probs(params: HSMMParams, d_max: int) -> HSMMLogProbs:
 def save_params(params: HSMMParams, path):
     import numpy as np
 
-    np.savez(path, **{name: np.asarray(value) for name, value in params._asdict().items()})
+    np.savez(path, **{name: np.asarray(value) for name, value in params._asdict().items()
+                      if value is not None})
 
 
 def load_params(path) -> HSMMParams:
+    """Missing kernel_v/kernel_n read back as None (= identity), so pre-kernel .npz files load
+    and score unchanged."""
     import numpy as np
 
     with np.load(path) as data:
-        return HSMMParams(**{name: jnp.asarray(data[name]) for name in HSMMParams._fields})
+        return HSMMParams(**{name: jnp.asarray(data[name]) for name in HSMMParams._fields
+                             if name in data})
