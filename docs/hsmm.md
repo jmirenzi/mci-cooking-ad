@@ -11,6 +11,7 @@ This is the mathematical core. Everything else in the repo consumes what this pa
 | `em.py` | the batched EM driver for the single (recipe-agnostic) HSMM |
 | `joint_params.py` | `JointHSMMParams`, per-recipe normalisation, marginal / conditional collapses |
 | `joint_em.py` | joint EM over the recipe mixture, plus recipe inference |
+| `kernel.py` | the fixed semantic-neighbourhood kernel $S$ for the latent-intended-token emission (§8) |
 
 ---
 
@@ -246,7 +247,8 @@ resume.
 
 ```python
 HSMMParams(init_counts (K,), trans_counts (K,K), verb_counts (K,V),
-           noun_counts (K,N), dur_r (K,), dur_p (K,))
+           noun_counts (K,N), dur_r (K,), dur_p (K,),
+           kernel_v=None, kernel_n=None)     # ← optional (V,V) / (N,N), see §8
 ```
 
 Note that the categorical families are stored as **Dirichlet concentration parameters**
@@ -505,6 +507,14 @@ $$
 
 The emission accumulations are one-hot einsums, `"ntk,ntv->kv"`.
 
+**Chunks are length-homogeneous.** `_length_order` sorts sequence indices by true length before
+chunking and `_chunk_ticks` trims each chunk to its own longest sequence (rounded up to a power of
+two, so the number of distinct compiled shapes stays small). Without this every chunk is padded to
+the corpus-wide $T_{\max}$ and a chunk of short trials pays for the longest trial in the dataset —
+which is what makes an EPIC-scale fit intractable rather than merely slow. Reordering is safe
+because `e_step` accumulates sums over sequences and returns nothing per-sequence; the bucketing
+is verified bit-identical.
+
 **Deterministic annealing** (off by default) divides the emission and duration log-tables by a
 temperature $\Upsilon$:
 
@@ -528,6 +538,11 @@ $$
 
 with the transition result re-masked by $(1 - I)$. Durations go through
 `impute_censored_histogram` → `newton_update_r` → `update_p_given_r` (§2).
+
+When a kernel is attached, the accumulated emission counts are over the **observed** token and the
+M-step needs counts over the **latent intended** one, so `params.latent_counts` sits between the
+two (§8.3). Without a kernel it is exactly the identity, so this path is a no-op for every model
+fit before §8 existed.
 
 ### Restart loop
 
@@ -610,7 +625,7 @@ M-step**, $\mathcal L$ can dip slightly; `run_joint_em` therefore *warns* rather
 the objective decreases by more than `tol`. (The saved full-scale history shows exactly this:
 a rise to about $-16431$, then sub-nat oscillation.)
 
-### Recipe-modulated emissions — `noun_tilt`
+### 6.1 Recipe-modulated emissions — `noun_tilt`
 
 **The problem this solves.** Emissions are shared, so a recipe is distinguished only by its
 init/trans/duration tables — content reaches the recipe latent only indirectly, via which states
@@ -673,7 +688,7 @@ cluster assignment `cluster_recipes` already computed — $a_r[n] = \log(\text{c
 freq}) - \log(\text{global noun freq})$, centred and clipped to `noun_tilt_clip` — needing no
 extra pass over the data.
 
-### The anchoring dial — `lam`
+### 6.2 The anchoring dial — `lam`
 
 A per-trial external recipe prior, added to the E-step's responsibility term with a strength dial:
 
@@ -707,7 +722,7 @@ no new source, so it is enough to exercise the dial, but is not a semi-supervise
 session content. See `docs/recipe.md` §4 for that (deferred, lower-priority) idea and the
 circularity it would need to address.
 
-### Per-state emission priors — `emit_prior_v` / `emit_prior_n`
+### 6.3 Per-state emission priors — `emit_prior_v` / `emit_prior_n`
 
 The shared emission M-step's $\alpha_{\text{emit}}/\text{width}$ term is a *flat* prior: right
 when the states are anonymous, wrong once the initialisation has given state $k$ a meaning
@@ -716,7 +731,7 @@ EM relicense that state onto whatever the responsibilities hand it. `m_step` the
 $(K,V)$ / $(K,N)$ prior **matrices** in place of the scalar. Default `None` leaves the flat-prior
 behaviour unchanged.
 
-### Restarts, checkpoints, convergence
+### 6.4 Restarts, checkpoints, convergence
 
 `run_joint_em` is a **single deterministic run** from `init_params` — no restart loop, because the
 warm start (see [`recipe.md`](recipe.md)) is deterministic. It is resumable via
@@ -730,7 +745,7 @@ module does **no file I/O itself** — persistence lives in `run_joint.py`, whic
 `max_iters` was reached. A caller resuming should keep calling until `converged`, not until
 `history` stops growing.
 
-### Recipe inference — `infer_recipe`
+### 6.5 Recipe inference — `infer_recipe`
 
 $$
 \hat r_i \;=\; \arg\max_r \bigl(\log \pi_r + \log Z_{ir}\bigr)
@@ -742,7 +757,7 @@ only $\log Z$, not $\xi$ or $\gamma$ — so it skips the backward pass entirely.
 produces is bit-identical to training's (both are `sum(forward_pass(...)[0])`), so decode can
 never drift numerically from the E-step.
 
-### Collapses (`joint_params.py`)
+### 6.6 Collapses (`joint_params.py`)
 
 Three ways to get a single-recipe view out of the joint model, each with a distinct purpose:
 
@@ -793,3 +808,195 @@ Three measurements on the train split, all disagreeing with the likelihood ranki
 
 Model selection between fitting routes therefore runs through `run_detect_eval.py` and
 `run_step_sweep.py` ([`eval.md`](eval.md) §7), never through `history[-1]`.
+
+---
+
+## 8. Open vocabulary — the similarity kernel (`kernel.py`)
+
+An **appendix track**, not part of the shipped detector: it is off by default, every pre-kernel
+`.npz` loads and scores unchanged, and $S = I$ reproduces the baseline bit-for-bit. What it buys
+and what it costs are both measured in §8.7 — read that before turning it on.
+
+### 8.1 The problem: a closed-vocabulary categorical cannot grade a substitution
+
+The detector's emission is a categorical over a fixed vocabulary, so `water` for `milk` and
+`knife` for `milk` are simply two different columns of $B^n_{k,\cdot}$. Nothing in the
+parameterisation says one is a near miss and the other is nonsense.
+
+That is not a theoretical worry — the gap is measurably **exactly 0.00 nats**, and the mechanism
+is specific. `lexical_init` seeds each state with `ANCHOR_MASS = 50.0` on its own two tokens and
+`BACKGROUND_MASS = 1.0` spread over the rest of each vocabulary ([`recipe.md`](recipe.md) §4).
+`params._row_normalize` computes the Dirichlet-MAP mode as $\max(c - 1,\ \texttt{FLOOR})$ — and
+the background mass is *exactly* 1.0, so the mode erases it. **97% of emission cells sit on
+`FLOOR`**, at identical values. Every off-anchor noun is equally impossible, which is why the two
+substitutions score the same to the last bit.
+
+So the system can say "that is wrong" but never "wrong object, but nearly right" — and a
+confirmation question for a user with MCI is much more useful when it can make that distinction.
+
+### 8.2 The model: a latent intended token
+
+The fix is a **generative** one, not a smoothing one. The emission gains one latent variable per
+tick: the subtask *intends* token $m$, which *surfaces* as the observed token $n$.
+
+$$
+m_t \mid z_j = k \sim \operatorname{Cat}(B_{k,\cdot}), \qquad
+n_t \mid m_t = m \sim \operatorname{Cat}(S_{m,\cdot}),
+$$
+
+with $S$ a **fixed**, known $(W,W)$ row-stochastic matrix. Marginalising $m$ out,
+
+$$
+P(n \mid Z = k) \;=\; \sum_m B_{k,m}\, S_{m,n} \;=\; (BS)[k,n],
+$$
+
+which is `params.compose_kernel`, computed in log space as a `logsumexp` over $m$. `kernel_v` and
+`kernel_n` are separate tables; either may be `None`, which short-circuits to the plain
+categorical.
+
+**Why this framing and not `counts @ S` in the M-step.** Both produce a smoothed emission and look
+nearly identical in a diff. But smoothing the counts directly is not a generative model, so it
+carries no guarantee at all — whereas this is standard latent-variable EM and therefore **stays
+monotone**. `test_objective_non_decreasing_with_kernel` is the load-bearing test in
+`tests/test_kernel.py` and exists precisely to tell the two apart, because nothing else would.
+
+The other property worth naming: $(BS)[k,\cdot]$ is still a normalised distribution over an
+enumerable support, so `anomaly/quantile.py`'s exact discrete tail remains valid unchanged
+([`anomaly.md`](anomaly.md) §3). Preserving that is most of the reason for doing it this way.
+
+### 8.3 The M-step — `latent_counts`
+
+The E-step accumulates counts over the **observed** token; the M-step needs counts over the
+**latent intended** one. `params.latent_counts` maps between them:
+
+$$
+\hat C[k,m] \;=\; \sum_v C[k,v]\, R[k,m,v], \qquad
+R[k,m,v] \;=\; \frac{B_{k,m} S_{m,v}}{(BS)[k,v]} \;=\; P(m \mid v, k).
+$$
+
+$R$ does not depend on $t$, so the per-tick statistics stay sufficient and **the E-step needs no
+change at all** — the whole kernel lives in `normalize_categoricals` and this one remap.
+$\sum_m R[k,m,v] = 1$, so the remap moves mass between columns but never creates or destroys it
+(`test_latent_counts_conserve_total_mass`). Without a kernel it is the identity.
+
+### 8.4 Constructing $S$ — `lam` and `tau` do different jobs
+
+$$
+S \;=\; (1 - \lambda)\, I \;+\; \lambda \cdot \operatorname{rownorm}
+\Bigl( \operatorname*{softmax}_{\text{off-diag}} \bigl( \cos(e_i, e_j) / \tau \bigr) \Bigr),
+$$
+
+then mixed with $\varepsilon$ uniform and renormalised.
+
+This is deliberately **not** a single softmax over the full row, and the reason is quantitative:
+the diagonal's cosine is 1.0 by construction while the best off-diagonal similarity is ~0.6. One
+softmax couples two quantities that have to move independently — any $\tau$ sharp enough to tell
+`water` from `knife` leaves 99.9% of the row on the self term (i.e. $S = I$, no smoothing at all),
+and any $\tau$ loose enough to leak real mass gives a near-uniform row, which is exactly the
+undiscriminating mass-shifting `smooth_params.py` exists to object to.
+
+Split, the two knobs are orthogonal:
+
+| knob | controls | limits |
+|---|---|---|
+| $\lambda$ | **how much** mass the intended token leaks | $\lambda = 0$ is the identity, for any $\tau$ |
+| $\tau$ | **how semantically** that mass is shaped — no influence on its size | $\tau \to \infty$ spreads it uniformly |
+
+`test_lam_controls_mass_and_tau_controls_only_its_shape` asserts the diagonal is $1 - \lambda$
+regardless of $\tau$. That $\tau \to \infty$ limit is not a curiosity, it is the **ablation**:
+`similarity_kernel(..., uniform=True)` spreads $\lambda$ evenly over the other $W-1$ tokens, which
+separates "the semantic neighbourhood helped" from "any leaked mass helped". Both arms carry
+identical total leakage, so nothing but the shape differs.
+
+$\varepsilon = 10^{-4}$ guarantees strict positivity, so no observation is ever $-\infty$.
+
+**Both $\lambda$ and $\tau$ are regularisation.** Select them on held-out data
+(`make_dev_split.py`), never in-sample — [`eval.md`](eval.md) §7 has the measurement showing what
+in-sample selection of regularisation costs on this project.
+
+### 8.5 $S = I$ must be the baseline *bit-for-bit*
+
+`_log_kernel` keeps structural zeros at $-\infty$ rather than flooring them, and this is load-
+bearing rather than fastidious. $S$ is a fixed known table, not an estimated distribution, so a
+zero in it is a real zero. Flooring to `FLOOR = 1e-12` would put $-27.6$ nats on the identity's
+off-diagonal — *above* the $\approx -36$ nats `_row_normalize` already assigns an unobserved cell
+— so composing with the identity would change a model it must leave alone.
+
+`test_identity_kernel_reproduces_the_plain_categorical_bit_for_bit` asserts equality, not
+closeness, and `test_legacy_npz_round_trips_without_a_kernel` asserts that a checkpoint saved
+before any of this reads back with `kernel_v = kernel_n = None`. Together they are the claim that
+attaching this machinery cannot silently move an existing result.
+
+### 8.6 Where the embeddings come from — `tools_embed_vocab.py`
+
+One vector per `vocab.json` verb and noun, written to an `.npz` that `kernel.load_embeddings`
+reads. `cook_ad` itself **never imports an encoder** — it only ever reads that file, which is what
+keeps the core install lean. The encoder lives behind the `embeddings` optional extra
+(`pyproject.toml`), which is Flax-based and torch-free:
+
+```bash
+embvenv/bin/python tools_embed_vocab.py --out dataset/processed/breakfast/embeddings.npz
+```
+
+Two corpus-specific hazards it handles:
+
+- **Breakfast's labels are not plain English.** `egg2plate`, `bunTogether`, `saltnpepper` are
+  concatenations a sentence encoder tokenizes into garbage subwords. `SURFACE_FORM` is a
+  hand-written expansion table (`egg2plate` → "egg onto the plate"); anything absent passes
+  through unchanged.
+- **The SIL tokens get an orthogonal basis direction, not an embedding** (`--pin-sil`, on by
+  default). `kitchen` in particular is a real English noun that would sit near every kitchen
+  object and smear the idle state across the whole vocabulary.
+
+The script prints each token's top-$k$ nearest neighbours as a **sanity gate**, and that gate is
+the reason for an asymmetry in the defaults: noun neighbourhoods come out clean, verb ones come
+out near-noise (`crack` → `squeeze`, `butter` → `stirfry`). So `kernels_from_embeddings` takes a
+separate `lam_verb`, and **0 is the honest setting** — use only the half that passed. `--kernel-lam-verb`
+defaults to 0.0 for the same reason.
+
+### 8.7 What it bought, what it cost, and two findings that changed the plan
+
+Measured on Breakfast, scoring model vs. baseline on byte-identical degraded streams (point every
+arm at one `--traj-params` source so the injections are shared):
+
+| | baseline | $\lambda = 0.15$ | uniform ablation, same $\lambda$ |
+|---|---|---|---|
+| near-vs-far substitution rank accuracy | 0.53 (chance) | **0.90** | chance |
+| `trial_loc` accuracy | **0.552** | 0.480 | — |
+
+So the kernel buys a capability the baseline **provably** lacks, and charges for it in the metric
+the project is actually scored on. The ablation staying at chance is what rules out the obvious
+alternative explanation: the gradation comes from the semantics, not from the leaked mass.
+
+Two findings here changed the plan they came from, and both are worth knowing before designing a
+follow-up:
+
+1. **The baseline's near/far gap is exactly 0.00 nats, not "nearly identical".** §8.1 gives the
+   mechanism. Any argument that starts "the baseline already almost distinguishes these" is
+   starting from a false premise.
+2. **The decisive test originally proposed cannot work.** It was to be a recall comparison on near
+   substitutions — but the baseline already recalls them at **0.98**. `water` for `milk` still
+   lands on a (state, noun) cell with no training evidence, so it is not a *quieter* anomaly,
+   merely an equally loud one. What is broken is severity **ranking**, not detection, so the test
+   has to be paired and ordinal. That is what `tools_severity_ranking.py` does
+   ([`eval.md`](eval.md) §8).
+
+### 8.8 Running it
+
+The kernel attaches to the **scoring** model at eval time; nothing needs refitting to try one:
+
+```bash
+python run_detect_eval.py --split-part test \
+    --joint-params runs/joint_final.npz --traj-params runs/joint_final.npz \
+    --embeddings dataset/processed/breakfast/embeddings.npz \
+    --kernel-lam 0.15 --kernel-tau 0.05 --near-subs
+```
+
+`--traj-params` pointing at the unkernelled baseline is what makes an arm-to-arm comparison exact:
+degraded streams are built once from that model and handed to every scoring arm. `--near-subs`
+adds a `substitution_near` group whose replacement is the nearest embedding neighbour rather than
+an unseen token, and `--kernel-uniform` runs the §8.4 ablation. [`eval.md`](eval.md) §7 has the
+rest of the flags.
+
+To fit *with* a kernel rather than only score with one, attach `kernel_v` / `kernel_n` to the
+params before EM — §8.3's remap then runs every M-step, and the objective stays monotone.

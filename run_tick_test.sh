@@ -23,11 +23,18 @@ set -u
 
 cd "$(dirname "$0")" || exit 1
 
-# The venv's editable install points at .claude/worktrees/vocab-embeddings-scoping-5c04e4/src,
-# not at this checkout, so a bare `import cook_ad` from here resolves to a STALE copy that has no
-# tick unit at all. Without this the run dies on the first elements_from_trajectory(..., unit=)
-# call. Fix the install properly with `uv pip install -e .` when the other worktree is done with
-# the shared venv; until then this makes the run correct regardless.
+# Pin imports to THIS checkout's src, the same guard ./py applies to every other runner. The
+# venv's editable install resolves to whichever checkout last synced it, so when several git
+# worktrees share one venv a bare `import cook_ad` can land on a copy with no tick unit, and the
+# run dies on the first elements_from_trajectory(..., unit=) call. Cheap to set, so it is set
+# unconditionally rather than only when that is true.
+#
+# If the editable pointer really is wrong, re-sync from the checkout you want -- but WITH THE
+# EXTRAS: a bare `uv sync` uninstalls 46 packages here, including jax-cuda12-plugin, which drops
+# JAX to CPU without saying so.
+#
+#     uv sync --extra dev --extra gpu
+#
 export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
 
 VARIANT="${VARIANT:-with-recipes}"

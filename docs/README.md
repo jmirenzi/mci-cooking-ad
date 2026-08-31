@@ -18,10 +18,10 @@ the design constraint the rest of the architecture serves.
 | Doc | Covers | Read it when you want to know… |
 |---|---|---|
 | this file | repo layout, end-to-end pipeline, notation | where anything lives, what runs in what order |
-| [`data.md`](data.md) | `src/cook_ad/data/` | how raw Breakfast annotations become integer tick sequences |
-| [`hsmm.md`](hsmm.md) | `src/cook_ad/hsmm/` | the core model: durations, message passing, EM, the joint recipe mixture |
+| [`data.md`](data.md) | `src/cook_ad/data/` | how raw Breakfast **and EPIC** annotations become integer tick sequences; train/test splits |
+| [`hsmm.md`](hsmm.md) | `src/cook_ad/hsmm/` | the core model: durations, message passing, EM, the joint recipe mixture, the similarity kernel |
 | [`recipe.md`](recipe.md) | `src/cook_ad/recipe/` | Viterbi segmentation, the cascade's stage-2 recipe HMM, the joint warm start |
-| [`anomaly.md`](anomaly.md) | `src/cook_ad/anomaly/` | the seven surprise channels, quantile calibration, narration |
+| [`anomaly.md`](anomaly.md) | `src/cook_ad/anomaly/` | the eight surprise channels, quantile calibration, narration |
 | [`lifecycle.md`](lifecycle.md) | `src/cook_ad/lifecycle/` | frozen/live dual model, bounded preference updates, drift reports |
 | [`eval.md`](eval.md) | `src/cook_ad/eval/` | batched trace computation, precision/recall/latency metrics, figures |
 | [`synthetic.md`](synthetic.md) | `src/cook_ad/synthetic/` | ancestral sampling and the five canonical injected errors |
@@ -35,8 +35,10 @@ An observation stream for one trial is
 $$
 o_{0:T-1}, \qquad o_t = (v_t, n_t) \in \{1..V\}\times\{1..N\},
 $$
-one observation per **tick** (1 second; $V = 15$ verbs, $N = 36$ nouns on the full Breakfast
-corpus, each including a `SIL` "nothing happening" token).
+one observation per **tick**. The tick length and vocabulary are corpus-specific — 1 s with
+$V = 15$, $N = 36$ on full Breakfast; 0.5 s with $V = 98$, $N = 306$ on EPIC-KITCHENS-100 — each
+vocabulary including a `SIL` "nothing happening" token ([`data.md`](data.md)). Unqualified numbers
+in these docs are Breakfast.
 
 Behind that stream sit two latent variables:
 
@@ -97,27 +99,33 @@ break the recipe-permutation symmetry on its own.
 mci-cooking-ad/
 ├── configs/
 │   ├── breakfast.yaml          full corpus: 503 trials, K=64, K_R=16, D_max=200
-│   └── breakfast_mini.yaml     cereals+coffee+tea: 152 trials, K=20, K_R=6, D_max=50
+│   ├── breakfast_mini.yaml     cereals+coffee+tea: 152 trials, K=20, K_R=6, D_max=50
+│   └── epic.yaml               EPIC-KITCHENS-100: 357 sessions, 0.5s ticks, K=64, K_R=16
 ├── dataset/
 │   ├── breakfast_actions/      raw Breakfast `segmentation_coarse` .txt annotations
-│   └── processed/breakfast{,_mini}/
+│   ├── epic_kitchens/          EPIC-100 annotation CSVs (cloned; no video)
+│   └── processed/{breakfast{,_mini},epic}/
 │       ├── sequences.json      per-trial verb_ids / noun_ids  (TRAINING input)
 │       ├── labels.json         per-tick ground-truth action labels (VALIDATION ONLY)
 │       ├── vocab.json          verb/noun/recipe → id maps
+│       ├── split.json          train/test trial ids (split_dataset.py)
+│       ├── embeddings.npz      one vector per vocab token (tools_embed_vocab.py, optional)
 │       ├── hsmm_params.npz     cascade stage 1
 │       ├── recipe_params.npz   cascade stage 2
 │       ├── joint_params.npz    joint model (+ .meta.json checkpoint sidecar)
 │       ├── flow/               exported JSON for rendering
 │       └── figures/            rendered PNGs
+├── runs/           checkpoints + logs from the lexical→hard-EM route (gitignored)
 ├── src/cook_ad/
-│   ├── data/       parsing, tick binning, label extraction
-│   ├── hsmm/       the model: durations, emissions, messages, EM, joint EM
+│   ├── data/       parsing (2 corpora), tick binning, label extraction, splits
+│   ├── hsmm/       the model: durations, emissions, messages, EM, joint EM, kernel
 │   ├── recipe/     Viterbi segmentation, recipe HMM, cascade→joint warm start
 │   ├── anomaly/    surprise channels, quantile thresholds, narration, sequence detector
 │   ├── lifecycle/  frozen/live dual model, online updates, drift detection
 │   ├── eval/       batched traces, tick/step/counterfactual metrics, plots
 │   ├── synthetic/  ancestral sampling + the five injected error types
-│   └── llm/        trial-as-text rendering + the LLM comparison baseline
+│   ├── llm/        trial-as-text rendering + the LLM comparison baseline
+│   └── xla_env.py  process-level XLA flags, applied before the backend comes up
 ├── tests/          one pytest module per src module of substance
 └── *.py            top-level runner / export / render scripts (see below)
 ```
@@ -170,6 +178,32 @@ carve a 3-recipe subset:
 ```bash
 python build_mini_dataset.py --recipes cereals coffee tea
 ```
+
+**1b — Or build the EPIC dataset instead** (`data/parse_epic.py`)
+
+The same three files, in the same shapes, from EPIC-KITCHENS-100 annotations (no video). Clone
+[the annotations repo](https://github.com/epic-kitchens/epic-kitchens-100-annotations) first.
+
+```bash
+./py -m cook_ad.data.parse_epic --root dataset/epic_kitchens/annotations \
+    --config configs/epic.yaml --out-dir dataset/processed/epic
+```
+
+Because the output contract is identical, every step below works on either corpus by pointing
+`--config` / `--sequences` / `--vocab` at the other one. What differs — 0.5 s ticks, a 98 × 306
+vocabulary, no recipe annotation, and the two changes that make an EPIC-scale fit finish at all —
+is in [`data.md`](data.md) §7.
+
+**1c — Split it**
+
+```bash
+python split_dataset.py --sequences dataset/processed/breakfast/sequences.json \
+    --labels dataset/processed/breakfast/labels.json \
+    --out dataset/processed/breakfast/split.json --test-frac 0.2 --seed 0
+```
+
+Every runner below takes `--split-file` / `--split-part`. The split is over trial ids, not grouped
+by participant — see [`data.md`](data.md) §9 for what that does and does not measure.
 
 **2 — Fit the subtask HSMM** (cascade stage 1)
 
@@ -239,6 +273,16 @@ python run_threshold_sweep.py                   # accuracy vs alpha, per granula
 python run_counterfactual.py                    # is detection attributable to the injection?
 python run_sequence_eval.py                     # segment-sequence detector vs the tick channels
 python run_detect_eval.py --split-part train    # one trial_loc scorecard: alpha curve x error type x channel
+VARIANT=no-recipes ./run_tick_test.sh           # the full tick-unit LLM sweep, resumable
+```
+
+The open-vocabulary arms are opt-in and off by default ([`hsmm.md`](hsmm.md) §8):
+
+```bash
+python tools_embed_vocab.py --out dataset/processed/breakfast/embeddings.npz   # needs the `embeddings` extra
+python run_detect_eval.py --split-part test --traj-params runs/joint_final.npz \
+    --embeddings dataset/processed/breakfast/embeddings.npz --kernel-lam 0.15 --near-subs
+python tools_severity_ranking.py    # the paired near-vs-far test the kernel actually rests on
 ```
 
 `run_detect_eval.py` reports the same `trial_loc` metric `run_threshold_sweep.py` defines, on the

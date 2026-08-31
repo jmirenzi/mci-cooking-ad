@@ -11,14 +11,14 @@ This is where the fitted model becomes a *detector*. The chain is:
 
 | File | Role |
 |---|---|
-| `surprise.py` | the seven channels, trace assembly, flagging, attribution, severity |
+| `surprise.py` | the eight channels, trace assembly, flagging, attribution, severity |
 | `temporal.py` | the duration channels: live stall, retrospective two-sided, PIT calibration |
 | `quantile.py` | exact per-state $\alpha$-quantile thresholds over discrete supports |
 | `narrate.py` | template renderers turning flags into auditable questions |
 | `sequence.py` | retrospective segment-sequence detector: one verdict per junction, names the error type |
 
 `sequence.py` sits **beside** the tick pipeline rather than inside it (§6). It reads the decoded
-segment sequence, not the tick stream, so it shares no state with the seven channels.
+segment sequence, not the tick stream, so it shares no state with the eight channels.
 
 ---
 
@@ -26,15 +26,28 @@ segment sequence, not the tick stream, so it shares no state with the seven chan
 
 Every number a user ever sees traces back to a single argmax over a fitted parameter row. The
 `narrate.py` module docstring states it plainly: *"routing any of this through a language model
-would throw that away."* Categorical emissions were chosen over embeddings for exactly this
-reason. When the system says "I expected jelly", you can point at $B^n_{k,\cdot}$ and see why.
+would throw that away."* Categorical emissions were chosen over a learned embedding space for
+exactly this reason. When the system says "I expected jelly", you can point at $B^n_{k,\cdot}$ and
+see why.
+
+That commitment is what shapes the open-vocabulary work rather than being overturned by it. The
+similarity kernel ([`hsmm.md`](hsmm.md) §8) leaves $B$ a categorical over the same fixed
+vocabulary and composes it with a **fixed, inspectable** table $S$; the emission stays a
+normalised distribution over an enumerable support, so §3's exact discrete tail still applies and
+"I expected jelly" still resolves to one row you can print. What the kernel adds is a *second*
+auditable object, not a learned opaque one. Its cost is measured, not waived — see
+[`hsmm.md`](hsmm.md) §8.7.
 
 ---
 
-## 2. The seven channels
+## 2. The eight channels
 
 All are **surprisal** $-\log P(\cdot)$ measured in nats, so they share a scale and are additive in
 the way log-probabilities are.
+
+Seven of the eight are the **default set** (`surprise.CHANNELS`) that every scorecard ORs and every
+recorded result was measured on. The eighth, $s_{\text{pair}}$, is opt-in for the reason §2.6
+gives; where these docs say "the seven channels" unqualified, they mean the default set.
 
 | Channel | Formula | Fires at | Catches |
 |---|---|---|---|
@@ -45,6 +58,7 @@ the way log-probabilities are.
 | $s_{\text{dur2}}$ | two-sided duration $p$-value surprise | segment end | too long **or** too short, retrospectively |
 | $s_{\text{trans}}$ | $-\log A_{z_{j-1} z_j}$ | segment start | out-of-order / skipped step |
 | $s_{\text{recipe}}$ | cascade: $-\log A^R_{\rho_{j-1}\rho_j}$; joint: signed excess | segment start | recipe-level incoherence |
+| $s_{\text{pair}}$ | $s_{\text{emit}} - s_{\text{verb}} - s_{\text{noun}} = -\text{PMI}(v,n)$ | every tick (opt-in) | both words ordinary, the **pair** wrong |
 
 Non-firing ticks are filled with $0$ (or $-1$ for id fields, `NaN` for the PIT diagnostic).
 
@@ -65,6 +79,7 @@ object as $\hat r$, despite both being called "recipe"). $j$ indexes segments, $
 | $s_{\text{dur2}}$ | $P(D\ge d),\ P(D\le d) \mid Z_j$ | $P(D\ge d),\ P(D\le d) \mid Z_j, \hat r$ |
 | $s_{\text{trans}}$ | $P(Z_j \mid Z_{j-1})$ | $P(Z_j \mid Z_{j-1}, \hat r)$ |
 | $s_{\text{recipe}}$ | $P(\rho_j\mid\rho_{j-1})$ | not a probability — signed excess, see below |
+| $s_{\text{pair}}$ | $-\text{PMI}$ under the tick's predictive mixture | same — the mixture, never a single state |
 
 **Emissions are the one place recipe never enters, in either model.** $B^v, B^n$ are shared,
 unindexed tables (`assemble_trace_joint`'s docstring: "emissions stay shared"); $P(v_t,n_t\mid Z_t)$
@@ -316,6 +331,49 @@ separate "did the state change" test to reconcile with this one.
 
 ---
 
+### 2.6 The pair channel — `s_pair`, and why it needs a second corpus
+
+**Opt-in.** `s_pair` is deliberately *not* in `surprise.CHANNELS`: every scorecard ORs `CHANNELS`
+for its headline `raw` number, so adding an eighth there would move every result already recorded.
+Use `CHANNELS_WITH_PAIR`, or `run_detect_eval.py --with-pair`.
+
+The channel is the difference between the joint emission surprise and the two marginals:
+
+$$
+s_{\text{pair}}(t) \;=\; s_{\text{emit}}(t) - s_{\text{verb}}(t) - s_{\text{noun}}(t)
+\;=\; -\operatorname{PMI}(v_t, n_t),
+$$
+
+larger meaning *less compatible*, matching every other channel's convention. It catches the case
+none of the first three can state: **both words are individually ordinary, and their combination is
+not** — `pour knife`, where `pour` is a common verb, `knife` is a common noun, and the pair is
+nonsense.
+
+**Its null is per-tick, and it has to be.** Under a *single* state the emission is a product by
+construction ($P(v,n\mid Z{=}k) = P(v\mid k)P(n\mid k)$, [`hsmm.md`](hsmm.md) §1), so
+$\operatorname{PMI}(v,n\mid Z{=}k)$ is identically zero and a per-state null would be degenerate.
+All of $s_{\text{pair}}$'s signal comes from the predictive **mixture** $\sum_k \tilde\pi_t(k)
+P(v\mid k)P(n\mid k)$, which is not a product even though every component is. So
+`quantile.pair_quantile_threshold` builds the tick's own $(V,N)$ mixture joint and takes the exact
+discrete tail over it — the same machinery as everywhere else in §3, just rebuilt per tick rather
+than per state.
+
+Two consequences follow from that, and both are costs:
+
+- **The trace has to keep `pi_all`.** The $(T,K)$ predictive occupancy is normally discarded after
+  the channels are computed; `assemble_trace(..., keep_pi_all=True)` retains it. Absent `pi_all`,
+  `flag_joint` does not offer the channel at all rather than substituting an approximation.
+- **It dominates the runtime of a sweep.** $O(T \cdot V \cdot N)$ with one sort per tick, against
+  $O(K)$ table lookups for every other channel.
+
+**On Breakfast it is close to redundant with $s_{\text{emit}}$**, because a 15 × 36 vocabulary of
+scripted breakfast actions contains few pairs that are individually plausible but jointly absurd.
+This channel is one of the reasons for the EPIC ingest ([`data.md`](data.md) §7): at 97 verbs and
+305 nouns over unscripted kitchen visits, "each word fine, pair wrong" is a real and frequent
+failure mode rather than a constructed one.
+
+---
+
 ## 3. `quantile.py` — where the thresholds come from
 
 ### 3.1 The idea
@@ -352,7 +410,7 @@ This is a **step function**: $\alpha$ cannot be hit exactly, only the nearest ac
 or below it. The docstring is explicit that the achieved mass should be reported and exact
 $\alpha$ coverage never claimed.
 
-### 3.3 The four table builders
+### 3.3 The five table builders
 
 | Function | Support scored | Used by |
 |---|---|---|
@@ -360,9 +418,10 @@ $\alpha$ coverage never claimed.
 | `joint_quantile_threshold` | the $V \times N$ outer product per state | $s_{\text{emit}}$ |
 | `transition_quantile_threshold` | one transition row | $s_{\text{trans}}$, cascade $s_{\text{recipe}}$ |
 | `excess_quantile_threshold` | signed excess, null $i \sim A^{(\hat r)}(\cdot\mid j)$ | joint $s_{\text{recipe}}$ |
+| `pair_quantile_threshold` | the $V \times N$ **mixture** joint, per tick | $s_{\text{pair}}$ (§2.6) |
 | `sequence_thresholds` | an **empirical** sample of healthy-trial statistics | `sequence.py`'s swap / duration tests (§6) |
 
-The first four score a *fitted discrete distribution*; `sequence_thresholds` scores an empirical
+The first five score a *fitted discrete distribution*; `sequence_thresholds` scores an empirical
 sample instead, weighting each observed value $1/N$ and passing it through the same
 `_tail_threshold`, so the resulting cut is the empirical $(1-\alpha)$ quantile under the identical
 strict-`>` convention. Every threshold in the package is therefore an $\alpha$-tail cut of *some*

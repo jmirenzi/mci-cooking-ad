@@ -77,11 +77,15 @@ injector returns
 ```
 
 where `window` is the ground-truth extent used by `eval.metrics.score_trial`, and the last two
-fields record *what the injector actually changed* (§2.1).
+fields record *what the injector actually changed* (§2.1). Substitution adds three more —
+`channel` (`"verb"` or `"noun"`), `orig_id` and `new_id` — so a caller can partition its
+injections afterwards, e.g. separating genuine near substitutions (`milk` → `water`) from
+annotation variants (`egg` → `eggs`). All additive; consumers reading only the six above are
+unaffected.
 
 | Type | Perturbation | Window | Channel it should light up |
 |---|---|---|---|
-| **substitution** | one whole segment's verb **or** noun (channel picked at random) → a token with no training evidence for that state | the whole segment | $s_{\text{noun}}$ or $s_{\text{verb}}$ (attribution `"item"`/`"action"` to match) |
+| **substitution** | one whole segment's verb **or** noun (channel picked at random) → a token with no training evidence for that state, or its nearest embedding neighbour under `select="near"` (§2.2) | the whole segment | $s_{\text{noun}}$ or $s_{\text{verb}}$ (attribution `"item"`/`"action"` to match) |
 | **abandonment** | truncate an interior segment to a random 5-20% of its own duration | premature end tick | retrospective $s_{\text{dur2}}$, left tail |
 | **omission** | delete an interior segment entirely | the new boundary | $s_{\text{trans}}$ |
 | **transposition** | swap two adjacent interior segments | the swapped pair | $s_{\text{trans}}$ (twice) |
@@ -101,8 +105,7 @@ than a single mid-step tick; the other channel is untouched, which is what still
 item channel from the action channel. `"hardest"` deliberately reintroduces the deterministic
 worst case for both the channel choice (whichever channel has the single least-observed cell for
 this state) and the token (`_argmin_candidate`, the argmin over that channel's raw counts) — see
-§2's segment-selection-modes section for why the two modes now diverge on more than just which
-segment gets picked. The other four injectors remain purely structural index surgery on
+§2.4 for why the two modes now diverge on more than just which segment gets picked. The other four injectors remain purely structural index surgery on
 `verb_ids`/`noun_ids`, needing no model at all.
 
 **Abandonment exists to test the left tail.** As explained in [`anomaly.md`](anomaly.md), the live
@@ -151,7 +154,32 @@ Two consumers depend on this:
 The schema change is additive, matching the precedent of `sample_trajectory_joint` adding
 `recipe_id`: consumers reading only `verb_ids`/`noun_ids`/`window` are unaffected.
 
-### Interior constraints
+### 2.2 The near substitution — `select="near"`
+
+`"random"` and `"hardest"` both replace with a token that has **no training evidence for that
+state** — under any semantic kernel, the most *distant* token available. Neither can therefore
+produce a near miss, and a near miss is the interesting case: `milk` → `water` is what a person
+with MCI actually does, and it is the one the detector should treat as less severe rather than
+merely different.
+
+`select="near"` replaces with the token's **nearest embedding neighbour**, taken from
+`neighbours`, a `{channel: (W,) int array}` table built by `hsmm.kernel.nearest_neighbours`. Only
+the channels present in that dict are eligible, which is how a noun-only near-substitution
+benchmark is requested (the verb embedding space does not pass `tools_embed_vocab.py`'s
+neighbour gate — [`hsmm.md`](hsmm.md) §8.6).
+
+**The replacement comes from the embeddings alone and never from `hsmm_params`.** That is the one
+property that makes the comparison the mode exists for possible: two models pointed at a single
+`--traj-params` source are graded on a byte-identical degraded stream, so nothing but the scoring
+model differs. It also means `near` is the only substitution mode that does not consult the fitted
+counts at all.
+
+Segment choice is uniform, exactly as in `"random"` — `near` changes *what* replaces the token,
+not *where*. `run_detect_eval.py --near-subs` scores it as a separate `substitution_near` group
+rather than folding it into `substitution`, since mixing near and far replacements in one recall
+number would average away the distinction being measured ([`eval.md`](eval.md) §8).
+
+### 2.3 Interior constraints
 
 Each injector restricts its segment choice to an explicit list of valid indices (built once per
 call, not just a bare range), and the constraints are not arbitrary:
@@ -182,7 +210,7 @@ filter can still leave zero valid segments on a short, unlucky trajectory even p
 `_pick_segment` raises `ValueError` in that case, the same failure mode every other injector
 already has for a too-short trajectory, and every caller already handles it the same way.
 
-### Segment selection modes
+### 2.4 Segment selection modes
 
 `_pick_segment(rng, valid_indices, select)`:
 
@@ -191,6 +219,9 @@ already has for a too-short trajectory, and every caller already handles it the 
 - `"hardest"` — currently the leftmost valid index, an explicitly labelled **deterministic
   placeholder**. A truly adversarial pick would score each candidate's *induced surprise* and
   choose the minimum; that is noted as future work rather than pretended to be implemented.
+- `"near"` — segment picked uniformly, as in `"random"`; what differs is the **replacement**
+  (§2.2). Only substitution implements it; the other four are structural and have no token to
+  replace.
 
 `export_anomaly.py` exploits this honestly: it sweeps `[("hardest", 0)] + [("random", s) for s in SEEDS]`
 and explains in a comment that `"hardest"` ignores the rng entirely (every remaining rng use is
@@ -207,7 +238,7 @@ evidence band), and abandonment always keeps the bottom of `ABANDON_KEEP_FRAC` (
 five: `select="hardest"` never touches `rng` at all, and `export_anomaly.py`'s "try `hardest`
 with only one seed" optimisation is lossless again.
 
-### One error type that is *not* here
+### 2.5 One error type that is *not* here
 
 `run_rollout_demo.py` defines its own **stall** injector — stretch a segment by repeating its final
 `(verb, noun)` well past its observed duration. It lives there rather than in this module because

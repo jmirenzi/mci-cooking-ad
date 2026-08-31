@@ -306,7 +306,14 @@ under a cascade-started fit against 92% under this one (`tools_launder.py`).
    channels need a finite, calibratable surprise for an off-pair observation, not $-\infty$.
 3. `hard_segments` — run-length-encode each trial over those pairs.
 4. `cluster_recipes` — spherical k-means on bag-of-pair histograms. A recipe is characterised by
-   which actions it contains, which the bag states directly.
+   which actions it contains, which the bag states directly. Two options, **off by default**,
+   exist for corpora where that is not enough: `features="nouns"` clusters on the noun bag rather
+   than the $(v,n)$-pair bag, and `idf=True` down-weights tokens that appear in most sessions.
+   Breakfast keeps the defaults. On EPIC **both must move together** — the pair histogram is far
+   too sparse at 3806 distinct pairs, and without IDF the equipment nouns that dominate every
+   session drown the dish. Measured dish ARI there: **−0.009 → 0.538** with both on, and neither
+   alone gets close. `run_joint_lexical.py --recipe-features nouns --idf-recipes`, or set them in
+   the config's `joint_em` block as `configs/epic.yaml` does ([`data.md`](data.md) §8.2).
 5. Per-recipe hard init/transition counts and per-$(r,k)$ duration histograms from (3) and (4),
    duration fit shrunk toward the pooled per-state shape (`kappa`) as in §3.
 

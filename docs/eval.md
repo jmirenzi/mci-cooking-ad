@@ -89,8 +89,8 @@ two reasons.
 **It filters by error type, not by noise.** The structural channels' true signal is one tick wide
 by construction — $s_{\text{trans}}$ fires at a segment's first tick and nowhere else — so any
 run-length bar deletes their detections outright while sparing the duration channels, whose
-signal is inherently extended. That is a selective mute on three of the seven channels, not a
-uniform noise filter.
+signal is inherently extended. That is a selective mute on three of the seven default channels,
+not a uniform noise filter.
 
 **It hides miscalibration rather than fixing it.** A channel that is not being gated by its
 threshold produces the same symptom as genuine per-tick noise — many isolated flags — and a
@@ -340,6 +340,31 @@ the batched `generate.trajectories_from_real_joint`, and `quantile.JointThreshol
 take a 402-trial sweep from most of an hour to a couple of minutes, which is what makes detection
 usable as a *selection* criterion rather than only a final report ([`hsmm.md`](hsmm.md) §7).
 
+### 7.0 The optional arms — kernel, near substitutions, pair channel
+
+Six flags extend the scorecard to the open-vocabulary track. All are **off by default**, and that
+is deliberate: every recorded result was measured without them, and each one changes either the
+scoring model or the headline `raw` number.
+
+| flag | effect |
+|---|---|
+| `--embeddings PATH` | attach a similarity kernel built from `tools_embed_vocab.py`'s `.npz` to the **scoring** model ([`hsmm.md`](hsmm.md) §8) |
+| `--kernel-lam` / `--kernel-tau` | how much mass leaks, and how semantically it is shaped (defaults 0.15 / 0.05) |
+| `--kernel-lam-verb` | the same for verbs; **0.0 by default** — the verb embedding space does not pass the neighbour gate ([`hsmm.md`](hsmm.md) §8.6) |
+| `--kernel-uniform` | ablation: spread `--kernel-lam` uniformly instead of semantically, separating "semantics helped" from "any leaked mass helped" |
+| `--near-subs` | add a `substitution_near` group, replacing the segment's noun with its nearest embedding neighbour ([`synthetic.md`](synthetic.md) §2.2). Requires `--embeddings` |
+| `--with-pair` | score $s_{\text{pair}}$ alongside the usual seven ([`anomaly.md`](anomaly.md) §2.6). Needs `pi_all`, so the run costs noticeably more |
+
+**`--traj-params` is what makes any of these comparable.** Degraded streams are built from the
+model it names and handed to every scoring arm, so a kernelled and an unkernelled model are graded
+on byte-identical injections. Without it each arm builds its own streams from its own params and
+the comparison silently becomes two different datasets — the same failure mode
+[`llm.md`](llm.md) guards against by building injections once per source. Point it at the
+unkernelled baseline and vary only `--joint-params` / the kernel flags.
+
+Note `--with-pair` moves the headline number by construction, since the scorecard ORs its channels:
+a run with it on is not comparable to one without, in either direction.
+
 ### Read accuracy, not F1
 
 The pool is 1 healthy : 5 degraded and a stray is charged independently of a hit, so **flagging
@@ -429,11 +454,38 @@ scorecard shows can be localised to a stage instead of guessed at. All are read-
 | `tools_oracle_recipe.py` | how much recall is lost to the MAP recipe being re-inferred from the degraded stream, by re-scoring with $\hat r$ pinned to the healthy decode's value |
 | `tools_duration_power.py` | re-scores every healthy segment at 1 tick (abandonment) and $2\times$ (repetition) against its own fitted NB — what $s_{\text{dur two}}$ can deliver at the current duration spread. It predicts **that one channel**, not the error type: $s_{\text{temporal}}$ is not modelled here and carries most of repetition |
 | `tools_alarm_load.py` | how many alarms are actually raised behind each false positive `trial_loc` charges, and what fraction of all alarms land in range |
+| `tools_embed_vocab.py` | (setup, not diagnostic) one embedding vector per vocab token → `embeddings.npz`; prints each token's nearest neighbours as the sanity gate that decides whether a channel's embedding space is usable at all |
+| `tools_kernel_gradation.py` | per state, what does the emission charge for the modal token, its nearest neighbour, and a no-evidence token? Shows both that the baseline's near/far gap is 0.00 nats and what smoothing the gap open costs on healthy observations |
+| `tools_severity_ranking.py` | the paired test the kernel actually rests on: one segment, two degraded copies differing only in the replacement noun, scored for whether $s_{\text{noun}}(\text{far}) > s_{\text{noun}}(\text{near})$. Rank accuracy, 0.5 = chance = no gradation |
 
 `run_step_sweep.py` (the step-layer analogue of `run_threshold_sweep.py`) and `make_dev_split.py`
 (a nested fit/dev split for selecting regularisation without touching the outer test split) are
 the two runners the §7 protocol needs.
 
+Three more sit around the $\alpha$ sweep of §6, and the split between them is the useful part:
+
+| Script | Question |
+|---|---|
+| `render_threshold_sweep_by_channel.py` | each channel's own `trial_loc` metrics across the $\alpha$ grid, scored **alone** rather than unioned — do channels have different enough natural operating points to justify per-channel thresholds at all? |
+| `run_threshold_sweep_coordinate.py` (+ `render_threshold_sweep_coordinate.py`) | the complement: the **union's** metrics as one channel's $\alpha$ varies with the other six held at `DEFAULT_ALPHA` — a coordinate descent, since what ships is the union |
+| `run_threshold_test_tuned.py` | scores **one fixed** $\alpha$ configuration on the held-out test split. No sweep, no search: the tuned values are constants chosen on train by a prior run |
+
+`run_threshold_test_tuned.py` is the confirmation step the §7 protocol implies and is worth using
+by name rather than by hand — it exists so that "the gain we found on train survives on test" is a
+run with nothing in it that can look at test outcomes to pick anything. The gain it was built to
+check was loosening $s_{\text{dur two}}$ to $5\times10^{-2}$ with everything else at
+`surprise.DEFAULT_ALPHA`.
+
 `tools_launder.py` and `tools_oracle_recipe.py` are the two that most often move a decision:
 the first says whether a channel is failing to fire or never being shown the evidence, and the
 second sizes the recipe-assignment loss, which no threshold change can recover.
+
+The last three belong to the open-vocabulary track ([`hsmm.md`](hsmm.md) §8) and are the reason it
+has a measured verdict rather than an argument. `tools_severity_ranking.py` in particular exists
+because **`run_detect_eval.py`'s scorecard cannot answer the question** it was built to test: the
+scorecard asks "was the injection flagged", and the baseline flags near substitutions about as
+reliably as far ones (recall 0.98) — `water` for `milk` still lands on a cell with no training
+evidence, so it is not a quieter anomaly, merely an equally loud one. What the kernel is meant to
+fix is that the two are indistinguishable in **severity**, which only a paired, ordinal test can
+see. Reach for the right tool: a capability the headline metric cannot express will read as "no
+effect" on the scorecard forever.

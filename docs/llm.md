@@ -12,6 +12,8 @@ and score its answers against the same injected errors the HSMM is scored on.
 | `eval/element_metrics.py` | the step-level metric layer **both** detectors are scored through |
 | `render_llm_compare_png.py` | comparison figures from the report JSON (layout only, no inference) |
 | `render_llm_vs_hsmm_png.py` | one trial, all detectors, at their native resolutions |
+| `render_llm_narrate_png.py` | per-trial narration figures — the analogue of `render_anomaly_png.py` |
+| `run_tick_test.sh` | the full test-split sweep at `--unit tick`, one variant per invocation (§7) |
 
 Driven by `run_llm_eval.py`. `eval/metrics.py` and `run_evaluation.py` keep their own tick-level
 path; `evaluate_steps` takes only optional extra arguments, so that path is unaffected by anything
@@ -134,7 +136,8 @@ false alarms against recall along a curve `run_threshold_sweep.py` measures ([`e
 
 ## 1. The unit problem, and the step
 
-The HSMM emits a value on all seven channels at **every tick**. The LLM reads a list of steps and
+The HSMM emits a value on all seven default channels at **every tick** (the eighth,
+$s_{\text{pair}}$, is opt-in and off here — [`anomaly.md`](anomaly.md) §2.6). The LLM reads a list of steps and
 answers **once per step**. Neither can be scored in the other's unit, so both are converted to a
 common one.
 
@@ -801,6 +804,52 @@ python run_llm_eval.py --base-url https://generativelanguage.googleapis.com/v1be
     --model gemini-3.1-flash-lite
 ```
 
+### The tick-unit sweep — `run_tick_test.sh`
+
+A full test-split run at `--unit tick` (§1) is ~18x the requests of a step run, so it gets a
+driver rather than a command line. One prompt variant per invocation:
+
+```bash
+VARIANT=no-recipes ./run_tick_test.sh      # the like-for-like comparison vs the HSMM
+VARIANT=with-recipes ./run_tick_test.sh    # the arm that reads labels.json
+```
+
+Three things about it are deliberate:
+
+- **It is built to survive losing whatever started it.** Launch it detached
+  (`setsid nohup env VARIANT=no-recipes ./run_tick_test.sh > /dev/null 2>&1 < /dev/null &`) and it
+  keeps running with no controlling terminal. Re-running after a crash, a kill or a reboot is
+  always safe and always the right move: every response is cached on
+  `sha256(base_url + model + messages + temperature)`, so a restart replays completed work from
+  disk at no cost and resumes at the first request that never landed. No stage overwrites a
+  finished stage's results.
+- **The two arms are separate invocations into the same `--out`**, which `_write_report` merges —
+  guarded on `POOL_DEFINING_ARGS`, so it refuses to merge arms scored on different pools. That is
+  not tidiness: the HSMM arm wants JAX on the GPU and the LLM arm wants ollama holding 22 GB of
+  weights on the same card, and one process means both are resident at once. Sequencing them keeps
+  each alone with the card.
+- **It sets `PYTHONPATH` explicitly**, as a guard rather than a fix. When several git worktrees
+  share one venv, the editable install resolves to whichever checkout last synced it — and if that
+  is a checkout without the tick unit, a bare `import cook_ad` dies on the first
+  `elements_from_trajectory(..., unit=)` call. Pinning `PYTHONPATH` to this checkout's `src` makes
+  the run correct regardless of which worktree owns the editable pointer.
+
+  If the pointer *is* wrong, re-sync from the checkout you want — **with the extras**:
+
+  ```bash
+  uv sync --extra dev --extra gpu
+  ```
+
+  A bare `uv sync` installs only the base dependency group, which here means uninstalling 46
+  packages including `jax-cuda12-plugin` and the CUDA runtime. JAX then falls back to CPU without
+  announcing it, and every fit in this repo silently gets ~an order of magnitude slower. Check
+  before and after with `uv sync --extra dev --extra gpu --check` (a dry run) and
+  `python -c "import jax; print(jax.default_backend())"`. `uv pip install -e .` is the
+  pip-compatibility path and would be overwritten by the next sync, so it is not the fix either.
+
+  The durable fix is a `.venv` per worktree, which is uv's default anyway. Note the same guard is
+  what `./py` applies to every other runner.
+
 ### Which HSMM, and which checkpoint
 
 The **joint** model is the default (`--cascade` switches back), on
@@ -851,7 +900,15 @@ cycle in the objective, not an unfinished fit.
 ### Figures
 
 `run_llm_eval.py` writes per-arm figures as it goes. `render_llm_compare_png.py` then reads only
-the report JSON and draws the HSMM against the LLM:
+the report JSON and draws the HSMM against the LLM. `render_llm_narrate_png.py` is the per-trial
+view — one trial, the ground-truth window, what each detector flagged, and the text it produced.
+It makes no requests: every reply is read back out of the response cache, so it can be re-run and
+restyled for free.
+
+```bash
+python render_llm_narrate_png.py --error-type substitution
+```
+
 
 ```bash
 python render_llm_compare_png.py --report dataset/processed/breakfast/llm_full_report.json
