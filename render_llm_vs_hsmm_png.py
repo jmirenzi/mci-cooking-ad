@@ -1,13 +1,33 @@
 """One trial, all three detectors, in render_anomaly_png.py's layout.
 
 Rows: what actually happened, what the detector was fed, then one row per detector -- the HSMM's
-flagged ticks and narrated queries, and each LLM prompt variant's per-step verdicts. Cards below
-carry each detector's own words.
+flagged ticks and narrated queries, and each LLM prompt variant's verdicts. Cards below carry each
+detector's own words. Everything an LLM row shows is read from the response cache -- no requests.
 
-The two are not natively comparable and the figure says so rather than hiding it: the HSMM emits a
-value every TICK, the LLM answers once per STEP, so the HSMM row is drawn at tick resolution and
-the LLM rows at step resolution over the same time axis. Everything an LLM row shows is read from
-the response cache -- no requests.
+TWO DISPLAY MODES for the LLM lanes, selected by `--unit` / `plot(..., unit=)`:
+
+  unit="step" (default, unchanged): the LLM answered once per llm/textify STEP (a run-length-
+    encoded action), so its lane is drawn as a line spanning the step's full duration with a
+    triangle at the end -- there is no shorter unit to mark. This is what every figure under
+    figures_conv100/ and similar step-unit directories was built with, and it still is: nothing
+    about this mode changed.
+
+  unit="tick": the LLM answered once per SECOND (llm/textify.ticks_from_ids), the same resolution
+    the HSMM's channels emit at, so both lanes can finally share ONE time scale -- which is the
+    whole reason this mode exists. Its lane borrows the HSMM lane's own visual grammar rather than
+    stretching the step-mode line-and-triangle over 1-tick spans: a small unlabeled triangle for
+    every flagged tick (HSMM's baseline marker), and one BIGGER numbered triangle per maximal RUN
+    of consecutive same-verdict ticks (HSMM's narrated-query marker), carded once per run rather
+    than once per tick. That collapse is necessary, not cosmetic: at the tick unit the LLM can
+    flag a third of a trial (measured on the repetition condition), and numbering every one of
+    those ticks -- which is what the step-mode code does, correctly, for the ~7 steps/trial it was
+    built for -- would produce hundreds of overlapping numbers and a card list nobody would read.
+
+Loading tick-unit data for a REAL run (rather than the first --max-real rows of sequences.json)
+needs the same split file, joint-params fit, and --base-url the run itself used, because the
+response cache is keyed on exactly that: cook_ad.llm.client.ChatClient._cache_key hashes
+(base_url, model, temperature, messages). Pass --split-file/--split-part to reproduce
+run_llm_eval.py's real-trial pool bit for bit; get the base_url wrong and every lookup misses.
 """
 import argparse
 import json
@@ -85,6 +105,38 @@ def _fig_width(t_max, cards):
     return float(max(from_ticks, from_cards))
 
 
+def _llm_tick_runs(verdicts, gt_steps, debris):
+    """RLE over consecutive flagged ticks that share a kind (hit / false_alarm / debris) -- the
+    tick-unit analogue of a llm/textify Step, and what makes a tick-unit LLM lane readable.
+
+    Kind is computed exactly as the draw loop below computes it per verdict (v.step_index in
+    gt_steps -> hit, in debris -> debris, else false_alarm); a run breaks whenever the kind
+    changes, a tick is unflagged, or the next flagged tick isn't adjacent to the last one.
+
+    Returns a list of dicts: start, end (inclusive tick indices), kind, verdicts (the run's own
+    Verdict objects, in order) -- everything the card text and the numbered marker need, without
+    recomputing kind twice.
+    """
+    gt_steps = set(gt_steps)
+    runs = []
+    for v in verdicts:
+        if not v.is_anomaly:
+            continue
+        if v.step_index in gt_steps:
+            kind = "hit"
+        elif v.step_index in debris:
+            kind = "debris"
+        else:
+            kind = "false_alarm"
+        if runs and runs[-1]["kind"] == kind and v.step_index == runs[-1]["end"] + 1:
+            runs[-1]["end"] = v.step_index
+            runs[-1]["verdicts"].append(v)
+        else:
+            runs.append({"start": v.step_index, "end": v.step_index, "kind": kind,
+                        "verdicts": [v]})
+    return runs
+
+
 def _letter(i):
     """0->A, 25->Z, 26->AA."""
     out = ""
@@ -128,9 +180,12 @@ def _bar(ax, y, steps, color, letters, min_label_ticks, height=0.52, fontsize=8.
                 color="white" if inside else "#333", fontweight="bold", zorder=3)
 
 
-def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path):
+def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path, unit="step"):
     """hsmm: ({tick: strength_ratio}, queries)
     llm_arms: [(label, steps, verdicts, gt_steps, debris_steps), ...]
+    unit: "step" (default, unchanged rendering) or "tick" -- see the module docstring for what
+    changes. `steps` inside each llm_arms tuple must already be at this unit (llm/textify's
+    steps_from_* vs ticks_from_*); this function does not re-derive it.
 
     `debris_steps` (textify.injection_touched_steps) are steps the injection itself created or
     reshaped but which are not the ground-truth anomaly -- element_metrics excludes them from
@@ -158,7 +213,26 @@ def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path):
     # injected window already says.
     k = len(hsmm[1])
     card_no = {}
+    # unit="tick" only: computed once here, reused by the draw loop below so kind/numbering agree.
+    tick_runs = {}
     for lab, steps, verdicts, gt_steps, debris in llm_arms:
+        if unit == "tick":
+            runs = _llm_tick_runs(verdicts, gt_steps, debris)
+            tick_runs[lab] = runs
+            for run in runs:
+                k += 1
+                card_no[(lab, run["start"])] = k
+                st = steps[run["start"]]
+                span = run["end"] - run["start"] + 1
+                mark = {"hit": "HIT", "debris": "DEBRIS (excluded, not scored)",
+                        "false_alarm": "FALSE ALARM"}[run["kind"]]
+                extent = (f"tick {run['start'] + 1}" if span == 1 else
+                          f"ticks {run['start'] + 1}-{run['end'] + 1} ({span}s)")
+                cards.append(f"{k}. [{lab}]  {extent}  ({st.verb} {st.noun})  {mark}")
+                more = f"   (+{span - 1} more tick{'s' if span > 2 else ''}, same verdict)" \
+                    if span > 1 else ""
+                cards.append("     " + run["verdicts"][0].raw.strip().replace("\n", " ") + more)
+            continue
         for v in verdicts:
             if not v.is_anomaly:
                 continue
@@ -266,7 +340,10 @@ def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path):
         ax.plot([q["tick"]], [yh], marker="v", ls="none", ms=12,
                 markeredgecolor="#333", markeredgewidth=0.7,
                 color=_strength_color(q["tick"], q["severity"]), zorder=4)
-        ax.text(q["tick"] + t_max * 0.010, yh, str(i), ha="left", va="center", fontsize=7,
+        # Above the marker, not beside it: at tick resolution flagged markers can sit only 1-2
+        # ticks apart, and a label offset sideways runs straight into the next one. Centering it
+        # vertically over the marker's apex uses space no neighboring tick is competing for.
+        ax.text(q["tick"], yh + LANE_H * 0.32, str(i), ha="center", va="bottom", fontsize=7,
                 fontweight="bold", zorder=5,
                 bbox=dict(boxstyle="square,pad=0.08", fc="white", ec="none", alpha=0.85))
 
@@ -279,6 +356,38 @@ def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path):
         y = lane_ys[li]
         ax.add_patch(Rectangle((0, y - LANE_H / 2), t_max, LANE_H, facecolor="white", alpha=0.4,
                                edgecolor="#cfcfcf", lw=0.5, zorder=2))
+
+        if unit == "tick":
+            # Small unlabeled triangle per flagged tick -- the same marker weight as the HSMM
+            # lane's baseline ms=5 (scatter's `s` is area, so s=20 ~= a 5pt-diameter marker: the
+            # two lanes read as one visual family at their common resolution).
+            for v in verdicts:
+                if not v.is_anomaly:
+                    continue
+                if v.step_index in gt_steps:
+                    kind = "hit"
+                elif v.step_index in debris:
+                    kind = "debris"
+                else:
+                    kind = "false_alarm"
+                ax.scatter([v.step_index], [y], marker="v", s=20, edgecolors=LLM_EDGE,
+                          linewidths=0.5, zorder=3, **LLM_STYLE[kind])
+            # One bigger numbered triangle per RUN (s=110, matching the HSMM lane's ms=12 query
+            # marker) -- the tick-unit analogue of "this is the flag that got narrated": a
+            # bounded, meaningful highlight instead of one per tick.
+            for run in tick_runs[lab]:
+                ax.scatter([run["start"]], [y], marker="v", s=110, edgecolors="#333",
+                          linewidths=0.8, zorder=4, **LLM_STYLE[run["kind"]])
+                num = card_no.get((lab, run["start"]))
+                if num is None:
+                    continue
+                # Above the marker, not beside it -- see the matching HSMM comment above; a run's
+                # start can sit 1-2 ticks from the previous run's, and a sideways label collides.
+                ax.text(run["start"], y + LANE_H * 0.32, str(num), ha="center", va="bottom",
+                        fontsize=7, fontweight="bold", zorder=5,
+                        bbox=dict(boxstyle="square,pad=0.08", fc="white", ec="none", alpha=0.85))
+            continue
+
         for v in verdicts:
             if not v.is_anomaly:
                 continue
@@ -395,7 +504,26 @@ def main():
     ap.add_argument("--vocab", default="dataset/processed/breakfast/vocab.json")
     ap.add_argument("--cache-dir", default="dataset/processed/breakfast/llm_cache")
     ap.add_argument("--model", default="gemma3:27b")
-    ap.add_argument("--protocol", default="conversational")
+    ap.add_argument("--base-url", default="http://localhost:11434/v1",
+                    help="must match what the run being rendered actually used -- it is part of "
+                         "the response cache key, so the wrong port makes every lookup miss")
+    ap.add_argument("--protocol", default="conversational",
+                    help="must match the run being rendered (e.g. 'incremental' for a tick run)")
+    ap.add_argument("--unit", choices=("step", "tick"), default="step",
+                    help="'step': original behaviour, LLM lane drawn as a line spanning each "
+                         "step. 'tick': LLM answered once per second -- lane drawn in the HSMM "
+                         "lane's own marker language, sharing its time scale. See module "
+                         "docstring")
+    ap.add_argument("--variant", choices=("no-recipes", "with-recipes", "both"), default="both")
+    ap.add_argument("--split-file", default=None,
+                    help="a split.json from split_dataset.py. When given, the trial pool is the "
+                         "REAL run_llm_eval.py pool for --split-part (filtered, then capped at "
+                         "--max-real) instead of the first --max-real rows of --sequences -- use "
+                         "this to render a real test-split run rather than a synthetic sample")
+    ap.add_argument("--split-part", choices=("train", "test"), default=None)
+    ap.add_argument("--chunk-size", type=int, default=16,
+                    help="batched-inference chunk size for the --split-file real-trial path "
+                         "(run_llm_eval.py's own default)")
     ap.add_argument("--max-real", type=int, default=100)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--max-steps", type=int, default=0,
@@ -420,6 +548,7 @@ def main():
     jax.config.update("jax_enable_x64", True)
     from cook_ad.anomaly import narrate
     from cook_ad.data.config import load_config
+    from cook_ad.data import split as split_mod
     from cook_ad.eval import metrics
     from cook_ad.hsmm import joint_params
     from cook_ad.llm import client as llm_client
@@ -427,15 +556,30 @@ def main():
     from cook_ad.synthetic import error_injection, generate
     import run_llm_eval as R
 
+    if args.split_file and not args.split_part:
+        ap.error("--split-part is required when --split-file is given")
+
     d_max = load_config(args.config)["duration"]["d_max_ticks"]
     vocab = json.load(open(args.vocab))
     labels = json.load(open(args.labels))
     jp = joint_params.load_params(args.joint_params)
     marg = joint_params.collapse_to_marginal(jp)
     lex = narrate.Lexicon(vocab, marg)
-    seqs = json.load(open(args.sequences))[: args.max_real]
-    traj = [generate.trajectory_from_real_joint(jp, s["verb_ids"], s["noun_ids"], d_max)
-            for s in seqs]
+    seqs = json.load(open(args.sequences))
+    if args.split_file:
+        # Same order run_llm_eval.py's real-source path uses: filter to the split part FIRST,
+        # cap at --max-real second. Reversing that order picks a different set of trials than
+        # the run actually scored.
+        split = split_mod.load_split(args.split_file)
+        seqs = split_mod.filter_sequences(seqs, split, args.split_part)
+    seqs = seqs[: args.max_real]
+    if args.split_file:
+        # Batched, matching run_llm_eval.py exactly (a per-trial loop recompiles the recipe and
+        # Viterbi kernels once per distinct trial length).
+        traj = generate.trajectories_from_real_joint(jp, seqs, d_max, chunk_size=args.chunk_size)
+    else:
+        traj = [generate.trajectory_from_real_joint(jp, s["verb_ids"], s["noun_ids"], d_max)
+                for s in seqs]
     pool = R.build_pool(traj, np.random.default_rng(args.seed), marg)
     # build_pool drops trajectories under MIN_SEGMENTS, so pool position != sequence position.
     src = R.usable_indices(traj)
@@ -446,14 +590,16 @@ def main():
     # injections and they would no longer match the cached LLM replies.
     rng_fig = np.random.default_rng(args.random_seed)
 
+    all_variants = (("no-recipes", "gemma3 (no recipes)"), ("with-recipes", "gemma3 (+ recipes)"))
+    wanted = all_variants if args.variant == "both" else \
+        tuple(vl for vl in all_variants if vl[0] == args.variant)
     clients = {}
-    for variant, lab in (("no-recipes", "gemma3 (no recipes)"),
-                         ("with-recipes", "gemma3 (+ recipes)")):
+    for variant, lab in wanted:
         clients[lab] = (llm_client.ChatClient(
-            model=args.model, base_url="http://localhost:11434/v1",
+            model=args.model, base_url=args.base_url,
             cache_dir=Path(args.cache_dir) / args.model.replace("/", "_"),
             rpm=0, concurrency=1, max_requests=0),
-            prompts.build_variant(variant, vocab, labels, args.protocol))
+            prompts.build_variant(variant, vocab, labels, args.protocol, args.unit))
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -462,14 +608,15 @@ def main():
         shortlist = []
         for idx, (traj_i, degraded) in enumerate(pool):
             deg = degraded[error_type]
-            steps, gt, _, debris = R.steps_and_truth(traj_i, deg, lex)
+            steps, gt, _, debris = R.steps_and_truth(traj_i, deg, lex, args.unit)
             if not gt or (args.max_steps and len(steps) > args.max_steps):
                 continue
             arms, ok = [], True
             for lab, (client, sysp) in clients.items():
                 try:
                     arms.append((lab, steps, detect.run_trial(client, sysp, steps, vocab,
-                                                              args.protocol), set(gt), debris))
+                                                              args.protocol, args.unit),
+                                set(gt), debris))
                 except Exception:
                     ok = False
                     break
@@ -540,9 +687,10 @@ def main():
             title = (f"{error_type} [{tag}] -- {trial_id} ({len(v_ids)} ticks, "
                      f"recipe {true_recipe}; HSMM inferred r={int(r_hat)} "
                      f"conf={float(rho[r_hat]):.2f})  |  "
-                     f"HSMM (tick-level) vs gemma3:27b conversational (step-level)")
+                     f"HSMM (tick-level) vs gemma3:27b {args.protocol} ({args.unit}-level)")
             p = out / f"combined_narrate_{error_type}{suffix}.png"
-            plot(unaltered, fed, deg["window"], (strength, queries), arms, title, p)
+            plot(unaltered, fed, deg["window"], (strength, queries), arms, title, p,
+                unit=args.unit)
             det, nout, _ = _hsmm_score(strength, queries, deg["window"],
                                        metrics.DEFAULT_LATENCY_TOL)
             print(f"  {error_type} [{tag}]: {trial_id} "

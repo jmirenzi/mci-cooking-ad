@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Full test-split evaluation at the TICK unit, with-recipes LLM arm only.
+# Full test-split evaluation at the TICK unit, one LLM prompt variant per invocation.
+#
+#     VARIANT=with-recipes ./run_tick_test.sh     # the arm that reads labels.json
+#     VARIANT=no-recipes   ./run_tick_test.sh     # the like-for-like comparison vs the HSMM
 #
 # Built to survive losing whatever started it. Launch detached:
 #
-#     setsid nohup ./run_tick_test.sh > /dev/null 2>&1 < /dev/null &
+#     setsid nohup env VARIANT=no-recipes ./run_tick_test.sh > /dev/null 2>&1 < /dev/null &
 #
 # and it keeps running with no controlling terminal. Re-running it after a crash, a kill, or a
 # reboot is always safe and always the right move: every LLM response is cached on
@@ -19,6 +22,19 @@
 set -u
 
 cd "$(dirname "$0")" || exit 1
+
+# The venv's editable install points at .claude/worktrees/vocab-embeddings-scoping-5c04e4/src,
+# not at this checkout, so a bare `import cook_ad` from here resolves to a STALE copy that has no
+# tick unit at all. Without this the run dies on the first elements_from_trajectory(..., unit=)
+# call. Fix the install properly with `uv pip install -e .` when the other worktree is done with
+# the shared venv; until then this makes the run correct regardless.
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+
+VARIANT="${VARIANT:-with-recipes}"
+case "$VARIANT" in
+    with-recipes|no-recipes) ;;
+    *) echo "VARIANT must be with-recipes or no-recipes, got '$VARIANT'" >&2; exit 2 ;;
+esac
 
 PY=.venv/bin/python
 BASE_URL=http://localhost:11435/v1
@@ -64,8 +80,8 @@ while [ "$(running_evals)" != "0" ]; do
     sleep 60
 done
 
-log "=== tick-unit test-split evaluation, with-recipes LLM arm ==="
-log "out=$OUT  model=$MODEL  base_url=$BASE_URL"
+log "=== tick-unit test-split evaluation, $VARIANT LLM arm ==="
+log "out=$OUT  model=$MODEL  base_url=$BASE_URL  variant=$VARIANT"
 
 # ------------------------------------------------------------------------------------------
 # 1. HSMM arm (JAX). Runs first and exits, so the card is free before the LLM arm starts.
@@ -76,7 +92,10 @@ try:
     r = json.load(open(sys.argv[1]))["reports"]
 except Exception:
     sys.exit(1)
-sys.exit(0 if any(k.endswith("/hsmm-joint") and not v.get("incomplete")
+# Any HSMM arm counts, including one whose key carries per-channel alphas
+# (real/hsmm-joint@s_temporal=1e-05). An exact-suffix match would miss those and recompute the
+# arm on every invocation.
+sys.exit(0 if any("/hsmm-" in k and not v.get("incomplete")
                   for k, v in r.items()) else 1)
 EOF
 then
@@ -128,10 +147,10 @@ done
 #     against a served 8192, which fits but is not comfortable. Refuse to start if it does not.
 # ------------------------------------------------------------------------------------------
 log "preflight: measuring the longest request against the server"
-$PY - "$BASE_URL" "$MODEL" <<'EOF' >> "$LOG" 2>&1
+$PY - "$BASE_URL" "$MODEL" "$VARIANT" <<'EOF' >> "$LOG" 2>&1
 import json, sys, urllib.request
 from cook_ad.llm import prompts, textify, detect     # deliberately no JAX import here
-base_url, model = sys.argv[1], sys.argv[2]
+base_url, model, variant = sys.argv[1], sys.argv[2], sys.argv[3]
 vocab = json.load(open('dataset/processed/breakfast/vocab.json'))
 labels = json.load(open('dataset/processed/breakfast/labels.json'))
 
@@ -146,7 +165,7 @@ seqs = {t['trial_id']: t for t in json.load(open('dataset/processed/breakfast/se
 test = json.load(open('dataset/processed/breakfast/split.json'))['test_trial_ids']
 longest = max((seqs[i] for i in test if i in seqs), key=lambda t: len(t['verb_ids']))
 ticks = textify.ticks_from_ids(longest['verb_ids'], longest['noun_ids'], Lex(vocab))
-system = prompts.build_variant('with-recipes', vocab, labels, 'incremental', 'tick')
+system = prompts.build_variant(variant, vocab, labels, 'incremental', 'tick')
 messages = detect.incremental_messages(system, ticks, 'tick')[-1]
 
 body = json.dumps({"model": model, "messages": messages,
@@ -158,7 +177,7 @@ used = json.load(urllib.request.urlopen(req, timeout=900))["usage"]["prompt_toke
 
 ps = json.load(urllib.request.urlopen(base_url.rsplit('/v1', 1)[0] + "/api/ps", timeout=60))
 served = next((m["context_length"] for m in ps.get("models", []) if m["name"] == model), 0)
-print(f"preflight: longest request {used} tokens over {len(ticks)} ticks; "
+print(f"preflight [{variant}]: longest request {used} tokens over {len(ticks)} ticks; "
       f"served context {served}; headroom {served - used}")
 if served - used < 256:
     print("preflight FAILED: raise OLLAMA_CONTEXT_LENGTH; prompts would be truncated from the "
@@ -169,19 +188,40 @@ rc=$?
 tail -2 "$LOG"
 [ $rc -ne 0 ] && { log "ABORT: preflight failed"; exit 1; }
 
+# Re-pin the model. The preflight goes through /v1/chat/completions, which carries no keep_alive
+# field, so ollama applies its 5-minute default and silently overrides the 24h set at load time --
+# which is exactly how the model came to be unloaded between two runs here. Requests during the
+# sweep keep it warm on their own; this covers the gap before the first one lands.
+curl -s "${BASE_URL%/v1}/api/generate" \
+     -d "{\"model\":\"$MODEL\",\"prompt\":\"hi\",\"keep_alive\":\"24h\",\"stream\":false}" > /dev/null
+log "model re-pinned at keep_alive=24h"
+
 # ------------------------------------------------------------------------------------------
 # 3. LLM arm, with-recipes. Retried on failure because the cache makes a retry nearly free: a
 #    run that died at request 40,000 replays those 40,000 from disk in minutes and continues.
 # ------------------------------------------------------------------------------------------
-for attempt in $(seq 1 $MAX_LLM_ATTEMPTS); do
-    log "stage 2 (LLM with-recipes): attempt $attempt/$MAX_LLM_ATTEMPTS"
-    $PY run_llm_eval.py "${COMMON[@]}" --skip-hsmm --variant with-recipes >> "$LOG" 2>&1
-    rc=$?
-    log "stage 2 (LLM with-recipes): exit $rc"
-    [ $rc -eq 0 ] && break
-    [ $attempt -eq $MAX_LLM_ATTEMPTS ] && { log "ABORT: LLM arm failed $MAX_LLM_ATTEMPTS times"; exit 1; }
-    log "retrying in 60s (completed requests replay from cache)"
-    sleep 60
-done
+if $PY - "$OUT" "$VARIANT" <<'EOF'
+import json, sys
+try:
+    r = json.load(open(sys.argv[1]))["reports"]
+except Exception:
+    sys.exit(1)
+sys.exit(0 if any(k.endswith("/llm-" + sys.argv[2]) and not v.get("incomplete")
+                  for k, v in r.items()) else 1)
+EOF
+then
+    log "stage 2 (LLM $VARIANT): already complete in $OUT, nothing to do"
+else
+    for attempt in $(seq 1 $MAX_LLM_ATTEMPTS); do
+        log "stage 2 (LLM $VARIANT): attempt $attempt/$MAX_LLM_ATTEMPTS"
+        $PY run_llm_eval.py "${COMMON[@]}" --skip-hsmm --variant "$VARIANT" >> "$LOG" 2>&1
+        rc=$?
+        log "stage 2 (LLM $VARIANT): exit $rc"
+        [ $rc -eq 0 ] && break
+        [ $attempt -eq $MAX_LLM_ATTEMPTS ] && { log "ABORT: LLM arm failed $MAX_LLM_ATTEMPTS times"; exit 1; }
+        log "retrying in 60s (completed requests replay from cache)"
+        sleep 60
+    done
+fi
 
 log "=== done. report: $OUT  figures: $FIGS/ ==="
