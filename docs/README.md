@@ -23,7 +23,7 @@ the design constraint the rest of the architecture serves.
 | [`recipe.md`](recipe.md) | `src/cook_ad/recipe/` | Viterbi segmentation, the cascade's stage-2 recipe HMM, the joint warm start |
 | [`anomaly.md`](anomaly.md) | `src/cook_ad/anomaly/` | the eight surprise channels, quantile calibration, narration |
 | [`lifecycle.md`](lifecycle.md) | `src/cook_ad/lifecycle/` | frozen/live dual model, bounded preference updates, drift reports |
-| [`eval.md`](eval.md) | `src/cook_ad/eval/` | batched trace computation, precision/recall/latency metrics, figures |
+| [`eval.md`](eval.md) | `src/cook_ad/eval/` | batched trace computation, precision/recall/latency metrics, span-existence scoring, figures |
 | [`synthetic.md`](synthetic.md) | `src/cook_ad/synthetic/` | ancestral sampling and the five canonical injected errors |
 | [`llm.md`](llm.md) | `src/cook_ad/llm/`, `eval/element_metrics.py` | the LLM comparison baseline and the step-level metrics that make it comparable |
 

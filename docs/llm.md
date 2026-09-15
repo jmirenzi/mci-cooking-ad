@@ -462,6 +462,130 @@ An out-of-vocabulary correction is dropped (the type is still kept), for the rea
 
 ---
 
+## 3b. `predictive` — arm 3, PREGO-style
+
+The two arms above ask for a **verdict** and read the anomaly decision straight out of the reply.
+This one asks the model to **predict** and moves the decision into deterministic comparison code
+(`llm/predict.py`). The architecture matches PREGO; the factorization matches the HSMM's own
+$P(Z'\mid Z)$ and $P(d\mid Z)$.
+
+**Why it exists.** PREGO has no duration model, and a duration model is this project's stated
+differentiator. A baseline that cannot predict durations *assumes* that differentiator rather than
+testing it, so this arm is given both halves and the two are scored as independent channels.
+
+### The request
+
+One request per **step boundary**, issued once the current step's `(verb, noun)` is observed —
+whatever unit the run is scored in. Prefix-only, no self-feedback, one system turn and one user
+turn, so the requests stay independent and concurrently issuable.
+
+```
+system: <predictive preprompt + vocab (+ recipes) + few-shot exemplars>
+user:   1. stall kitchen for 3 seconds
+        2. take cup for 10 seconds
+        3. pour coffee for 12 seconds
+        4. pour milk for 27 seconds
+        5. stall kitchen (in progress)      <- predict from here
+```
+
+**The step being asked about is shown without its duration.** `render_step` would print
+`stall kitchen for 4 seconds` and hand the model the answer to the very question. The consequence
+is stated rather than assumed away: request *i*'s text is **not** a strict prefix of request
+*i+1*'s, because line *i* changes from `(in progress)` to a completed step. The shared prefix is
+everything through line *i−1*, so prefix reuse is (n−1)/n rather than perfect — inherent to asking
+about a step before it ends.
+
+Two labelled lines back, parsed **independently** so a malformed line degrades one channel and not
+both, with per-line failure rates reported separately under `predictive`:
+
+```
+DURATION: <N> seconds
+NEXT: <verb> <noun>
+```
+
+`DURATION` applies to the step in progress; `NEXT` to the step after it. Surface tolerances mirror
+§3's (`19`, `19 seconds`, `19s`, `19 secs`, `for 19 seconds`, `(19s)`), for the same reason: being
+strict about a format slip measures obedience, not prediction. Temperature **0.6**, `max_tokens`
+**48**. Both are in the response-cache key — `max_tokens` conditionally, so the ~30k responses
+collected before the field existed keep their keys — so this arm namespaces itself for free.
+
+**Few-shot.** Three complete healthy trials from the **train** split, drawn with a fixed seed and
+placed in the *system* turn, so the whole system block stays one constant shared prefix and no
+demonstration is of a trial the arm is later scored on.
+
+### The two channels
+
+Both emit tick indices and feed `eval/span_metrics.py` unchanged.
+
+**Symbol.** At boundary *i* ≥ 1, flag if the observed `(verb, noun)` differs from the `NEXT`
+returned at boundary *i−1*. Cannot fire at *i* = 0 — no prior prediction exists. Flagged at the
+first tick of step *i*.
+
+**Duration, two-sided.** No LLM call; the tick loop is arithmetic. Tolerance is
+`element_metrics.duration_tolerance(predicted)` — the same `max(2, 0.5·d)` rule
+`correction_accuracy` uses, keyed off the prediction because that is the only reference available
+at flag time.
+
+* *over-run (live)* — at each tick while the step runs, flag the **first** tick where elapsed
+  exceeds the prediction by tolerance, then suppress until the next boundary.
+* *under-run (retrospective)* — at the boundary that closes step *i*, flag if its observed length
+  fell short by the same tolerance.
+
+**The under-run side is not in the PREGO formulation and is here deliberately.** Over-run alone can
+never catch an abandonment: that injector makes a step *short*, and the step following a truncated
+segment is the *correct* next symbol, so the symbol channel is silent too. An arm with only the
+upper tail would report ~0 abandonment recall as a property of the metric rather than of the model
+— exactly the confusion this arm exists to remove. It mirrors the HSMM's own
+$s_{\text{dur short}}$ / $s_{\text{dur long}}$ split, and `span_metrics`' *deadline* (rather than
+window) matching rule exists to keep retrospective channels admissible.
+
+The two channels are independent **by construction**: the duration channel conditions on the
+*observed* symbol of the step it is timing, so a substitution cannot leak into the temporal channel
+and corrupt per-type attribution.
+
+### Structured for K-sampling, not sampling yet
+
+Written so `n=K` needs no interface change: the client call returns a **list** of parsed
+predictions (length 1 today); each channel reduces that list to `(point estimate, score)` — element
+0 and a boolean cast to 0/1 today; and flags carry a float `strength`, thresholded at 0.5. Under
+`n=K` the symbol score becomes $1 - \hat P(\text{observed})$ and the duration score an empirical
+tail probability, which makes the arm threshold-sweepable and removes the current asymmetry where
+only the HSMM has a sweep.
+
+### Cost
+
+`len(steps)` requests per trial — ~6.5 against the verdict arms' ~121 at `--unit tick`. Run it at
+`--unit tick` anyway: `--unit` is pool-defining, so a step-unit run would trip `_write_report`'s
+guard and **overwrite** the arms it is meant to be compared against. The arm key is
+`{source}/llm-predictive-{variant}`, distinct from `{source}/llm-{variant}`, so it merges
+alongside them.
+
+```bash
+PROTOCOL=predictive VARIANT=no-recipes ./run_tick_test.sh
+```
+
+### Smoke-test behaviour (4 trials — not a measurement)
+
+Mechanically sound on real `gemma3:27b` output: 170 boundaries, `DURATION` parse failure 0.000,
+`NEXT` 0.059. On the four **healthy** trials, per boundary:
+
+| | rate |
+|---|---|
+| symbol disagreement | 0.680 |
+| duration over-run | 0.621 |
+| duration under-run | 0.172 |
+
+So the arm's near-total flag rate is **genuine detector behaviour, not an indexing bug**: the model
+names the exact next `(verb, noun)` about a third of the time over 15 verbs × 36 nouns in a corpus
+where some recipes show 50 distinct orders in 52 trials, and it systematically under-predicts step
+lengths. Read against §2's note that with-recipes rigidity varies enormously by dish. **Caveat for
+the with-recipes variant of this arm specifically**: `recipe_block` prints each step's median
+duration, so that preprompt now supplies duration *priors* as well as ordering — the very quantity
+the duration channel is being tested on. Compare its duration numbers to the no-recipes arm, not
+to the HSMM.
+
+---
+
 ## 4. Request budget — the binding constraint
 
 This evaluation is **request-bound, not token-bound**. At ~7 steps/trial, a 6-condition sweep
@@ -540,6 +664,12 @@ one line instead of several minutes in.
 ---
 
 ## 5. `eval/element_metrics.py` — scoring both detectors identically
+
+> **Now one of three layers.** `eval/span_metrics.py` ([`eval.md`](eval.md) §7b) scores the same
+> arms by **span existence** instead of per element, which removes the flag-density and
+> span-width effects this layer still carries. It sits alongside; nothing here changed, and every
+> number below still describes the detector it always did. Each arm's report carries both, under
+> `trial_located`/`step_level` and under `spans`.
 
 ### The HSMM adapter
 

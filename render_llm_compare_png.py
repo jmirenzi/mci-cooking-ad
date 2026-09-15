@@ -53,6 +53,11 @@ def _label(reports, key):
     model = r.get("client", {}).get("model", "llm")
     variant = r.get("prompt_variant", "")
     tag = {"no-recipes": "no recipes", "with-recipes": "+ recipes"}.get(variant, variant)
+    # The predictive arm shares a prompt_variant with the verdict arm of the same name, so without
+    # the protocol both lands in the legend as `gemma3:27b (no recipes)` and one figure carries two
+    # identically-labelled lines.
+    if r.get("protocol") == "predictive":
+        tag = f"predictive, {tag}" if tag else "predictive"
     return f"{model} ({tag})" if tag else model
 
 

@@ -47,6 +47,17 @@ DEFAULT_TOL = {"step": DEFAULT_STEP_TOL, "tick": DEFAULT_TICK_TOL}
 DURATION_TOL_FRAC = 0.5
 DURATION_TOL_MIN = 2
 
+
+def duration_tolerance(reference):
+    """How far a duration may miss `reference` and still count as right.
+
+    Extracted so llm/predict.py's duration channel and _correction_matches below share one
+    constant rather than two copies that can drift. The predictive arm keys it off its own
+    PREDICTED duration (that is the only reference it has at flag time); _correction_matches keys
+    it off the ground-truth one. Same rule, different reference.
+    """
+    return max(DURATION_TOL_MIN, DURATION_TOL_FRAC * reference)
+
 # Which anomaly type each surprise channel is evidence for. This is the HSMM's answer to the
 # question the LLM answers in words, and it is deliberately many-to-one: omission, transposition
 # and repetition ALL land on s_transition, because the cascade genuinely cannot separate them
@@ -356,7 +367,7 @@ def _correction_matches(predicted, truth):
     if predicted is None or truth is None:
         return None, None
     verb_noun_ok = (predicted[0], predicted[1]) == (truth[0], truth[1])
-    tol = max(DURATION_TOL_MIN, DURATION_TOL_FRAC * truth[2])
+    tol = duration_tolerance(truth[2])
     duration_ok = abs(predicted[2] - truth[2]) <= tol
     return verb_noun_ok, duration_ok
 

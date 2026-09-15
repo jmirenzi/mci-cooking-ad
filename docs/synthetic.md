@@ -73,10 +73,13 @@ These are the canonical failure modes of a person with MCI following a familiar 
 injector returns
 
 ```python
-{"verb_ids", "noun_ids", "window": (t0, t1), "error_type", "tick_map", "edited_ticks"}
+{"verb_ids", "noun_ids", "window": (t0, t1), "anomaly_ticks", "spans",
+ "error_type", "tick_map", "edited_ticks"}
 ```
 
-where `window` is the ground-truth extent used by `eval.metrics.score_trial`, and the last two
+where `window` is the ground-truth extent used by `eval.metrics.score_trial`, `anomaly_ticks` is
+the sparse set of ticks that are *actually* anomalous (used by `eval.element_metrics`), `spans` is
+the same ground truth as closed tick intervals for `eval.span_metrics` (§2.1b), and the last two
 fields record *what the injector actually changed* (§2.1). Substitution adds three more —
 `channel` (`"verb"` or `"noun"`), `orig_id` and `new_id` — so a caller can partition its
 injections afterwards, e.g. separating genuine near substitutions (`milk` → `water`) from
@@ -153,6 +156,34 @@ Two consumers depend on this:
 
 The schema change is additive, matching the precedent of `sample_trajectory_joint` adding
 `recipe_id`: consumers reading only `verb_ids`/`noun_ids`/`window` are unaffected.
+
+### 2.1b `spans` — ground truth for existence matching
+
+A third shape of the same ground truth, for `eval/span_metrics.py` ([`eval.md`](eval.md) §7b): a
+list of **closed, inclusive** `(t0, t1)` tick intervals in degraded tick space, one per segment the
+injection **moved or altered**. `window`, `anomaly_ticks`, `tick_map` and `edited_ticks` are
+untouched by it, so the tick and element layers read exactly what they always did.
+
+| Injector | `spans` | why not `window` |
+|---|---|---|
+| **substitution** | the retagged segment, in full | identical to `window` |
+| **repetition** | the inserted copy, in full | identical to `window` |
+| **abandonment** | the onset tick alone | identical to `window` |
+| **omission** | the segment now **following** the gap, in full | `window` is a single boundary tick; the omitted step contributes no ticks of its own, so the only thing to point at is its replacement, and that segment's end is not recoverable from the record |
+| **transposition** | **two** spans, `[a_start, a_start+d_B-1]` and `[a_start+d_B, a_start+d_A+d_B-1]` | `window` covers both swapped runs as one interval, which would let a single flag anywhere in ~49 ticks claim both moved segments |
+
+Only omission and transposition pass `spans` explicitly; the other three default to `[window]`.
+
+Two deliberate exclusions:
+
+- **Abandonment is the onset tick, not "onset through the end of the trial".** This injector
+  truncates *one* interior segment and the trial continues normally afterwards, so a span running
+  to the end would cover most of it and make abandonment recall nearly free — while blowing up the
+  median-width column the metric exists to expose. The 10-tick detection deadline is what admits a
+  retrospective channel here instead.
+- **Downstream propagation is not labelled.** After `A B D C E` the `E` onset is unexpected as a
+  consequence of the swap, but labelling it would make span width grow with how far the disturbance
+  travels, and widths would stop being comparable across error types.
 
 ### 2.2 The near substitution — `select="near"`
 

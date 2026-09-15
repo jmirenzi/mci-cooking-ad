@@ -29,7 +29,8 @@ def _seg_bounds(segments):
     return bounds
 
 
-def _result(verb_ids, noun_ids, t0, t1, error_type, tick_map, edited_ticks=(), points=None):
+def _result(verb_ids, noun_ids, t0, t1, error_type, tick_map, edited_ticks=(), points=None,
+            spans=None):
     """`tick_map[i]` is the original-trial tick that degraded tick `i` came from -- the same
     concatenation each injector below already applies to its own verb_ids/noun_ids, applied
     instead to np.arange(T). `edited_ticks` lists degraded indices whose CONTENT differs from
@@ -64,16 +65,38 @@ def _result(verb_ids, noun_ids, t0, t1, error_type, tick_map, edited_ticks=(), p
     is neither right nor wrong.
 
     Defaults to the whole window, which is the pre-existing behaviour and the correct one for
-    substitution."""
+    substitution.
+
+    `spans` -- closed, inclusive (t0, t1) tick intervals in DEGRADED tick space, one per segment
+    the injection moved or altered. A THIRD shape of ground truth, for eval/span_metrics.py, which
+    matches by existence rather than by tick: there, a 12-tick substitution flagged once at onset
+    and one flagged on all 12 ticks are the same detection, so the unit a detector emits never
+    enters the recall denominator. Points and window are untouched by this and the two older
+    layers read exactly what they always did.
+
+    Spans are deliberately NOT the union of everything the injection made unexpected. After
+    A B D C E the E onset is unexpected as a consequence of the swap, but labelling it would make
+    span width grow with how far the disturbance propagates, and widths would stop being
+    comparable across error types -- which is the one asymmetry the span layer exists to control
+    for. Only the segments the injector itself moved or altered are labelled.
+
+    Defaults to [(t0, t1)] -- the window -- which is already the correct span for substitution
+    (the retagged segment), repetition (the inserted copy) and abandonment (the onset tick). Only
+    omission and transposition pass it explicitly: omission's window is a single boundary tick and
+    the span is the whole segment that now follows the gap, and transposition's window covers both
+    swapped runs as one interval where the span layer wants them as TWO spans."""
     t0, t1 = int(t0), int(t1)
     if points is None:
         points = range(t0, t1 + 1)
+    if spans is None:
+        spans = [(t0, t1)]
     return {
         "verb_ids": np.asarray(verb_ids, dtype=np.int64),
         "noun_ids": np.asarray(noun_ids, dtype=np.int64),
         "window": (t0, t1),
         "anomaly_ticks": np.asarray(sorted({int(p) for p in points}), dtype=np.int64),
         "error_type": error_type,
+        "spans": [(int(a), int(b)) for a, b in spans],
         "tick_map": np.asarray(tick_map, dtype=np.int64),
         "edited_ticks": np.asarray(list(edited_ticks), dtype=np.int64),
     }
@@ -212,7 +235,13 @@ def inject_omission(traj, rng, select="random"):
     verb_ids = np.delete(verb_ids, np.arange(start, end))
     noun_ids = np.delete(noun_ids, np.arange(start, end))
     tick_map = np.concatenate([np.arange(0, start), np.arange(end, T)])
-    return _result(verb_ids, noun_ids, start, start, "omission", tick_map)  # boundary now at `start`
+    # The span is the SUCCESSOR segment in full: the omitted step contributes no ticks of its own,
+    # so the only thing there is to point at is the step that now runs in its place. It begins at
+    # `start` in degraded space (the deleted ticks are gone) and keeps its own duration. The
+    # interior pick guarantees a successor exists; guarded anyway.
+    d_next = bounds[i + 1][3] if i + 1 < len(bounds) else 1
+    return _result(verb_ids, noun_ids, start, start, "omission", tick_map,  # boundary now at `start`
+                   spans=[(start, start + d_next - 1)])
 
 
 def inject_transposition(traj, rng, select="random"):
@@ -249,8 +278,13 @@ def inject_transposition(traj, rng, select="random"):
     # follows, which _pick_segment's interior range guarantees -- guarded anyway so a corpus
     # whose last segment ever became eligible cannot index past the end.
     junctions = [a_start, a_start + db, a_start + da + db - 1]
+    # Two spans, one per moved segment -- B in its new early position, then A. The window covers
+    # both as a single interval, which is right for debris but wrong for the span layer: these are
+    # two segments the injection moved, and collapsing them into one interval would let a single
+    # flag anywhere in ~49 ticks claim both.
+    spans = [(a_start, a_start + db - 1), (a_start + db, a_start + da + db - 1)]
     return _result(verb_ids, noun_ids, a_start, a_start + da + db - 1, "transposition", tick_map,
-                   points=junctions)
+                   points=junctions, spans=spans)
 
 
 def inject_repetition(traj, rng, select="random"):

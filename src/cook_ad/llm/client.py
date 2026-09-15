@@ -196,11 +196,18 @@ class ChatClient:
                  api_key_env=DEFAULT_API_KEY_ENV, cache_dir=None, rpm=None,
                  max_requests=None, temperature=0.0, timeout=DEFAULT_TIMEOUT,
                  max_retries=DEFAULT_MAX_RETRIES, dry_run=False, extra_headers=None,
-                 concurrency=None):
+                 concurrency=None, max_tokens=None, dry_run_reply="No Anomaly"):
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_key_env = api_key_env
         self.temperature = temperature
+        # Sent, and keyed on, ONLY when set. The ~30k responses already collected were requested
+        # without a max_tokens field, so folding a None into either the body or the cache key
+        # would orphan every one of them.
+        self.max_tokens = max_tokens
+        # What dry_run returns instead of calling out. Overridable because "No Anomaly" is a valid
+        # reply under the verdict protocols and a double parse failure under the predictive one.
+        self.dry_run_reply = dry_run_reply
         self.timeout = timeout
         self.max_retries = max_retries
         self.dry_run = dry_run
@@ -252,12 +259,13 @@ class ChatClient:
     # cache namespace, so every response has to be paid for again, and results already collected
     # under the old model are NOT comparable to the new one. Finish a variant before switching.
     def _cache_key(self, messages):
-        payload = json.dumps(
-            {"base_url": self.base_url, "model": self.model, "temperature": self.temperature,
-             "messages": messages},
-            sort_keys=True,
-        )
-        return hashlib.sha256(payload.encode()).hexdigest()
+        payload = {"base_url": self.base_url, "model": self.model,
+                   "temperature": self.temperature, "messages": messages}
+        # Added CONDITIONALLY, so a client that sends no max_tokens produces byte-identical
+        # payloads to every client that existed before this parameter did.
+        if self.max_tokens is not None:
+            payload["max_tokens"] = self.max_tokens
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
     def _cache_path(self, key):
         return self.cache_dir / f"{key}.json" if self.cache_dir else None
@@ -288,11 +296,14 @@ class ChatClient:
     # ---- the call -----------------------------------------------------------------------
 
     def _post(self, messages):
-        body = json.dumps({
+        payload = {
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
-        }).encode()
+        }
+        if self.max_tokens is not None:
+            payload["max_tokens"] = self.max_tokens
+        body = json.dumps(payload).encode()
         headers = {
             "Authorization": f"Bearer {self._api_key()}",
             "Content-Type": "application/json",
@@ -371,7 +382,7 @@ class ChatClient:
                 f"work already done is not repeated."
             )
         if self.dry_run:
-            return "No Anomaly"
+            return self.dry_run_reply
 
         content = self._post(messages)
         with self._lock:

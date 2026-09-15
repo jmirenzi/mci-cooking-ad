@@ -121,6 +121,110 @@ def test_injection_tick_map_round_trips(error_type):
         assert edited == set()
 
 
+# ---- ground-truth SPANS (eval/span_metrics.py) ----------------------------------------------
+
+# How many spans each injector produces. Transposition moves two segments and so labels two;
+# everything else labels one. Abandonment's is the single onset tick and NOT "onset through the
+# end of the trial": that injector truncates ONE interior segment and the trial continues
+# normally afterwards, so a span running to the end would cover most of the trial and make its
+# recall nearly free.
+EXPECTED_N_SPANS = {"substitution": 1, "abandonment": 1, "omission": 1,
+                    "transposition": 2, "repetition": 1}
+
+
+@pytest.mark.parametrize("error_type", error_injection.ERROR_TYPES)
+def test_every_injector_emits_well_formed_spans(error_type):
+    p = _peaked_params()
+    rng = np.random.default_rng(7)
+    traj = generate.sample_trajectory(p, rng, max_ticks=150, d_max=D_MAX)
+    deg = error_injection.inject(error_type, traj, rng, p)
+    t_degraded = len(deg["verb_ids"])
+
+    spans = deg["spans"]
+    assert len(spans) == EXPECTED_N_SPANS[error_type]
+    for t0, t1 in spans:
+        assert 0 <= t0 <= t1 < t_degraded, f"{error_type} span {(t0, t1)} outside [0, {t_degraded})"
+
+
+@pytest.mark.parametrize("error_type", error_injection.ERROR_TYPES)
+def test_spans_do_not_disturb_the_two_older_ground_truth_layers(error_type):
+    """The span key is purely additive. The tick layer reads `window`, the element layer reads
+    `anomaly_ticks`, and both must be exactly what they were before spans existed."""
+    p = _peaked_params()
+    traj = generate.sample_trajectory(p, np.random.default_rng(8), max_ticks=150, d_max=D_MAX)
+
+    a = error_injection.inject(error_type, traj, np.random.default_rng(9), p)
+    b = error_injection.inject(error_type, traj, np.random.default_rng(9), p)
+    assert a["window"] == b["window"]
+    assert np.array_equal(a["anomaly_ticks"], b["anomaly_ticks"])
+    assert np.array_equal(a["tick_map"], b["tick_map"])
+    assert np.array_equal(a["edited_ticks"], b["edited_ticks"])
+    # and the window is still the disturbed EXTENT, which for the three structural injectors is
+    # not the same object as the points -- the distinction spans are a third alternative to
+    assert set(a["anomaly_ticks"].tolist()) <= set(
+        range(int(a["window"][0]), int(a["window"][1]) + 1))
+
+
+def test_substitution_span_is_the_whole_retagged_segment():
+    p = _peaked_params()
+    traj = generate.sample_trajectory(p, np.random.default_rng(10), max_ticks=150, d_max=D_MAX)
+    deg = error_injection.inject_substitution(traj, np.random.default_rng(11), p)
+    # For substitution alone, span == window == the anomalous points: every tick of a segment
+    # done with the wrong object is wrong.
+    assert deg["spans"] == [(int(deg["window"][0]), int(deg["window"][1]))]
+    assert deg["spans"][0] == (int(deg["anomaly_ticks"][0]), int(deg["anomaly_ticks"][-1]))
+
+
+def test_transposition_spans_are_the_two_moved_segments_not_one_interval():
+    """The window covers both swapped runs as a single interval. Collapsing them into one span
+    would let a single flag anywhere in ~49 ticks claim both moved segments."""
+    p = _peaked_params()
+    traj = generate.sample_trajectory(p, np.random.default_rng(12), max_ticks=200, d_max=D_MAX)
+    deg = error_injection.inject_transposition(traj, np.random.default_rng(13))
+    (a0, a1), (b0, b1) = deg["spans"]
+    assert b0 == a1 + 1                       # adjacent, no gap
+    assert (a0, b1) == tuple(int(x) for x in deg["window"])   # together they tile the window
+    # each junction the element layer uses falls inside one of the two spans
+    for t in deg["anomaly_ticks"].tolist():
+        assert a0 <= t <= b1
+
+
+def test_omission_span_is_the_successor_segment_not_the_single_boundary_tick():
+    """The omitted step contributes no ticks of its own, so the only thing to point at is the
+    step that now runs in its place -- in full, so its width is comparable to the others'."""
+    p = _peaked_params()
+    traj = generate.sample_trajectory(p, np.random.default_rng(14), max_ticks=200, d_max=D_MAX)
+    deg = error_injection.inject_omission(traj, np.random.default_rng(15))
+    (t0, t1), = deg["spans"]
+    assert t0 == int(deg["window"][0])        # begins at the new boundary
+    assert t1 >= t0                           # and runs for the successor's own duration
+    # the successor really is constant over the span: it is one segment, not several
+    assert len(set(deg["verb_ids"][t0:t1 + 1].tolist())) == 1
+    assert len(set(deg["noun_ids"][t0:t1 + 1].tolist())) == 1
+
+
+def test_abandonment_span_is_the_onset_tick_alone():
+    p = _peaked_params()
+    traj = generate.sample_trajectory(p, np.random.default_rng(16), max_ticks=200, d_max=D_MAX)
+    deg = error_injection.inject_abandonment(traj, np.random.default_rng(17))
+    (t0, t1), = deg["spans"]
+    assert t0 == t1
+    # emphatically NOT through the end of the trial
+    assert t1 < len(deg["verb_ids"]) - 1
+
+
+def test_repetition_span_is_the_inserted_copy():
+    p = _peaked_params()
+    traj = generate.sample_trajectory(p, np.random.default_rng(18), max_ticks=200, d_max=D_MAX)
+    deg = error_injection.inject_repetition(traj, np.random.default_rng(19))
+    (t0, t1), = deg["spans"]
+    assert (t0, t1) == tuple(int(x) for x in deg["window"])
+    # the copy is adjacent-identical to its original, which is why it merges into one RLE step
+    d = t1 - t0 + 1
+    assert np.array_equal(deg["verb_ids"][t0:t1 + 1], deg["verb_ids"][t0 - d:t0])
+    assert np.array_equal(deg["noun_ids"][t0:t1 + 1], deg["noun_ids"][t0 - d:t0])
+
+
 def test_injection_raises_when_too_few_segments():
     tiny = {"verb_ids": np.zeros(3, np.int64), "noun_ids": np.zeros(3, np.int64),
             "segments": [(0, 3)], "subtask_per_tick": np.zeros(3, np.int64)}

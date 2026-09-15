@@ -441,6 +441,123 @@ than through one shared $\alpha$.
 
 ---
 
+## 7b. `span_metrics.py` — scoring by existence instead of by tick
+
+A **third** metric layer, added alongside the tick layer (§2) and the element layer
+(`docs/llm.md` §5). Neither of those changed, so every number published above still describes the
+detector it always did.
+
+### The defect it removes
+
+Per-tick recall measures flag **density**, not detection ability. A 12-tick substitution flagged
+once at its onset scores 1/12; the same span flagged on all 12 ticks scores 12/12, and is not
+twelve times better. Worse, span widths differ by roughly an order of magnitude across the five
+injectors, so any tick-*summing* metric penalises the narrow types structurally, before the
+detector does anything. Measured on 20 test trials, the median span width per type:
+
+| type | median span width (ticks) |
+|---|---|
+| substitution | 13.5 |
+| omission | 13.5 |
+| transposition | 14.5 |
+| repetition | 15.0 |
+| **abandonment** | **1.0** |
+
+Here a span is either found or it is not. The unit a detector happens to emit — a tick, an RLE
+step, a decoded subtask — never enters the recall denominator, so an oscillating observation
+stream cannot change recall.
+
+### Ground truth
+
+A span is a closed tick interval plus the error type that produced it, one per segment the
+injection **moved or altered**, carried on the injection record as `degraded["spans"]`
+(`synthetic/error_injection._result`). Both arms therefore score byte-identical ground truth, the
+same invariant `run_llm_eval.build_pool` already enforces for the trials themselves.
+
+| injector | span | note |
+|---|---|---|
+| substitution | the altered segment, in full | equals `window` and `anomaly_ticks` |
+| transposition | **two** spans, one per moved segment | `window` covers both as one interval; splitting them stops a single flag claiming both |
+| repetition | the inserted copy, in full | equals `window` |
+| omission | the segment immediately **following** the gap, in full | the omitted step contributes no ticks of its own; its end is not derivable from `window`, which is why the record carries spans explicitly |
+| abandonment | the onset tick alone | **not** "through the end of the trial" — `inject_abandonment` truncates one interior segment and the trial continues, so a span running to the end would cover most of it and make recall nearly free |
+
+Downstream propagation is **excluded**. After `A B D C E` the `E` onset is unexpected as a
+consequence of the swap, but labelling it would make span width grow with how far the disturbance
+travels, and widths would stop being comparable across types — the one asymmetry this layer exists
+to control for.
+
+### Flags, merging, matching
+
+Every detector output becomes a sorted list of tick indices first. HSMM channel flags use the tick
+itself; an LLM step verdict uses the **first tick of the element it judges**; the predictive arm's
+duration flags use the tick at which elapsed time crossed the predicted duration.
+
+Flags are then **merged**: any run separated by no more than `MERGE_TOL` (5 ticks) collapses to a
+single alarm, represented by its **earliest** member — earliest rather than median, so latency
+survives. This stops an oscillating region being charged four false positives where a clean region
+is charged one, the same reasoning as NAB penalising clustered false positives less than dispersed
+ones. Merging applies to **false-positive counting only**; the healthy-trial rate is binary per
+trial and therefore already immune.
+
+A flag satisfies a span when `span_start <= tick <= span_end + DEADLINE`, with `DEADLINE` = 10
+ticks (matching `element_metrics.DEFAULT_TICK_TOL`). This is a **deadline, not a window**: the span
+already covers every tick the injection touched, so it governs only lateness. It exists so
+structurally retrospective channels stay admissible — an abandonment is visible only once the step
+closes, and the predictive arm's under-run check fires exactly there.
+
+Counting:
+
+* **TP** — a span with at least one satisfying flag. At most one per span.
+* **FN** — a span with no satisfying flag.
+* **FP** — a *merged* flag satisfying no span. Counted individually.
+* **TN** — not computed and not reported. Undefined under existence matching.
+
+Extra flags inside a satisfied span are neither additional TPs nor FPs; they are recorded as a
+diagnostic and never scored. **No point adjustment, in any form.** Scoring is never on decoded
+subtask assignments: the LLM arm has no access to the latent state, so a $z^\*$ grid would be
+defined by one detector's own decoding and the cascade's residual segmentation error would
+silently become the other arm's scoring error.
+
+### What is reported
+
+* **Primary** — precision / recall / F1 pooled over spans, plus per type: recall, span count and
+  median span width. The width column is what lets a reader see the asymmetry being controlled for.
+* **Deployability** — healthy-trial false-positive rate: the fraction of control trials with any
+  flag at all, on **unmerged** flags. Never folded into F1. It is a different claim on a different
+  denominator, and pooling it in would put the same constant into every type's precision — the
+  self-deception `precision_excl_healthy` exists to avoid in §2.
+* **Latency** — span start to first satisfying flag, hits only, median and p90. The one place tick
+  resolution genuinely matters, and where the predictive arm's duration channel earns its place.
+* **Noise diagnostic** — merged and raw false-positive counts side by side. The gap measures how
+  much of the alarm load is observation oscillation rather than detector behaviour.
+
+### The precondition, measured
+
+`tools_run_lengths.py` is the check that justifies leaving `MERGE_TOL` at 5. Run it first. On the
+Breakfast test split (101 trials, 661 RLE steps):
+
+```
+run length: median 11 ticks  mean 18.5  p10 3  p90 40  max 228
+fraction of runs <= 2 ticks: 0.0938 (62/661)
+```
+
+Median 6 steps/trial at a median 11 ticks, and **no spike at 1–2 ticks** — 9.4%, spread smoothly
+rather than piled at the bottom. Oscillation is therefore not a property of this corpus, and the
+merge tolerance needs no tuning here. Revisit on EPIC-Kitchens, whose 0.5 s ticks halve every run
+length and whose annotation is far denser.
+
+### Reading it against the older layers
+
+On the same 20 test trials the joint HSMM scores `trial_located` recall 0.450 / F1 0.556 and span
+recall 0.450 / F1 0.574 — close in aggregate, and *not* for a boring reason. Transposition splits:
+0.650 at trial level against 0.475 on spans, because the trial-level rule credits finding either
+half of a swap while the span layer labels both moved segments and asks for each. The same run
+records 54 true positives against **591 extra in-span flags** — the flag-density mass that
+per-tick recall was counting and this layer does not.
+
+---
+
 ## 8. Single-question diagnostics — `tools_*.py`
 
 Each answers one question about a fitted model with no thresholds or sweeps in it, so a loss the

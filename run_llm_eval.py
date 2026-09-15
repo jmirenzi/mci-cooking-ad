@@ -37,10 +37,10 @@ import numpy as np
 from cook_ad.anomaly import narrate, surprise
 from cook_ad.data.config import load_config
 from cook_ad.data import split as split_mod
-from cook_ad.eval import batch, element_metrics, plotting
+from cook_ad.eval import batch, element_metrics, plotting, span_metrics
 from cook_ad.hsmm import joint_params, params
 from cook_ad.llm import client as llm_client
-from cook_ad.llm import detect, prompts, textify
+from cook_ad.llm import detect, predict, prompts, textify
 from cook_ad.recipe import recipe_hmm
 from cook_ad.synthetic import error_injection, generate
 
@@ -148,6 +148,40 @@ def steps_and_truth(traj, degraded, lexicon, unit="step"):
     return steps, gt_steps, correction, debris
 
 
+def spans_by_type(pool):
+    """{error_type: [spans_for_one_trial, ...]} in pool order -- the span layer's ground truth.
+
+    Read straight off the injection records, so every arm is scored against byte-identical spans
+    for the same reason build_pool exists: ground truth is a property of the pool, not of the
+    detector reading it. See synthetic/error_injection._result for what a span is and why it is
+    not the same object as `window` or `anomaly_ticks`.
+    """
+    return {
+        error_type: [degraded[error_type]["spans"] for _, degraded in pool]
+        for error_type in error_injection.ERROR_TYPES
+    }
+
+
+def empty_stream():
+    """The {healthy, degraded} shape every arm fills in, so score_spans has one input shape."""
+    return {"healthy": [], "degraded": {et: [] for et in error_injection.ERROR_TYPES}}
+
+
+def score_spans(stream, spans, merge_tol=span_metrics.MERGE_TOL):
+    """One arm's tick-flag stream + the pool's spans -> the span-existence report.
+
+    `merge_tol=0` disables merging (identical ticks from two channels still collapse, which is
+    deduplication rather than merging). Worth running: merging was insurance against an
+    oscillating observation stream, and tools_run_lengths.py measures no such spike on Breakfast,
+    while merging demonstrably distorts the comparison in two directions -- see docs/eval.md 7b.
+    """
+    return span_metrics.evaluate_spans(
+        stream["healthy"],
+        {et: list(zip(stream["degraded"][et], spans[et])) for et in spans},
+        merge_tol=merge_tol,
+    )
+
+
 # --------------------------------------------------------------------------------------------
 # the HSMM arm
 # --------------------------------------------------------------------------------------------
@@ -202,7 +236,13 @@ def _hsmm_flags(trials, model, chunk_size, alpha=surprise.DEFAULT_ALPHA, channel
 
 def hsmm_arm(pool, model, lexicon, chunk_size, alpha=surprise.DEFAULT_ALPHA,
              unit="step", tol=None, channel_alpha=None):
-    """Score the HSMM through the step layer on the shared pool."""
+    """Score the HSMM through the step layer on the shared pool.
+
+    Returns `(report, stream)`. The stream is the arm's raw TICK flags, which the step layer
+    collapses to one verdict per element and therefore throws away; eval/span_metrics.py needs
+    them ungrouped, and re-deriving them from the verdicts would silently pass the step layer's
+    collapse on to a layer whose whole purpose is not to have one.
+    """
     healthy = [t for t, _ in pool]
     healthy_flags, healthy_traces = _hsmm_flags(healthy, model, chunk_size, alpha, channel_alpha)
     healthy_verdicts = [
@@ -211,6 +251,9 @@ def hsmm_arm(pool, model, lexicon, chunk_size, alpha=surprise.DEFAULT_ALPHA,
         )
         for f, trace, t in zip(healthy_flags, healthy_traces, healthy)
     ]
+    stream = empty_stream()
+    stream["healthy"] = [span_metrics.flags_from_channels(f, element_metrics.ALL_CHANNELS)
+                         for f in healthy_flags]
 
     degraded_by_type = {}
     artifact_steps = {}
@@ -227,14 +270,17 @@ def hsmm_arm(pool, model, lexicon, chunk_size, alpha=surprise.DEFAULT_ALPHA,
             )
             rows.append((verdicts, gt_steps, correction))
             debris_rows.append(debris)
+            stream["degraded"][error_type].append(
+                span_metrics.flags_from_channels(f, element_metrics.ALL_CHANNELS))
         degraded_by_type[error_type] = rows
         artifact_steps[error_type] = debris_rows
         print(f"  [hsmm/{model['kind']}] {error_type}: {len(rows)} degraded trials", flush=True)
 
-    return element_metrics.evaluate_steps(
+    report = element_metrics.evaluate_steps(
         healthy_verdicts, degraded_by_type, artifact_steps=artifact_steps, unit=unit,
         tol_steps=element_metrics.DEFAULT_TOL[unit] if tol is None else tol,
     )
+    return report, stream
 
 
 # --------------------------------------------------------------------------------------------
@@ -242,11 +288,19 @@ def hsmm_arm(pool, model, lexicon, chunk_size, alpha=surprise.DEFAULT_ALPHA,
 # --------------------------------------------------------------------------------------------
 
 def llm_arm(pool, lexicon, client, system_prompt, vocab, protocol, tag, unit="step", tol=None):
+    """The two verdict arms. Returns `(report, stream)` -- see hsmm_arm.
+
+    A step verdict becomes a flag at the FIRST TICK of the element it judges, which is the moment
+    the model was answering about. At unit='tick' that is the identity.
+    """
     healthy_verdicts = []
+    stream = empty_stream()
     for traj, _ in pool:
         steps = textify.elements_from_trajectory(traj, lexicon, unit)
-        verdicts = detect.run_trial(client, system_prompt, steps, vocab, protocol, unit)
-        healthy_verdicts.append(element_metrics.from_llm_verdicts(verdicts))
+        verdicts = element_metrics.from_llm_verdicts(
+            detect.run_trial(client, system_prompt, steps, vocab, protocol, unit))
+        healthy_verdicts.append(verdicts)
+        stream["healthy"].append(span_metrics.flags_from_verdicts(verdicts, steps))
     print(f"  [{tag}] healthy: {len(healthy_verdicts)} trials "
           f"({client.n_would_request} uncached requests so far)", flush=True)
 
@@ -258,18 +312,87 @@ def llm_arm(pool, lexicon, client, system_prompt, vocab, protocol, tag, unit="st
         for traj, degraded in pool:
             steps, gt_steps, correction, debris = steps_and_truth(
                 traj, degraded[error_type], lexicon, unit)
-            verdicts = detect.run_trial(client, system_prompt, steps, vocab, protocol, unit)
-            rows.append((element_metrics.from_llm_verdicts(verdicts), gt_steps, correction))
+            verdicts = element_metrics.from_llm_verdicts(
+                detect.run_trial(client, system_prompt, steps, vocab, protocol, unit))
+            rows.append((verdicts, gt_steps, correction))
             debris_rows.append(debris)
+            stream["degraded"][error_type].append(
+                span_metrics.flags_from_verdicts(verdicts, steps))
         degraded_by_type[error_type] = rows
         artifact_steps[error_type] = debris_rows
         print(f"  [{tag}] {error_type}: {len(rows)} degraded trials "
               f"({client.n_would_request} uncached requests so far)", flush=True)
 
-    return element_metrics.evaluate_steps(
+    report = element_metrics.evaluate_steps(
         healthy_verdicts, degraded_by_type, artifact_steps=artifact_steps, unit=unit,
         tol_steps=element_metrics.DEFAULT_TOL[unit] if tol is None else tol,
     )
+    return report, stream
+
+
+# --------------------------------------------------------------------------------------------
+# the predictive arm (arm 3)
+# --------------------------------------------------------------------------------------------
+
+def predictive_arm(pool, lexicon, client, system_prompt, vocab, tag, unit="step", tol=None):
+    """The PREGO-style arm: the model predicts, llm/predict.py decides. Returns (report, stream).
+
+    Runs at STEP BOUNDARIES whatever `unit` the report is scored in -- a prediction is something
+    you make once per step, not once per tick -- and emits TICK-indexed flags, which is what the
+    span layer wants natively. `unit` is still honoured for the step-layer verdicts, so this arm
+    appears in the same tables as the other three: the flags are mapped onto whichever elements
+    the run is scored on.
+
+    Per-line parse failures are counted here and reported under `predictive` rather than folded
+    into evaluate_steps' parse_failure_rate; see predict.verdicts_from_flags for why.
+    """
+    stream = empty_stream()
+    healthy_verdicts = []
+    n_boundaries = n_dur_fail = n_next_fail = 0
+
+    def _run(traj_like, elements_unit):
+        nonlocal n_boundaries, n_dur_fail, n_next_fail
+        steps = textify.steps_from_trajectory(traj_like, lexicon)
+        flags, st = predict.run_predictive(client, system_prompt, steps, vocab)
+        n_boundaries += st["n_boundaries"]
+        n_dur_fail += st["duration_parse_failures"]
+        n_next_fail += st["next_parse_failures"]
+        return flags, predict.verdicts_from_flags(flags, elements_unit)
+
+    for traj, _ in pool:
+        elements = textify.elements_from_trajectory(traj, lexicon, unit)
+        flags, verdicts = _run(traj, elements)
+        healthy_verdicts.append(verdicts)
+        stream["healthy"].append(flags)
+    print(f"  [{tag}] healthy: {len(healthy_verdicts)} trials "
+          f"({client.n_would_request} uncached requests so far)", flush=True)
+
+    degraded_by_type = {}
+    artifact_steps = {}
+    for error_type in error_injection.ERROR_TYPES:
+        rows, debris_rows = [], []
+        for traj, degraded in pool:
+            steps, gt_steps, correction, debris = steps_and_truth(
+                traj, degraded[error_type], lexicon, unit)
+            flags, verdicts = _run(degraded[error_type], steps)
+            rows.append((verdicts, gt_steps, correction))
+            debris_rows.append(debris)
+            stream["degraded"][error_type].append(flags)
+        degraded_by_type[error_type] = rows
+        artifact_steps[error_type] = debris_rows
+        print(f"  [{tag}] {error_type}: {len(rows)} degraded trials "
+              f"({client.n_would_request} uncached requests so far)", flush=True)
+
+    report = element_metrics.evaluate_steps(
+        healthy_verdicts, degraded_by_type, artifact_steps=artifact_steps, unit=unit,
+        tol_steps=element_metrics.DEFAULT_TOL[unit] if tol is None else tol,
+    )
+    report["predictive"] = {
+        "n_boundaries": n_boundaries,
+        "duration_parse_failure_rate": n_dur_fail / n_boundaries if n_boundaries else 0.0,
+        "next_parse_failure_rate": n_next_fail / n_boundaries if n_boundaries else 0.0,
+    }
+    return report, stream
 
 
 def pool_request_cost(pool, lexicon, protocol, unit="step"):
@@ -282,12 +405,21 @@ def pool_request_cost(pool, lexicon, protocol, unit="step"):
     """
     total = 0
     for traj, degraded in pool:
-        total += detect.request_cost(
-            textify.elements_from_trajectory(traj, lexicon, unit), protocol)
+        # The predictive arm is defined at step boundaries whatever the scoring unit is, so its
+        # cost is counted in steps rather than in `unit` elements -- at --unit tick that is the
+        # difference between ~6.5 and ~121 requests per trial.
+        cost_unit = "step" if protocol == predict.PROTOCOL else unit
+        total += _element_cost(traj, lexicon, protocol, cost_unit)
         for error_type in error_injection.ERROR_TYPES:
-            steps = textify.elements_from_trajectory(degraded[error_type], lexicon, unit)
-            total += detect.request_cost(steps, protocol)
+            total += _element_cost(degraded[error_type], lexicon, protocol, cost_unit)
     return total
+
+
+def _element_cost(traj_like, lexicon, protocol, cost_unit):
+    elements = textify.elements_from_trajectory(traj_like, lexicon, cost_unit)
+    if protocol == predict.PROTOCOL:
+        return predict.request_cost(elements)
+    return detect.request_cost(elements, protocol)
 
 
 # --------------------------------------------------------------------------------------------
@@ -324,7 +456,59 @@ def print_report(report, tag, note=None):
         du = "n/a" if np.isnan(ca["duration_accuracy"]) else f"{ca['duration_accuracy']:.3f}"
         print(f"{error_type:>14}  {m['n']:>4}  {m['recall']:>7.3f}  {m['precision']:>9.3f}  "
               f"{m['precision_excl_healthy']:>13.3f}  {lat:>10}  {top:>15}  {vn:>9}  {du:>9}")
+    pv = report.get("predictive")
+    if pv:
+        print(f"\npredictive: {pv['n_boundaries']} boundaries; per-line parse failures "
+              f"DURATION {pv['duration_parse_failure_rate']:.3f}  "
+              f"NEXT {pv['next_parse_failure_rate']:.3f}")
+    if report.get("spans"):
+        print_span_report(report["spans"])
 
+
+def print_span_report(sp):
+    """The span-existence layer (eval/span_metrics.py). Printed beside the element layer above,
+    never instead of it -- the two answer different questions and both numbers are published."""
+    pooled, fp = sp["pooled"], sp["false_positives"]
+    print(f"\nSPAN-EXISTENCE (merge_tol {sp['merge_tol']}, deadline {sp['deadline']}):")
+    print(f"  pooled: precision {pooled['precision']:.3f}  recall {pooled['recall']:.3f}  "
+          f"F1 {pooled['f1']:.3f}   (tp {pooled['tp']}, fn {pooled['fn']}, fp {pooled['fp']})")
+    lt, h = sp["latency"], sp["healthy"]
+    med = "n/a" if np.isnan(lt["median"]) else f"{lt['median']:.1f}"
+    p90 = "n/a" if np.isnan(lt["p90"]) else f"{lt['p90']:.1f}"
+    print(f"  latency (ticks, hits only): median {med}  p90 {p90}  (n={lt['n']})")
+    print(f"  healthy FP rate: {h['false_positive_rate']:.3f} "
+          f"({h['false_positive_trials']}/{h['n']} control trials flagged, unmerged)")
+    print(f"  false positives: {fp['merged']} merged / {fp['raw']} raw "
+          f"(the gap is observation oscillation, not detector behaviour); "
+          f"{sp['extra_in_span']} extra in-span flags, unscored")
+    print(f"\n  {'error type':>14}  {'spans':>6}  {'recall':>7}  {'med width':>10}  {'med lat':>8}")
+    for etype, m in sp["per_type"].items():
+        w = "n/a" if np.isnan(m["median_span_width"]) else f"{m['median_span_width']:.1f}"
+        la = "n/a" if np.isnan(m["median_latency"]) else f"{m['median_latency']:.1f}"
+        print(f"  {etype:>14}  {m['n_spans']:>6}  {m['recall']:>7.3f}  {w:>10}  {la:>8}")
+
+
+# The predictive arm's client settings. Temperature 0.6 rather than 0.0 because the arm's future
+# is n=K sampling -- the point estimate is element 0 of a list today, and a distribution tomorrow
+# -- and a deterministic decode would make that a different experiment. Both values are in the
+# cache key (max_tokens conditionally, see client._cache_key), so this arm namespaces itself and
+# no already-collected response is invalidated.
+PREDICTIVE_TEMPERATURE = 0.6
+# Two short labelled lines is the entire expected reply. Small enough to be cheap, wide enough
+# that a model which prepends a sentence of chatter still gets both lines out.
+PREDICTIVE_MAX_TOKENS = 48
+# With Auto-CoT demonstrations the model imitates them and reasons before answering, so the cap
+# has to cover a sentence or two plus the two lines. Too tight and a reply is truncated mid-
+# reasoning and never reaches DURATION:/NEXT: -- which the parser scores as a double failure.
+PREDICTIVE_COT_MAX_TOKENS = 256
+RATIONALE_MAX_TOKENS = 200
+
+PREDICTIVE_RECIPES_CAVEAT = (
+    "NOTE: for the PREDICTIVE arm the with-recipes preprompt supplies duration priors as well as\n"
+    "ordering -- recipe_block prints each step's median length -- so this variant is given the\n"
+    "very quantity the duration channel is being tested on. Read its duration-channel numbers\n"
+    "against the no-recipes arm, not as a property of the model."
+)
 
 WITH_RECIPES_CAVEAT = (
     "NOTE: this arm's preprompt is built from labels.json, which is validation-only everywhere\n"
@@ -422,13 +606,40 @@ def main():
 
     parser.add_argument("--source", choices=("synthetic", "real", "both"), default="real")
     parser.add_argument("--variant", choices=(*prompts.VARIANTS, "both"), default="both")
-    parser.add_argument("--protocol", choices=tuple(detect.PROTOCOLS), default="incremental")
+    # `predictive` is not in detect.PROTOCOLS: everything in there returns Verdicts and this one
+    # returns tick flags (llm/predict.py). Listed here so it is still a --protocol choice.
+    parser.add_argument("--protocol", choices=(*detect.PROTOCOLS, predict.PROTOCOL),
+                        default="incremental")
+    parser.add_argument("--shot-select", choices=prompts.SHOT_SELECT, default="random",
+                        help="how the predictive arm's few-shot exemplars are chosen. 'random' is "
+                             "a uniform draw; 'autocot' is Auto-CoT's clustering step (Zhang et "
+                             "al., ICLR 2023) -- k-means over the train split, one representative "
+                             "per cluster -- which buys DIVERSITY. Measured on Breakfast: 3 random "
+                             "trials cover 2 of the 10 recipes, 3 clustered cover 3; at n=10 the "
+                             "split is 5 against all 10")
+    parser.add_argument("--shot-cot", action="store_true",
+                        help="Auto-CoT proper: additionally auto-generate one rationale per "
+                             "exemplar with Zero-Shot-CoT and show prefix -> reasoning -> answer "
+                             "demonstrations. Costs k extra requests ONCE (not per query), but "
+                             "the model then emits reasoning before its two lines, so it needs a "
+                             "bigger token budget and generates more slowly")
+    parser.add_argument("--n-shot", type=int, default=3,
+                        help="few-shot exemplar trials in the predictive arm's system prompt, "
+                             "drawn from the TRAIN split with a fixed seed so the system block "
+                             "stays a constant shared cache prefix. 0 disables them. Ignored by "
+                             "every other protocol")
     parser.add_argument("--unit", choices=textify.UNITS, default="step",
                         help="the element both arms answer about and are scored on. 'step' is one "
                              "run-length-encoded step (~6.5 per trial, the historical default); "
                              "'tick' is one second (~121 per trial), which removes the step "
                              "layer's handicap on the HSMM but costs ~18x the requests and is NOT "
                              "precision-comparable to a step-unit run -- read chance_precision")
+    parser.add_argument("--merge-tol", type=int, default=span_metrics.MERGE_TOL,
+                        help="span layer only: flags this many ticks apart or closer collapse to "
+                             "one alarm for FALSE-POSITIVE counting. 0 disables merging. It is "
+                             "not neutral -- merging rewards a saturated detector (one alarm per "
+                             "trial) and penalises one that emits a single flag per step, so run "
+                             "both before quoting a span F1")
     parser.add_argument("--tol", type=int, default=None,
                         help="detection deadline in elements past the ground-truth window "
                              "(default: 1 step / 10 ticks, element_metrics.DEFAULT_TOL)")
@@ -570,6 +781,41 @@ def main():
                     for s in chosen]
         pools["real"] = build_pool(traj, rng, inject_params)
 
+    # ---- few-shot exemplars (predictive arm only) -----------------------------------------
+    # From the TRAIN split, never from the pool this run scores: a demonstration of a trial the
+    # model is later asked to predict is not a demonstration. Seeded and sorted inside
+    # select_exemplars, so the system prompt is identical on every request of the sweep and the
+    # whole system block stays one shared prefix for the server's cache.
+    exemplars, rationales = [], None
+    if args.protocol == predict.PROTOCOL and args.n_shot > 0:
+        with open(args.sequences) as f:
+            all_sequences = json.load(f)
+        if args.split_file:
+            train = split_mod.filter_sequences(
+                all_sequences, split_mod.load_split(args.split_file), "train")
+        else:
+            train = all_sequences
+        shots = [{"verb_ids": t["verb_ids"], "noun_ids": t["noun_ids"]} for t in train]
+        exemplars = prompts.select_exemplars(shots, lexicon, args.n_shot, args.seed,
+                                             method=args.shot_select, vocab=vocab)
+        print(f"few-shot: {len(exemplars)} exemplar trial(s) ({args.shot_select}) from "
+              f"{'train split' if args.split_file else 'all sequences'} "
+              f"({sum(len(e) for e in exemplars)} steps total)")
+        if args.shot_cot:
+            # k requests, once, before the sweep -- not per query. Its own client so the rationale
+            # generation (long, free-form) does not inherit the arm's tight token cap.
+            rationale_client = llm_client.ChatClient(
+                model=args.model, base_url=args.base_url, api_key_env=args.api_key_env,
+                cache_dir=Path(args.cache_dir) / args.model.replace("/", "_"),
+                rpm=args.rpm, max_requests=None, concurrency=args.concurrency,
+                temperature=0.0, max_tokens=RATIONALE_MAX_TOKENS)
+            rationales = predict.build_rationales(rationale_client, exemplars,
+                                                  prompts.exemplar_boundary)
+            print(f"auto-cot: {len(rationales)} rationale(s) generated "
+                  f"({rationale_client.n_requests} new, {rationale_client.n_cache_hits} cached)")
+            for i, r in enumerate(rationales):
+                print(f"    [{i + 1}] {r[:150]}{'...' if len(r) > 150 else ''}")
+
     # Report cache state before spending anything: the difference between "this costs 400
     # requests" and "this is mostly cached and costs 40" decides whether a run is worth starting.
     # The model id namespaces the cache, so this also makes an accidental --model switch visible
@@ -586,7 +832,8 @@ def main():
 
     for name, pool in pools.items():
         cost = pool_request_cost(pool, lexicon, args.protocol, args.unit)
-        n_variants = 0 if args.skip_llm else (2 if args.variant == "both" else 1)
+        n_variants = 0 if args.skip_llm else (
+            len(prompts.VARIANTS) if args.variant == "both" else 1)
         print(f"\n[{name}] {len(pool)} usable trials; at most {cost} requests per variant, "
               f"{cost * n_variants} for this run ({args.protocol} protocol). Shared prefixes "
               f"between conditions cache, so the real cost runs ~35% lower.")
@@ -602,9 +849,12 @@ def main():
             (len(textify.elements_from_trajectory(t, lexicon, "tick"))
              for pool in pools.values() for t, _ in pool), default=0
         )
-        variant = prompts.VARIANTS[-1] if args.variant == "both" else args.variant
-        sys_words = len(prompts.build_variant(variant, vocab, labels, args.protocol,
-                                              args.unit).split())
+        # The LONGEST system prompt of those that will run, since this is a headroom check.
+        sys_words = max(
+            len(prompts.build_variant(v, vocab, labels, args.protocol, args.unit,
+                                      exemplars=exemplars, rationales=rationales).split())
+            for v in (prompts.VARIANTS if args.variant == "both" else [args.variant])
+        )
         # Calibrated against the served model, not guessed: the with-recipes tick prompt for a
         # 466-tick trial measures 7611 prompt_tokens, of which 1540 is the system block (928
         # words). That is 1.66 tokens/word and 13.0 tokens per rendered line -- twice the 6.5 a
@@ -622,12 +872,20 @@ def main():
         name, pool = next(iter(pools.items()))
         traj, _ = pool[0]
         variant = prompts.VARIANTS[0] if args.variant == "both" else args.variant
-        print(f"\n----- system prompt ({variant}) -----")
-        print(prompts.build_variant(variant, vocab, labels, args.protocol, args.unit))
-        print(f"\n----- first trial as {args.unit}s ({name}) -----")
-        for line in textify.render_trial(
-                textify.elements_from_trajectory(traj, lexicon, args.unit), args.unit):
-            print("   ", line)
+        print(f"\n----- system prompt ({variant}, {args.protocol}) -----")
+        print(prompts.build_variant(variant, vocab, labels, args.protocol, args.unit,
+                                    exemplars=exemplars, rationales=rationales))
+        if args.protocol == predict.PROTOCOL:
+            # The predictive arm asks about a step BEFORE it ends, so its user turn is not the
+            # rendered trial -- show the request it would actually issue.
+            steps = textify.steps_from_trajectory(traj, lexicon)
+            print(f"\n----- first trial, last boundary's user turn ({name}) -----")
+            print(predict.predictive_prefix(steps, len(steps) - 1))
+        else:
+            print(f"\n----- first trial as {args.unit}s ({name}) -----")
+            for line in textify.render_trial(
+                    textify.elements_from_trajectory(traj, lexicon, args.unit), args.unit):
+                print("   ", line)
         print("\ndry run: no requests made.")
         return
 
@@ -638,6 +896,9 @@ def main():
     )
 
     for name, pool in pools.items():
+        # Ground truth for the span layer, read straight off the injection records so every arm
+        # scores byte-identical spans.
+        spans = spans_by_type(pool)
         if not args.skip_hsmm:
             # The arm KEY carries the non-default alphas, so a tuned run lands beside the
             # baseline one in the same report instead of overwriting it -- these are two
@@ -648,30 +909,57 @@ def main():
             arm = f"{name}/hsmm-{model['kind']}{suffix}"
             print(f"\n[{name}] HSMM arm ({model['kind']}) "
                   f"alpha={args.alpha:g} channel_alpha={args.channel_alpha or 'none'}")
-            report = hsmm_arm(pool, model, lexicon, args.chunk_size, args.alpha,
-                              args.unit, args.tol, args.channel_alpha)
+            report, stream = hsmm_arm(pool, model, lexicon, args.chunk_size, args.alpha,
+                                      args.unit, args.tol, args.channel_alpha)
             report["alpha"] = args.alpha
             report["channel_alpha"] = args.channel_alpha
+            report["spans"] = score_spans(stream, spans, args.merge_tol)
             reports[arm] = report
             print_report(report, arm)
             plotting.save_step_figures(report, args.figures_dir,
                                        f"{name}_hsmm_{model['kind']}{suffix}".replace("@", "_"))
 
+        predictive = args.protocol == predict.PROTOCOL
         for variant in variants:
-            tag = f"{name}/llm-{variant}"
-            print(f"\n[{name}] LLM arm ({variant})")
+            # A distinct arm key, so a predictive run merges ALONGSIDE the verdict arms in one
+            # report rather than overwriting them (--protocol is deliberately not pool-defining).
+            # The prompting configuration goes IN THE KEY, the same way the HSMM arm carries its
+            # per-channel alphas: two prompt configurations are two operating points of one arm on
+            # one pool and the comparison is the point, so a re-run under Auto-CoT must land
+            # BESIDE the random-exemplar run rather than silently replacing it.
+            shot_suffix = ""
+            if predictive:
+                if args.shot_select != "random":
+                    shot_suffix += f"+{args.shot_select}"
+                if args.shot_cot:
+                    shot_suffix += "+cot"
+            tag = (f"{name}/llm-predictive-{variant}{shot_suffix}" if predictive
+                   else f"{name}/llm-{variant}")
+            print(f"\n[{name}] LLM arm ({variant}, {args.protocol})")
             client = llm_client.ChatClient(
                 model=args.model, base_url=args.base_url, api_key_env=args.api_key_env,
                 cache_dir=Path(args.cache_dir) / args.model.replace("/", "_"),
                 rpm=args.rpm, max_requests=args.max_requests, dry_run=False,
                 concurrency=args.concurrency,
+                # The predictive arm samples rather than judging, and needs only two short lines
+                # back. Both are in the cache key, so it gets its own namespace for free and no
+                # existing response is invalidated.
+                temperature=PREDICTIVE_TEMPERATURE if predictive else 0.0,
+                max_tokens=((PREDICTIVE_COT_MAX_TOKENS if args.shot_cot
+                             else PREDICTIVE_MAX_TOKENS) if predictive else None),
             )
-            print(f"  client: rpm={client.rpm} concurrency={client.concurrency}", flush=True)
+            print(f"  client: rpm={client.rpm} concurrency={client.concurrency} "
+                  f"temperature={client.temperature}", flush=True)
             system_prompt = prompts.build_variant(variant, vocab, labels, args.protocol,
-                                                  args.unit)
+                                                  args.unit, exemplars=exemplars,
+                                                  rationales=rationales)
             try:
-                report = llm_arm(pool, lexicon, client, system_prompt, vocab, args.protocol, tag,
-                                 args.unit, args.tol)
+                if predictive:
+                    report, stream = predictive_arm(pool, lexicon, client, system_prompt, vocab,
+                                                    tag, args.unit, args.tol)
+                else:
+                    report, stream = llm_arm(pool, lexicon, client, system_prompt, vocab,
+                                             args.protocol, tag, args.unit, args.tol)
             except (llm_client.LLMError, llm_client.BudgetExceeded) as e:
                 # Running out of quota part-way through is an expected operating condition on a
                 # free tier, not a crash. Write the arms that DID finish rather than discarding an
@@ -685,14 +973,23 @@ def main():
             report["prompt_variant"] = variant
             report["protocol"] = args.protocol
             report["unit"] = args.unit
+            report["spans"] = score_spans(stream, spans, args.merge_tol)
+            if predictive:
+                report["n_shot"] = len(exemplars)
+                report["shot_select"] = args.shot_select
+                report["shot_cot"] = bool(args.shot_cot)
             reports[tag] = report
 
             note = "\n".join(filter(None, [
                 WITH_RECIPES_CAVEAT if variant == "with-recipes" else None,
+                PREDICTIVE_RECIPES_CAVEAT if (predictive and variant == "with-recipes") else None,
                 BATCH_CAVEAT if args.protocol == "batch" else None,
             ]))
             print_report(report, tag, note or None)
-            plotting.save_step_figures(report, args.figures_dir, f"{name}_llm_{variant}")
+            plotting.save_step_figures(
+                report, args.figures_dir,
+                f"{name}_llm_{'predictive_' if predictive else ''}{variant}"
+                f"{shot_suffix.replace('+', '_') if predictive else ''}")
 
     _write_report(args, reports)
 

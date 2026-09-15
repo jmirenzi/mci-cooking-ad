@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
-# Full test-split evaluation at the TICK unit, one LLM prompt variant per invocation.
+# Full test-split evaluation at the TICK unit, one LLM arm per invocation.
 #
 #     VARIANT=with-recipes ./run_tick_test.sh     # the arm that reads labels.json
 #     VARIANT=no-recipes   ./run_tick_test.sh     # the like-for-like comparison vs the HSMM
+#
+# PROTOCOL selects which KIND of LLM arm, independently of VARIANT:
+#
+#     PROTOCOL=predictive VARIANT=no-recipes ./run_tick_test.sh   # arm 3: predict, don't judge
+#
+# The predictive arm queries once per STEP BOUNDARY whatever the scoring unit is (~6.5 requests
+# per trial against the verdict arms' ~121), but is still run at --unit tick so it merges into
+# the same report: --unit is pool-defining, and a step-unit run would trip _write_report's guard
+# and overwrite the arms it is meant to be compared against.
 #
 # Built to survive losing whatever started it. Launch detached:
 #
@@ -43,6 +52,25 @@ case "$VARIANT" in
     *) echo "VARIANT must be with-recipes or no-recipes, got '$VARIANT'" >&2; exit 2 ;;
 esac
 
+PROTOCOL="${PROTOCOL:-incremental}"
+case "$PROTOCOL" in
+    incremental|conversational|batch|predictive) ;;
+    *) echo "PROTOCOL must be incremental, conversational, batch or predictive, got '$PROTOCOL'" >&2; exit 2 ;;
+esac
+
+# The arm key run_llm_eval.py writes, which is what the stage-3 completion probe looks for. The
+# predictive arm gets its own so it lands BESIDE the verdict arms in one report rather than
+# overwriting them (--protocol is deliberately not pool-defining).
+# SHOT_SELECT / SHOT_COT tune the predictive arm's few-shot block (Auto-CoT). They are part of
+# the arm key, so each configuration lands beside the others instead of replacing them.
+SHOT_SELECT="${SHOT_SELECT:-random}"
+SHOT_COT="${SHOT_COT:-0}"
+SHOT_ARGS=(--shot-select "$SHOT_SELECT")
+SHOT_KEY=""
+[ "$SHOT_SELECT" != random ] && SHOT_KEY="+$SHOT_SELECT"
+if [ "$SHOT_COT" = 1 ]; then SHOT_ARGS+=(--shot-cot); SHOT_KEY="$SHOT_KEY+cot"; fi
+if [ "$PROTOCOL" = predictive ]; then ARM_SUFFIX="/llm-predictive-$VARIANT$SHOT_KEY"; else ARM_SUFFIX="/llm-$VARIANT"; fi
+
 PY=.venv/bin/python
 BASE_URL=http://localhost:11435/v1
 MODEL=gemma3:27b
@@ -59,6 +87,7 @@ COMMON=(--config configs/breakfast.yaml
         --alpha 0.005
         --model "$MODEL"
         --base-url "$BASE_URL"
+        --protocol "$PROTOCOL"
         --out "$OUT"
         --figures-dir "$FIGS")
 
@@ -102,7 +131,10 @@ except Exception:
 # Any HSMM arm counts, including one whose key carries per-channel alphas
 # (real/hsmm-joint@s_temporal=1e-05). An exact-suffix match would miss those and recompute the
 # arm on every invocation.
-sys.exit(0 if any("/hsmm-" in k and not v.get("incomplete")
+# "spans" as well as "incomplete": an arm that finished BEFORE the span layer existed is done by
+# the old definition and not by the current one, and merging it forward unchanged would leave a
+# report whose arms are not all scored on the same layers. Cached responses make a re-run cheap.
+sys.exit(0 if any("/hsmm-" in k and not v.get("incomplete") and v.get("spans")
                   for k, v in r.items()) else 1)
 EOF
 then
@@ -154,10 +186,11 @@ done
 #     against a served 8192, which fits but is not comfortable. Refuse to start if it does not.
 # ------------------------------------------------------------------------------------------
 log "preflight: measuring the longest request against the server"
-$PY - "$BASE_URL" "$MODEL" "$VARIANT" <<'EOF' >> "$LOG" 2>&1
+$PY - "$BASE_URL" "$MODEL" "$VARIANT" "$PROTOCOL" <<'EOF' >> "$LOG" 2>&1
 import json, sys, urllib.request
-from cook_ad.llm import prompts, textify, detect     # deliberately no JAX import here
-base_url, model, variant = sys.argv[1], sys.argv[2], sys.argv[3]
+from cook_ad.data import split as split_mod              # pure json, no JAX
+from cook_ad.llm import prompts, textify, detect, predict   # deliberately no JAX import here
+base_url, model, variant, protocol = sys.argv[1:5]
 vocab = json.load(open('dataset/processed/breakfast/vocab.json'))
 labels = json.load(open('dataset/processed/breakfast/labels.json'))
 
@@ -168,12 +201,34 @@ class Lex:
     def verb(self, i): return self.v[int(i)]
     def noun(self, i): return self.n[int(i)]
 
-seqs = {t['trial_id']: t for t in json.load(open('dataset/processed/breakfast/sequences.json'))}
-test = json.load(open('dataset/processed/breakfast/split.json'))['test_trial_ids']
+lex = Lex(vocab)
+split = split_mod.load_split('dataset/processed/breakfast/split.json')
+sequences = json.load(open('dataset/processed/breakfast/sequences.json'))
+seqs = {t['trial_id']: t for t in sequences}
+test = split['test_trial_ids']
 longest = max((seqs[i] for i in test if i in seqs), key=lambda t: len(t['verb_ids']))
-ticks = textify.ticks_from_ids(longest['verb_ids'], longest['noun_ids'], Lex(vocab))
-system = prompts.build_variant(variant, vocab, labels, 'incremental', 'tick')
-messages = detect.incremental_messages(system, ticks, 'tick')[-1]
+
+# Build the request THIS run will actually issue. The predictive arm queries per step boundary
+# with a step-unit prefix and carries few-shot exemplars in its system turn, so measuring the
+# 466-line tick prompt for it would preflight a request that arm never sends -- passing or
+# failing on a prompt that is not under test either way.
+if protocol == predict.PROTOCOL:
+    # Built exactly as run_llm_eval builds them -- filter_sequences preserves sequences.json
+    # order, and select_exemplars indexes into that order, so iterating train_trial_ids instead
+    # would seed a DIFFERENT exemplar set and preflight a prompt the run never sends.
+    train = split_mod.filter_sequences(sequences, split, 'train')
+    exemplars = prompts.select_exemplars(
+        [{'verb_ids': t['verb_ids'], 'noun_ids': t['noun_ids']} for t in train], lex, 3, 0)
+    system = prompts.build_variant(variant, vocab, labels, protocol, 'step',
+                                   exemplars=exemplars)
+    steps = textify.steps_from_ids(longest['verb_ids'], longest['noun_ids'], lex)
+    messages = predict.predictive_messages(system, steps)[-1]
+    span = f"{len(steps)} steps ({len(exemplars)}-shot)"
+else:
+    ticks = textify.ticks_from_ids(longest['verb_ids'], longest['noun_ids'], lex)
+    system = prompts.build_variant(variant, vocab, labels, protocol, 'tick')
+    messages = detect.incremental_messages(system, ticks, 'tick')[-1]
+    span = f"{len(ticks)} ticks"
 
 body = json.dumps({"model": model, "messages": messages,
                    "temperature": 0.0, "max_tokens": 1}).encode()
@@ -184,7 +239,7 @@ used = json.load(urllib.request.urlopen(req, timeout=900))["usage"]["prompt_toke
 
 ps = json.load(urllib.request.urlopen(base_url.rsplit('/v1', 1)[0] + "/api/ps", timeout=60))
 served = next((m["context_length"] for m in ps.get("models", []) if m["name"] == model), 0)
-print(f"preflight [{variant}]: longest request {used} tokens over {len(ticks)} ticks; "
+print(f"preflight [{variant}/{protocol}]: longest request {used} tokens over {span}; "
       f"served context {served}; headroom {served - used}")
 if served - used < 256:
     print("preflight FAILED: raise OLLAMA_CONTEXT_LENGTH; prompts would be truncated from the "
@@ -204,26 +259,31 @@ curl -s "${BASE_URL%/v1}/api/generate" \
 log "model re-pinned at keep_alive=24h"
 
 # ------------------------------------------------------------------------------------------
-# 3. LLM arm, with-recipes. Retried on failure because the cache makes a retry nearly free: a
+# 3. LLM arm ($PROTOCOL/$VARIANT). Retried on failure because the cache makes a retry nearly free: a
 #    run that died at request 40,000 replays those 40,000 from disk in minutes and continues.
 # ------------------------------------------------------------------------------------------
-if $PY - "$OUT" "$VARIANT" <<'EOF'
+if $PY - "$OUT" "$ARM_SUFFIX" <<'EOF'
 import json, sys
 try:
     r = json.load(open(sys.argv[1]))["reports"]
 except Exception:
     sys.exit(1)
-sys.exit(0 if any(k.endswith("/llm-" + sys.argv[2]) and not v.get("incomplete")
+# Same span-completeness rule as stage 1.
+sys.exit(0 if any(k.endswith(sys.argv[2]) and not v.get("incomplete") and v.get("spans")
                   for k, v in r.items()) else 1)
 EOF
 then
-    log "stage 2 (LLM $VARIANT): already complete in $OUT, nothing to do"
+    log "stage 2 (LLM $PROTOCOL/$VARIANT): already complete in $OUT, nothing to do"
 else
     for attempt in $(seq 1 $MAX_LLM_ATTEMPTS); do
-        log "stage 2 (LLM $VARIANT): attempt $attempt/$MAX_LLM_ATTEMPTS"
-        $PY run_llm_eval.py "${COMMON[@]}" --skip-hsmm --variant "$VARIANT" >> "$LOG" 2>&1
+        log "stage 2 (LLM $PROTOCOL/$VARIANT): attempt $attempt/$MAX_LLM_ATTEMPTS"
+        if [ "$PROTOCOL" = predictive ]; then
+            $PY run_llm_eval.py "${COMMON[@]}" --skip-hsmm --variant "$VARIANT" "${SHOT_ARGS[@]}" >> "$LOG" 2>&1
+        else
+            $PY run_llm_eval.py "${COMMON[@]}" --skip-hsmm --variant "$VARIANT" >> "$LOG" 2>&1
+        fi
         rc=$?
-        log "stage 2 (LLM $VARIANT): exit $rc"
+        log "stage 2 (LLM $PROTOCOL/$VARIANT): exit $rc"
         [ $rc -eq 0 ] && break
         [ $attempt -eq $MAX_LLM_ATTEMPTS ] && { log "ABORT: LLM arm failed $MAX_LLM_ATTEMPTS times"; exit 1; }
         log "retrying in 60s (completed requests replay from cache)"
