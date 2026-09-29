@@ -335,6 +335,211 @@ finish, so they belong here rather than in a footnote.
 
 ---
 
+## 7b. The third corpus — EPIC-Tent
+
+`parse_epic_tent.py`, 29 sessions of one person assembling a camping tent outdoors. Annotations
+only, ~16 MB from the authors' annotation repo; the 166 GB data.bris release carries the video and
+the gaze traces and is not needed, because the detector consumes a symbolic `(verb, noun)` tick
+stream. `tools_fetch_epic_tent.py` downloads what is needed and asserts the published row counts.
+
+This corpus is here for one reason the other two cannot supply: **two observers annotated real
+errors, with begin and end frames.** Everything else in this repo detects anomalies that
+`synthetic/error_injection.py` manufactured. So EPIC-Tent writes a fourth artifact,
+`anomalies.json`, and a fifth and sixth (`sequences_clean.json` / `labels_clean.json`) for the
+contamination ablation in §7b.5.
+
+### 7b.1 A trial is a participant, and there is only one task
+
+29 sessions, one each, all building the same tent. There is no recipe taxonomy to recover and no
+dish to derive, so `recipe_label` is the constant `"tent"` and `k_recipe: 1`. The recipe layer is
+a no-op by construction rather than an unsupervised guess — which turns out to matter twice:
+
+- Joint EM **converges** here, in 9 iterations. On Breakfast and EPIC it lands in a period-3 limit
+  cycle and never meets `tol`. The limit cycle is a recipe-layer phenomenon.
+- `s_recipe_transition` is degenerate and needed a fix in two places. At one recipe the
+  recipe-attributable excess is undefined — there is no other recipe for a transition to be
+  ordinary under — but the arithmetic does not produce zero: `joint_params.marginal_log_trans`
+  floors probabilities, so on rare transitions (p ≈ 1e-14) the "excess" is a flooring artifact of
+  up to ~6 nats, and float noise elsewhere. Before any fix the channel was the earliest on 17 of 25
+  caught spans. `assemble_trace_joint` now returns an exact-zero statistic at `K_R == 1`, and
+  `quantile.recipe_excess_thresholds` returns `+inf` thresholds — the second half was found a week
+  later, when the error-excised fit (whose artifact-derived thresholds dip below zero) still fired 6
+  ticks on `0 > threshold` that the contaminated fit (thresholds all ≥ 0) had hidden. The gate is on
+  the number of recipes, not a per-row "recipe row equals marginal" test: that test also matches 112
+  of 1024 rows of the Breakfast `k_recipe=16` fit and would have moved its numbers.
+
+### 7b.2 The 12 action classes factor injectively into `(verb, noun)`
+
+| action | verb | noun | | action | verb | noun |
+|---|---|---|---|---|---|---|
+| assemble support | assemble | support | | pickup/open supportbag | open | supportbag |
+| insert stake | insert | stake | | pickup/open tentbag | open | tentbag |
+| insert support | insert | support | | pickup/place ventcover | place | ventcover |
+| insert support tab | insert | support_tab | | place guyline | place | guyline |
+| instruction | read | instruction | | spread tent | spread | tent |
+| pickup/open stakebag | open | stakebag | | tie top | tie | top |
+
+12 classes → 12 distinct pairs, so **8 verbs and 12 nouns** including the `stall`/`idle` sentinel.
+That is unusual and it is why `k_subtask: 16`: on Breakfast the labels are already `verb_noun`, on
+EPIC there are 3806 pairs the subtask layer has to group, and here the pairs *are* the states.
+`recipe/lexical_init`'s anchored emissions hand the state space over rather than discovering it,
+and the fitted model reaches a **per-tick subtask ARI of 1.000**. 16 rather than 13 leaves the
+weak-limit prior room to split a state whose duration is bimodal — the paper's finer 38-way
+taxonomy distinguishes tent corners (`insert stake c1`..`c4`), and the public release collapses
+them.
+
+`tick_seconds: 1.0`, not EPIC's 0.5. `llm/textify.py` renders durations as seconds and asserts
+1-second ticks, so the LLM arm cannot run on a 0.5 s corpus at all; and at 1 s no segment is
+shorter than a tick, against the 1.9% that motivated EPIC's finer grid. At that binning
+`d_max_ticks: 200` censors 2 of 1912 runs.
+
+### 7b.3 Overlaps cost the interrupter, and that is the instruction reads
+
+10.5% of consecutive action segments overlap, because the paper's own design note is that
+instruction reading *interrupts* other subtasks. `resolve_overlaps` is reused unchanged —
+first-come-wins, for the reason §7.2 gives — which drops 127 of 1252 segments, **79 of them
+instruction reads**, a quarter of all 304. The interrupter is systematically the one that loses.
+Worth remembering when reading a transition-channel result: the context around an error is
+sometimes the host action rather than the interrupting read.
+
+Gaps are 22% of wall-clock time (median 2.8 s, p90 9.9 s) and 17% of ticks after binning, so SIL
+is a substantial state here rather than a rounding artifact.
+
+### 7b.4 `anomalies.json` — ground truth that nobody placed
+
+Nine annotated error types, mapped onto the repo's vocabulary. `motor` (219 instances) and
+`failure` (42) map to nothing: they are physical mishaps with no signature in a `(verb, noun)`
+stream, so scoring against them would only depress recall for something invisible.
+
+| EPIC-Tent | repo type | n |
+|---|---|---|
+| `misuse` | `substitution` | 164 |
+| `order` | `transposition` | 136 |
+| `search` + `slow` | `stall` | 40 |
+| `omit` | `omission` | 16 |
+| `correction` | `correction` | 8 |
+| `repeat` | `repetition` | 3 |
+| | **total** | **367** |
+
+**One of those six is not observable in a `(verb, noun)` stream, and it is the biggest.**
+`misuse` is annotated *within a correctly-labelled action* — the wrong guyline during a step the
+annotator still called `place guyline` — so the tick stream is identical whether or not it
+happened. Measured: **94% of `misuse` spans leave the observed pair unchanged** (order 90%, stall
+80%, correction 75%, omit 44%). Mapping it to `substitution` is still the right call — it is the
+closest thing this corpus has, and excluding it would hide the limitation rather than measure it
+— but its recall is a fact about the representation, not about the detector. See
+[`eval.md`](eval.md) §7c, where the emission channels are shown firing exactly zero times.
+
+`PROCEDURAL_TYPES` names PREGO's four-type subset (`order`, `omit`, `correction`, `repeat`), which
+comes to exactly their published **163** instances across 28 of 29 participants. Keeping it as a
+named subset is what lets their numbers stay comparable without throwing away `misuse`, the
+closest match this corpus has to the repo's `substitution`.
+
+Three properties of the records, each a decision:
+
+- **Position comes from the error's own frames**, never from a join to an action segment. 35 of
+  367 records lose their host segment to the overlap resolution above, and 3 `search` rows carry
+  `action_label = -1` because the participant was hunting for a part *between* subtasks. The
+  `action_label` on a record is context.
+- **`omit` collapses to its onset tick.** The annotation README is explicit: "End time codes for
+  omission should not be used as omission is the absence of an action." The annotated end is where
+  the next thing happened.
+- **No `tick_map` and no `edited_ticks`.** Nothing was spliced, so `textify.injection_touched_steps`
+  correctly finds no debris, and the observation stream is not copied into the record — it is in
+  `sequences.json`, and it is the same stream, because a real anomaly has no un-anomalous twin.
+
+### 7b.5 `clean_fragments` and the excised corpus
+
+**No trial is error-free.** Under the mapped taxonomy all 29 carry something; p08 is free of
+*procedural* error but has `misuse`. Two consequences:
+
+`anomalies.json` also records each trial's `clean_fragments` — its maximal error-free tick
+intervals of length ≥ 10 (below that, a fragment's first ticks are still inside the previous
+anomaly's `span_metrics.DEADLINE`). **170 fragments, 17 008 ticks, 73% of the corpus.** That is the
+healthy population: a false-positive rate here is a fragment-level quantity, not a trial-level one.
+Flags for a fragment must be *sliced out of the full trial's decode* — re-decoding a fragment alone
+would start it from the init distribution, and the belief state part-way through an assembly is not
+the start-of-trial prior.
+
+`--exclude-anomalies` writes those fragments as `sequences_clean.json` / `labels_clean.json`, one
+sequence per fragment (`p18_f0`, `p18_f1`, …). Fitting on it is the second half of the
+contamination ablation: every training session contains annotated errors, so a model fitted on all
+of them partly models the errors it should flag. **Excision rather than masking**, because
+`hsmm/em.pad_batch` returns a *prefix* length mask and both `_chunk_ticks` and `_length_order` read
+`sum(mask)` as the sequence length — a mid-sequence `False` would leave those disagreeing with the
+mask and silently corrupt right-censoring. Cutting costs only the transitions that straddle a cut
+and needs no EM change. `tools_epic_tent_split.py` derives `split_clean.json` by *inheriting*
+session membership, so a fragment cannot land opposite the session it was cut from.
+
+### 7b.6 `CANONICAL_ORDER`, and why the LLM arm needs it
+
+EPIC-Tent's `order` errors are annotated against the **printed instruction sheet**, not against
+what participants actually did. `CANONICAL_ORDER` records that sequence, derived two ways that
+agree: the median normalised onset of each action over the 29 sessions, and the workflow column of
+the paper's Table 1. `read/instruction` is deliberately absent — it interleaves freely (median
+position 0.36 over 300 segments).
+
+This is not documentation. Measured on the corpus: **the transition into an out-of-order segment
+has median count 23, against a 22 baseline over all 1223 transitions**; only 5% of order-error
+incoming edges have count ≤ 2 against 3% at baseline. A "backward jump in canonical rank" heuristic
+scores precision 0.14 / recall 0.50 / F1 0.22 at a 0.14 base rate. A first-order transition model —
+which is what the HSMM has — cannot represent this reference, because its bigrams are estimated
+from error-laden sessions. `llm/prompts.assembly_block` states the prescribed order to the
+predictive arm instead. See [`eval.md`](eval.md) §7c.
+
+### 7b.7 PREGO's split, and a data-quality note on the uncertainty ratings
+
+The per-frame self-rated uncertainty exists only for participants 8–29 — the rating procedure was
+added partway through collection. PREGO's split is nonetheless **exactly recoverable**: their
+CVPR'24 supplementary (section C) states the rule — "the videos that form the test set have a
+median confidence score under 0.6 ... the remaining 7 do not [have scores] and are assigned to the
+test set." The release ships *uncertainty*, so confidence is its complement. That rule gives
+**14 train / 15 test**, and the 15 test ids (1–7, 10, 16, 17, 18, 20, 23, 25, 28) are exactly the
+keys of PREGO's own `step_anticipation/data/predictions/output_miniROAD_Epic-tent-O.json`. The
+nearest participants to the threshold sit at 0.583 and 0.627, so it is not a knife-edge.
+`tools_epic_tent_split.py` writes it as `split_prego.json`. (An earlier version put the unrated
+seven in *train* and ranked by mean; it matched the 14/15 counts with the wrong membership.)
+
+Most uncertainty files carry exactly 2 rows more than the release README's `total_frame_count`, a
+harmless systematic off-by-two; six disagree by more than 1%, and two look like mis-assigned
+copies (participant 14's file has participant 9's row count, and 29's has 8's). PREGO read the same
+files, and neither suspect is near the threshold.
+
+### 7b.8 Error groups, and what "removing" the other types means
+
+Results are reported per error group, each scored with every other type **removed**:
+
+| group | EPIC-Tent labels | repo types |
+|---|---|---|
+| `procedural` | order, omit, correction, repeat — PREGO's subset | transposition, omission, correction, repetition |
+| `procedural+temporal` | the above + search, slow | + stall |
+
+`misuse` is in neither, deliberately: 94% of its spans leave the `(verb, noun)` stream unchanged
+(§7b.4), so it measures the representation rather than the detector. `motor` and `failure` were
+never mapped.
+
+"Removed" follows PREGO, and it is worth being exact about what they did, because the paper does
+not say. Their input is a collapsed step sequence, which has no slot for a misuse; their scorer
+(`step_anticipation/src/models/llm_hf.py`) does
+
+```python
+correct = matches[:-1]      # every step before the last is scored as correct
+mistake = matches[-1]       # the last step of each trimmed test sequence is THE mistake
+```
+
+and each test video is trimmed at the end of its first procedural mistake. So the non-procedural
+types were never excised from anything — they were **relabelled as correct**. Here the equivalent
+is: an out-of-group span drops out of the ground truth, and its ticks rejoin the healthy
+population, so a flag on one is a false positive. `run_epic_tent_eval.group_truth` implements
+it, and recomputes the healthy fragments per group accordingly — `anomalies.json`'s stored
+`clean_fragments` exclude all six mapped types and are used only to build the training corpus.
+
+The one part of PREGO's protocol **not** adopted is the trimming: this run scores whole sessions
+with every in-group mistake a positive, where PREGO scores one positive per video. Same subset,
+same removal rule, different denominator.
+
+---
+
 ## 8. Reading the three configs
 
 | | `breakfast.yaml` | `breakfast_mini.yaml` | `epic.yaml` |

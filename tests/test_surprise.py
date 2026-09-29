@@ -7,8 +7,12 @@ import pytest
 from jax.scipy.special import logsumexp
 from test_messages import _brute_force_segmentations, _brute_force_stats, _random_log_probs
 
+from pathlib import Path
+
 from cook_ad.anomaly import quantile, surprise, temporal
 from cook_ad.hsmm import emissions, messages, params
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 jax.config.update("jax_enable_x64", True)
 
@@ -423,3 +427,60 @@ def test_pit_uniform_for_well_fit_durations():
     pit = temporal.pit_coordinate(segments, jnp.array([r]), jnp.array([p]))
     assert 0.45 < pit.mean() < 0.55
     assert pit.min() >= 0.0 and pit.max() <= 1.0
+
+
+@pytest.mark.parametrize("fit", ["joint_params.npz", "joint_params_clean.npz"])
+def test_the_recipe_excess_channel_is_exactly_silent_at_one_recipe(fit):
+    """At k_recipe=1 the recipe-attributable excess is undefined. Two things must hold, and the
+    first version of the fix only did the first: the statistic is exactly zero, AND no
+    threshold lets zero through. marginal_log_trans floors rare transitions, so the thresholds
+    are built from a flooring artifact and can land slightly below zero; on the error-excised
+    fit that fired 6 ticks while the contaminated fit (all thresholds >= 0) hid it. Hence both
+    fits, and all three joint flag paths."""
+    import json
+
+    from cook_ad.eval import batch
+    from cook_ad.hsmm import joint_params as jp
+    from cook_ad.synthetic import generate
+
+    root = REPO_ROOT / "dataset" / "processed" / "epic_tent"
+    if not (root / fit).exists() or not (root / "sequences.json").exists():
+        pytest.skip("needs the EPIC-Tent artifacts (parse_epic_tent + run_joint_lexical)")
+
+    joint = jp.load_params(root / fit)
+    assert joint.dur_r.shape[0] == 1, "fixture must be a one-recipe model"
+    sequences = json.loads((root / "sequences.json").read_text())
+    trajectories = generate.trajectories_from_real_joint(joint, sequences, 200, chunk_size=8)
+    traces, log_probs, r_hat, log_trans_marginal = batch.compute_traces_joint(
+        joint, trajectories, 200, chunk_size=8
+    )
+    alphas = surprise.per_channel_alphas({"s_temporal": 1e-5})
+    cache = quantile.JointThresholdCache(log_probs, log_trans_marginal)
+    for i, trace in enumerate(traces):
+        r = int(r_hat[i])
+        assert not np.any(trace.s_recipe_transition), "must be exactly zero, not merely small"
+        for flags in (
+            surprise.flag_joint(trace, log_probs, r, log_trans_marginal),
+            surprise.flag_joint_per_channel(trace, log_probs, r, log_trans_marginal, alphas),
+            surprise.flag_joint_cached(cache, trace, log_probs, r, log_trans_marginal),
+        ):
+            assert not flags["s_recipe_transition"].any()
+
+
+class _OneOrTwoRecipes(NamedTuple):
+    log_trans: np.ndarray
+
+
+def test_recipe_excess_thresholds_are_inf_at_one_recipe_and_untouched_otherwise():
+    """Gated on the number of recipes, not on a per-row equality test: the per-row test also
+    matches 112/1024 rows of the Breakfast k_recipe=16 fit and would have moved its numbers."""
+    rng = np.random.default_rng(0)
+    rows = rng.dirichlet(np.ones(4), size=4)
+    log_r = np.log(rows)
+    log_m = np.log(0.5 * rows + 0.5 * rng.dirichlet(np.ones(4), size=4))
+
+    one = quantile.recipe_excess_thresholds(_OneOrTwoRecipes(np.zeros((1, 4, 4))), log_r, log_m, 0.05)
+    assert np.all(np.isinf(one)) and np.all(one > 0)
+
+    two = quantile.recipe_excess_thresholds(_OneOrTwoRecipes(np.zeros((2, 4, 4))), log_r, log_m, 0.05)
+    np.testing.assert_array_equal(two, quantile.excess_quantile_threshold(log_r, log_m, 0.05))

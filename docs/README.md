@@ -194,6 +194,25 @@ Because the output contract is identical, every step below works on either corpu
 vocabulary, no recipe annotation, and the two changes that make an EPIC-scale fit finish at all —
 is in [`data.md`](data.md) §7.
 
+**1b′ — Or build the EPIC-Tent dataset** (`data/parse_epic_tent.py`)
+
+The same three files plus three more only this corpus can supply: `anomalies.json` (real,
+observer-annotated errors) and `sequences_clean.json` / `labels_clean.json` (the same sessions with
+those errors excised, for the contamination ablation). Annotations only, ~16 MB — the 166 GB video
+release is not needed.
+
+```bash
+./py tools_fetch_epic_tent.py --out dataset/epic_tent --uncertainty
+./py -m cook_ad.data.parse_epic_tent --config configs/epic_tent.yaml
+./py tools_epic_tent_split.py          # split_prego.json + split_clean.json
+```
+
+One task, 29 sessions, 12 action classes that factor injectively into `(verb, noun)`, and every
+session contains real errors. What that changes — `k_recipe: 1`, a subtask ARI of 1.000, joint EM
+that actually converges, a degenerate `s_recipe_transition` channel that needed fixing, and why the
+healthy population is error-free *fragments* rather than trials — is in [`data.md`](data.md) §7b.
+Scoring against those annotations is step 5b below.
+
 **1c — Split it**
 
 ```bash
@@ -309,6 +328,27 @@ $\alpha$ is not being gated by its threshold, and no amount of downstream filter
 HSMM on a shared unit (one run-length-encoded step), on byte-identical injected errors. It is a
 comparison baseline, not part of the detector -- see [`llm.md`](llm.md), and note the request-budget
 arithmetic there before running it against a metered API.
+
+**5b — Or score against EPIC-Tent's real annotations** (`run_epic_tent_eval.py`)
+
+```bash
+./py run_epic_tent_eval.py --skip-llm                 # HSMM + nulls, no server needed
+./py run_epic_tent_eval.py --variant both             # + the predictive LLM arm (arm 3)
+./run_tent_test.sh                                    # the whole pipeline, end to end
+```
+
+The only path in the repo where ground truth was not manufactured. Every arm is scored per **error
+group** — `procedural` (order, omit, correction, repeat: PREGO's subset) and
+`procedural+temporal` (+ search, slow) — with every other type **removed**, i.e. relabelled normal,
+which is exactly how PREGO's scorer treats the non-procedural types. The HSMM is fitted on the
+error-excised fragments only. Two nulls print beside every arm (flag every tick; flag every step
+boundary), and the healthy side is reported as alarms per 10 minutes plus the share of time spent
+alarming — each alone is gameable. See [`eval.md`](eval.md) §7c for the results and
+[`data.md`](data.md) §7b.8 for what "removed" means.
+
+Only the predictive arm is ported: at T up to 2124 a tick-unit verdict arm would send one request
+per second with a prefix growing to the whole session, and the verdict preprompts still open with
+the cooking sentence (`prompts.build_system_prompt` raises rather than mislabelling the task).
 
 **6 — Export and render**
 

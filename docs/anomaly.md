@@ -730,6 +730,11 @@ alarms this containment exists to avoid.
 > carrying several concurrent anomalies would need `scope="step"` or a windowed variant; the
 > default is a property of the evaluation, not a general claim.
 
+That caveat is now load-bearing rather than hypothetical: **EPIC-Tent sessions carry a median of 8
+merged annotated anomalies each, range 2–33.** `relabel_with_sequence` is therefore not used on
+that corpus, and neither is the rest of `eval/element_metrics.py` — `run_epic_tent_eval.py` scores
+through the span layer only, and its report records why. See [`eval.md`](eval.md) §7c.
+
 ### The three tests
 
 The base score of an observed sequence is $\sum_j \log A_{z_j z_{j+1}}$. Each test proposes one

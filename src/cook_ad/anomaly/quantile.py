@@ -142,6 +142,26 @@ def excess_quantile_threshold(log_trans_r, log_trans_marginal, alpha):
     return np.array([_tail_threshold(scores[i], probs[i], alpha) for i in range(k)])
 
 
+def recipe_excess_thresholds(joint_log_probs, log_trans_r, log_trans_marginal, alpha):
+    """excess_quantile_threshold for one recipe, or +inf everywhere when there is only one.
+
+    At k_recipe = 1 the recipe-attributable excess is undefined: there is no other recipe for a
+    transition to be ordinary under. It is not zero in the arithmetic either, because
+    joint_params.marginal_log_trans floors probabilities (FLOOR), so on rare transitions
+    (p ~ 1e-14) the "excess" is a flooring artifact of up to ~6 nats, and float noise elsewhere.
+    The thresholds built from that can land slightly below zero, so even a statistic zeroed at
+    source (surprise.assemble_trace_joint does) fires on `0 > threshold`. Measured on EPIC-Tent's
+    error-excised fit: 6 spurious s_recipe_transition ticks over 7533 before this gate.
+
+    Gated on the NUMBER of recipes rather than on a per-row "recipe row equals marginal" test on
+    purpose: that test also matches 112 of 1024 rows of the Breakfast k_recipe=16 fit, and would
+    have moved recorded numbers there. This changes nothing at k_recipe > 1.
+    """
+    if joint_log_probs.log_trans.shape[0] == 1:
+        return np.full(np.asarray(log_trans_r).shape[0], np.inf)
+    return excess_quantile_threshold(log_trans_r, log_trans_marginal, alpha)
+
+
 class SequenceThresholds(NamedTuple):
     transposition: float  # nats
     repetition: float     # duration ratio
@@ -200,7 +220,7 @@ def threshold_tables_joint(joint_log_probs, r_hat, log_trans_marginal, alpha):
     verb = categorical_quantile_threshold(joint_log_probs.log_emit_v, alpha)
     noun = categorical_quantile_threshold(joint_log_probs.log_emit_n, alpha)
     transition = transition_quantile_threshold(log_trans_r, alpha)
-    recipe = excess_quantile_threshold(log_trans_r, log_trans_marginal, alpha)
+    recipe = recipe_excess_thresholds(joint_log_probs, log_trans_r, log_trans_marginal, alpha)
     return ThresholdTables(emit, verb, noun, transition, recipe)
 
 
@@ -237,7 +257,8 @@ class JointThresholdCache:
             log_trans_r = joint_log_probs.log_trans[r_hat]
             self._recipe[key] = (
                 transition_quantile_threshold(log_trans_r, alpha),
-                excess_quantile_threshold(log_trans_r, log_trans_marginal, alpha),
+                recipe_excess_thresholds(joint_log_probs, log_trans_r, log_trans_marginal,
+                                         alpha),
             )
         emit, verb, noun = self._emission[alpha]
         transition, recipe = self._recipe[key]

@@ -220,3 +220,85 @@ def test_merging_penalises_a_boundary_sparse_detector_relative_to_a_tick_dense_o
     dense = list(range(0, 200))           # every tick
     assert len(span_metrics.score_trial(sparse, spans)["fp_merged"]) == 10
     assert len(span_metrics.score_trial(dense, spans)["fp_merged"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# evaluate_spans_multi -- trials carrying several anomalies of mixed type
+# ---------------------------------------------------------------------------
+
+def test_multi_does_not_charge_a_hit_on_one_type_as_a_miss_on_another():
+    """The whole reason this sibling exists. Passing one trial's flags to evaluate_spans once
+    per type counts its false positives once per type, and charges a flag that correctly hit a
+    type-a span as a false positive against type b."""
+    flags = _f(10)
+    trials = [(flags, [((10, 12), "a"), ((50, 52), "b")])]
+
+    multi = span_metrics.evaluate_spans_multi([], trials)
+    assert multi["pooled"]["tp"] == 1 and multi["pooled"]["fn"] == 1
+    assert multi["pooled"]["fp"] == 0, "the flag hit a real span; it is not a false positive"
+    assert multi["per_type"]["a"]["recall"] == 1.0
+    assert multi["per_type"]["b"]["recall"] == 0.0
+
+    naive = span_metrics.evaluate_spans(
+        [], {"a": [(flags, [(10, 12)])], "b": [(flags, [(50, 52)])]}
+    )
+    assert naive["pooled"]["fp"] == 1, "the shape this sibling exists to avoid"
+
+
+def test_multi_counts_each_trials_false_positives_once():
+    trials = [(_f(0, 1, 2), [((80, 82), "a"), ((90, 92), "b")])]
+    report = span_metrics.evaluate_spans_multi([], trials, merge_tol=5)
+    assert report["pooled"]["fp"] == 1, "0,1,2 merge into one alarm, counted once for the trial"
+    assert report["false_positives"]["raw"] == 3
+
+
+def test_multi_agrees_with_evaluate_spans_on_one_anomaly_per_trial():
+    """On an injected corpus the two shapes describe the same thing, so they must agree."""
+    trials = [(_f(10), [((10, 14), "a")]), (_f(99), [((30, 34), "a")])]
+    multi = span_metrics.evaluate_spans_multi([_f(7)], trials)
+    single = span_metrics.evaluate_spans([_f(7)], {"a": [(_f(10), [(10, 14)]),
+                                                        (_f(99), [(30, 34)])]})
+    for field in ("precision", "recall", "f1", "tp", "fn", "fp"):
+        assert multi["pooled"][field] == single["pooled"][field]
+    assert multi["healthy"] == single["healthy"]
+    assert multi["per_type"]["a"]["recall"] == single["per_type"]["a"]["recall"]
+
+
+def test_multi_attributes_per_span_rows_by_position_not_by_order():
+    """score_trial returns per_span in input order; the attribution relies on that."""
+    trials = [(_f(0, 40), [((40, 41), "late"), ((0, 1), "early")])]
+    report = span_metrics.evaluate_spans_multi([], trials)
+    assert report["per_type"]["late"]["tp"] == 1
+    assert report["per_type"]["early"]["tp"] == 1
+
+
+def test_multi_reports_healthy_fpr_on_its_own_denominator():
+    report = span_metrics.evaluate_spans_multi(
+        [_f(), _f(3), _f(4, 5)], [(_f(10), [((10, 12), "a")])]
+    )
+    assert report["healthy"]["n"] == 3
+    assert report["healthy"]["false_positive_trials"] == 2
+    assert report["healthy"]["false_positive_rate"] == pytest.approx(2 / 3)
+    assert report["pooled"]["f1"] == 1.0, "healthy alarms are never folded into F1"
+
+
+def test_multi_error_types_selects_what_recall_is_measured_over():
+    """An unlisted type contributes NEITHER tp nor fn -- it is outside the question being asked
+    -- but its span still suppresses false positives, because it is a real anomaly. That is what
+    lets run_epic_tent_eval report PREGO's four-type subset without charging a flag that caught
+    a real `misuse` as a false alarm."""
+    # Well clear of each other's DEADLINE (10 ticks), so each flag can only satisfy its own span.
+    trials = [(_f(10, 60), [((10, 12), "a"), ((60, 62), "unlisted")])]
+    report = span_metrics.evaluate_spans_multi([], trials, error_types=("a", "b"))
+    assert set(report["per_type"]) == {"a", "b"}
+    assert report["per_type"]["b"]["n_spans"] == 0
+    assert report["pooled"]["tp"] == 1 and report["pooled"]["fn"] == 0
+    assert report["pooled"]["fp"] == 0, "the flag at 60 hit a real span, listed or not"
+
+
+def test_multi_charges_a_flag_as_fp_when_its_span_is_removed_entirely():
+    """The other reading: drop the span from the input and the same flag becomes a false
+    positive. The caller chooses which question it is asking; the metric does not guess."""
+    trials = [(_f(10, 60), [((10, 12), "a")])]
+    report = span_metrics.evaluate_spans_multi([], trials, error_types=("a",))
+    assert report["pooled"]["tp"] == 1 and report["pooled"]["fp"] == 1

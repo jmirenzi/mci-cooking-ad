@@ -9,6 +9,13 @@ The evaluation problem: real Breakfast trials come with no anomaly labels. Nobod
 "here the participant forgot to add sugar". So the harness **manufactures** anomalies whose
 location is known exactly, and measures whether the detector finds them.
 
+**One corpus is the exception.** EPIC-Tent ships observer-annotated errors with begin and end
+frames, so `data/parse_epic_tent.py` writes `anomalies.json` and nothing in this module is
+involved in scoring it — see [`data.md`](data.md) §7b.4 and [`eval.md`](eval.md) §7c. The
+injectors still run on that corpus, as a control: the gap between injected and annotated
+anomalies on the same trials through the same detector is what separates "this corpus is harder"
+from "real errors are harder than injected ones".
+
 ---
 
 ## 1. `generate.py` — sampling healthy trajectories

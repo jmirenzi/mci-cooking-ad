@@ -175,18 +175,23 @@ def resolve_overlaps(narrations):
     return kept, swallowed
 
 
-def to_frame_segments(narrations, sil_ids):
+def to_frame_segments(narrations, sil_ids, fps=FPS_REF):
     """Disjoint (t0, t1, verb, noun) in seconds -> contiguous 1-indexed inclusive frame segments
-    on the FPS_REF grid, with SIL filling every gap. Contiguity is required: expand_to_ticks
+    on the `fps` grid, with SIL filling every gap. Contiguity is required: expand_to_ticks
     majority-votes over a dense frame array, so an uncovered frame would vote `None`.
-    Returns (segments, n_too_short)."""
+    Returns (segments, n_too_short).
+
+    `fps` is a parameter only so parse_epic_tent can share this: that corpus has one real frame
+    rate, but re-quantising it onto a coarse synthetic grid is still what keeps expand_to_ticks'
+    per-frame loop cheap. Whatever grid is passed here must also be passed to expand_to_ticks.
+    """
     origin = narrations[0][0]
     sil_verb_id, sil_noun_id = sil_ids
     segments, too_short = [], 0
     cursor = 1
     for t0, t1, verb, noun in narrations:
-        start = int(round((t0 - origin) * FPS_REF)) + 1
-        stop = int(round((t1 - origin) * FPS_REF))
+        start = int(round((t0 - origin) * fps)) + 1
+        stop = int(round((t1 - origin) * fps))
         start = max(start, cursor)
         if stop < start:
             too_short += 1

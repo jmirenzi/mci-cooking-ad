@@ -586,6 +586,47 @@ to the HSMM.
 
 ---
 
+## 3c. Porting a preprompt to a second domain
+
+EPIC-Tent needed the predictive head on a corpus that is not cooking. `build_system_prompt` grew
+five parameters — `domain`, `sil_verb`, `sil_noun`, `canonical_order`, `interleaved` — all
+defaulting to what every existing caller relied on implicitly, so **the cooking path is
+byte-identical** and no collected response is invalidated.
+`tests/test_prompts_domain.py` pins that across all 16 protocol × unit × variant combinations,
+which is the load-bearing test in that file.
+
+Three things had to change, and one deliberately did not:
+
+**A fourth sibling head, not a template.** `_PREDICTIVE_TASK_ASSEMBLY` differs from
+`_PREDICTIVE_TASK` in exactly two phrases — the opener, and "working normally" for "cooking
+normally". It is still a separate constant, for the reason §2 gives for the other three: the text
+is part of the response-cache key. Arm 3 is the cheap head to port precisely because it asks for no
+verdict and names no anomaly type, so there is no mustard-and-jelly example to rewrite. The two
+verdict heads have no assembly sibling, and `build_system_prompt` **raises** rather than handing a
+tent-assembly trial a preprompt that opens "as they cook a single breakfast recipe".
+
+**The SIL tokens are now plumbed from the config, and this fixed a live bug.** `vocab_block` and
+`_label_to_step_text` defaulted to `"stall"`/`"kitchen"` and were never overridden — so on EPIC,
+whose vocabulary contains both `idle` (its sentinel) and `kitchen` (a real noun class), the block
+was telling the model that a real object was the placeholder. `anomaly/narrate.Lexicon` has the
+same two defaults and all 20 of its call sites pass two positional arguments.
+
+**`assembly_block` replaces `recipe_block`, on substance.** `recipe_block` opens "The person is
+making exactly one of the following recipes" and reports how often each modal order occurs, because
+on Breakfast the order is an empirical fact about ten recipes. EPIC-Tent has one task and a printed
+instruction sheet, and its `order` errors are annotated against that sheet — so the reference is
+*prescriptive*, and reporting empirical order frequencies would describe the errors rather than the
+procedure. `assembly_block` states the prescribed order with per-step median durations and says so.
+
+It also deliberately reports **no deviation frequencies**. Arm 3 predicts a normal continuation and
+the disagreement is the detector; telling the model that skipping and reordering are common would
+make it predict deviations and erase the signal. A test asserts the words stay out.
+
+The few-shot machinery needed no change and is the one place the prompt learns a domain by itself —
+but see §4, because on a long-horizon corpus it is what broke the arm.
+
+---
+
 ## 4. Request budget — the binding constraint
 
 This evaluation is **request-bound, not token-bound**. At ~7 steps/trial, a 6-condition sweep
@@ -613,6 +654,30 @@ suddenly-empty cache rather than a surprise quota crash.
 When a per-day quota does hit, the client raises `QuotaExhausted` immediately rather than burning
 retries on something waiting cannot fix, and the runner writes a **partial report** of whatever
 arms completed instead of discarding the run.
+
+### On a long-horizon corpus the few-shot block is the binding constraint, not the budget
+
+The "~7 steps/trial" above is a Breakfast number. EPIC-Tent sessions run **42–192 steps**, and
+that breaks the few-shot prompt outright rather than just making it expensive. Three exemplars
+render as **191 lines / 6.7 KB of step list**, sitting behind a 34-line response grammar. Measured
+with `gemma3:27b`: it abandoned the `DURATION:`/`NEXT:` grammar on *every single request* and
+continued the step list instead —
+
+    Okay, here's the continuation of the provided trial data, keeping the same format:
+    42. place guyline for 16 seconds ...
+
+— so every reply was a parse failure and the arm emitted **zero flags**. The same trial at 0-shot
+(a 34-line prompt) emitted **57**. Nothing else changed.
+
+`run_epic_tent_eval.py` therefore defaults `--n-shot 0`, and when exemplars *are* requested it
+draws them from the error-free fragments rather than whole sessions — `fewshot_block` opens "Here
+are some complete, correctly-executed trials", and on that corpus 28 of 29 sessions carry a real
+procedural error, so the sentence would simply be false. The runner prints the exemplar step total
+and warns above 60.
+
+The general lesson: before porting a few-shot prompt, compare the rendered demonstration length
+against the instruction block it follows. A parse-failure cliff looks exactly like a detector that
+finds nothing.
 
 The default is therefore the Gemini API, not OpenRouter. OpenRouter's daily cap is per-account and
 platform-wide — it does **not** depend on which free model you pick, so choosing a smaller model

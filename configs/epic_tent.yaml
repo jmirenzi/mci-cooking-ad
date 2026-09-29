@@ -1,0 +1,72 @@
+# EPIC-Tent, annotations only. See src/cook_ad/data/parse_epic_tent.py for why each value below
+# is a decision rather than a default. This is the one corpus with REAL anomaly labels, so it is
+# also the one that writes anomalies.json.
+
+tick_seconds: 1.0   # not EPIC's 0.5s. Two reasons, and the second is the binding one:
+                    #  - llm/textify.py renders durations as seconds and asserts 1.0 ticks, so
+                    #    the LLM arm cannot run on a 0.5s corpus at all today.
+                    #  - segments here are long (median 6 ticks at 1s, p99 88), so 0.5s buys no
+                    #    resolution and would double T on trials already up to 2124 ticks.
+                    # At 1s only 0/1252 segments are shorter than a tick, against the 1.9% that
+                    # motivated EPIC's finer grid.
+
+vocab:
+  verbs: 8     # 7 verbs over the 12 action classes + "stall" (SIL)
+  nouns: 12    # 11 nouns over the 12 action classes + "idle" (SIL)
+
+k_subtask: 16   # 12 distinct (verb, noun) pairs + SIL, with headroom. Unlike EPIC, this IS
+                # one-state-per-pair: the 12 published action classes factor injectively into
+                # pairs, so recipe/lexical_init's anchored emissions hand the state space over
+                # rather than having to discover it. 16 rather than 13 leaves the weak-limit
+                # prior room to split a state whose duration is bimodal (`insert stake` covers
+                # four tent corners in the paper's finer 38-way taxonomy, which the public
+                # release collapses).
+k_recipe: 1     # One task. There is no recipe taxonomy to recover and no dish to derive, so the
+                # recipe layer is a no-op by construction rather than an unsupervised guess.
+                # cluster_recipes tolerates k_recipe=1; every trial lands in cluster 0.
+
+prior:
+  alpha_pi: 1.0
+
+duration:
+  d_max_ticks: 200        # 200s at a 1s tick. Sized against the tick stream: p99 = 88 ticks and
+                          # only 2 of 1912 runs exceed 200 (both long instruction reads, max
+                          # 306), so this censors 0.10%.
+  shrinkage_kappa: 5.0
+
+em:
+  restarts: 10
+  annealing: false
+  chunk_size: 8   # 29 sequences, T up to 2124. Length-bucketed chunking makes this cheap; the
+                  # whole corpus is 23226 ticks, an order of magnitude under Breakfast.
+
+joint_em:
+  warm_start: false       # no cascade artifacts exist for this corpus; use run_joint_lexical.py
+  chunk_size: 8           # set explicitly: run_joint_lexical otherwise derives
+                          # max(1, em.chunk_size // k_recipe), which at k_recipe=1 would be 8
+                          # anyway, but the derivation is not the reason it should be 8.
+  recipe_features: pairs  # the Breakfast default, NOT EPIC's `nouns`. EPIC switched because
+  idf_recipes: false      # 3806 pairs are far too sparse and equipment nouns dominate; 12 dense
+                          # pairs have neither problem. Both must move together -- see
+                          # recipe/lexical_init.cluster_recipes. At k_recipe=1 neither matters,
+                          # but leaving EPIC's values here would mislead anyone raising k_recipe.
+  n_restarts: 1
+  max_iters: 100
+  tol: 1.0e-4             # not reachable: joint EM lands in a period-3 limit cycle and never
+                          # satisfies this, so max_iters is the real stopping rule.
+  checkpoint_every: 5
+  global_damping: 0.7
+
+ambient_gaps:
+  inject_synthetic_gaps: false
+  sil_verb: "stall"       # not one of the 7 EPIC-Tent verbs
+  sil_noun: "idle"        # "kitchen" would also be free here, but "idle" keeps the sentinel
+                          # pair identical to EPIC's, so llm/prompts.py's vocab block and
+                          # anomaly/narrate.Lexicon need one SIL convention across both corpora
+                          # rather than two. build_vocab raises on a collision either way.
+                          # Gaps are 22% of wall-clock time here (median 2.8s, p90 9.9s) and
+                          # 17% of ticks after binning, so SIL is a substantial state, not a
+                          # rounding artifact.
+
+data:
+  annotations_root: "dataset/epic_tent"   # read by parse_epic_tent, unlike EPIC's dead key

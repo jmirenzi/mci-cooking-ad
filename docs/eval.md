@@ -65,6 +65,11 @@ Two populations:
 - **degraded** trials, one injected error each, carrying a ground-truth window $[t_0, t_1]$ from
   `synthetic/error_injection.py`.
 
+This design, and the one-anomaly-per-trial assumption running through this whole file, describes
+the two corpora whose anomalies are injected. It does **not** describe EPIC-Tent, whose anomalies
+are annotated, arrive several per trial, and leave no trial healthy. §7c covers that path and says
+which numbers here do not transfer.
+
 A detection counts if any selected channel fires inside
 
 $$
@@ -555,6 +560,230 @@ recall 0.450 / F1 0.574 — close in aggregate, and *not* for a boring reason. T
 half of a swap while the span layer labels both moved segments and asks for each. The same run
 records 54 true positives against **591 extra in-span flags** — the flag-density mass that
 per-tick recall was counting and this layer does not.
+
+---
+
+## 7c. `run_epic_tent_eval.py` — scoring against annotated anomalies
+
+The one place in this repo where ground truth was not manufactured. Results are reported per
+**error group**, each scored with every other type **removed**, and the HSMM is **trained only on
+error-excised data** ([`data.md`](data.md) §7b.5, §7b.8):
+
+| group | EPIC-Tent labels | spans (9 test sessions) |
+|---|---|---|
+| `procedural` | order, omit, correction, repeat — PREGO's subset | 52 |
+| `procedural+temporal` | + search, slow | 70 |
+
+`misuse` is in neither: 94% of its spans leave the `(verb, noun)` stream unchanged (below), so it
+would measure the representation rather than the detector. **Findings up front:**
+
+- **The HSMM is the only arm that beats its null.** Procedural F1 0.379 against 0.261 for flagging
+  every step boundary, at **2.8 alarms per 10 min** of error-free activity and 1.0% of that time
+  spent alarming — against 26–30 alarms/10 min for the null and the LLM arm. Its weakness is recall
+  (0.346), and it catches **none** of the 6 omissions or 3 corrections.
+- **The predictive LLM arm is dominated by flagging every step boundary, in both groups** — lower
+  precision, no better recall, more alarms. Its ~0.90 recall is alarm volume, not detection.
+- **Giving the LLM the printed instruction order bought nothing**: identical on `procedural`,
+  marginally worse on `procedural+temporal`.
+- **Temporal errors are caught by the transition channel, not the duration channels.** Of the 5
+  search/slow spans the HSMM catches, 4 fire first on `s_transition` and 1 on `s_temporal`.
+
+### What "removed" means, and the one part of PREGO's protocol not adopted
+
+PREGO's paper does not say how it handled the non-procedural types; its code does. The input is a
+collapsed step sequence, which has no slot for a misuse, and the scorer
+(`step_anticipation/src/models/llm_hf.py`) is
+
+```python
+correct = matches[:-1]      # every step before the last is scored as correct
+mistake = matches[-1]       # the last step of each trimmed test sequence is THE mistake
+```
+
+So the other types were **relabelled as correct**, never excised. Here the equivalent is
+`run_epic_tent_eval.group_truth`: an out-of-group span drops out of the ground truth and its ticks
+rejoin the healthy population, so a flag on one is a false positive.
+
+Not adopted: PREGO **trims each test video at the end of its first procedural mistake**, so each
+video contributes exactly one positive (their recall 0.867 = 13/15) and every earlier step is a
+negative. This run scores whole sessions with every in-group mistake a positive. Same subset, same
+removal rule, different denominator — the numbers below are not interchangeable with theirs.
+
+### Results: `procedural`
+
+| arm | precision | recall | F1 | alarms / 10 min | alarm time | lat (med) |
+|---|---|---|---|---|---|---|
+| **HSMM** (error-excised fit) | **0.419** | 0.346 | **0.379** | **2.81** | **1.0%** | 3.5 |
+| arm 3, no recipes | 0.134 | 0.904 | 0.233 | 29.92 | 9.2% | 0.0 |
+| arm 3, + instruction order | 0.135 | 0.904 | 0.235 | 29.56 | 8.9% | 1.0 |
+| *null:* flag every step boundary | 0.152 | 0.923 | 0.261 | 26.47 | 7.4% | 0.0 |
+| *null:* flag every tick | 0.852 | 1.000 | 0.920 | 2.99 | 100.0% | 0.0 |
+| PREGO + Llama 2 *(published, own protocol)* | 0.107 | 0.867 | 0.191 | — | — | — |
+| TI-PREGO + Llama 3.1 *(published, own protocol)* | 0.106 | 0.935 | 0.224 | — | — | — |
+
+| per-type recall | order (40) | omit (6) | correction (3) | repeat (3) |
+|---|---|---|---|---|
+| HSMM | 0.425 | **0.000** | **0.000** | 0.333 |
+| arm 3, no recipes | 0.950 | 0.667 | 0.667 | 1.000 |
+| arm 3, + instruction order | 0.950 | 0.667 | 0.667 | 1.000 |
+| *null:* every boundary | 0.975 | 0.667 | 0.667 | 1.000 |
+
+Arm 3 matches the null on every type and loses to it on order. Correction and repeat are n = 3 —
+read the counts, not the rates. HSMM attribution: order 16 × `s_transition`, 1 × `s_temporal`;
+repeat 1 × `s_transition`.
+
+Arm 3's procedural numbers land close to the published PREGO line (0.134 / 0.904 / 0.233 against
+0.107 / 0.867 / 0.191), on an independent implementation and a different denominator. So does the
+boundary null — and nobody in that line reports one.
+
+### Results: `procedural+temporal`
+
+| arm | precision | recall | F1 | alarms / 10 min | alarm time | lat (med) |
+|---|---|---|---|---|---|---|
+| **HSMM** (error-excised fit) | **0.511** | 0.329 | **0.400** | **2.77** | **0.8%** | 3.0 |
+| arm 3, no recipes | 0.181 | 0.914 | 0.303 | 30.16 | 9.3% | 0.0 |
+| arm 3, + instruction order | 0.179 | 0.886 | 0.298 | 29.59 | 9.0% | 1.0 |
+| *null:* flag every step boundary | 0.204 | 0.929 | 0.335 | 26.92 | 7.5% | 1.0 |
+| *null:* flag every tick | 0.886 | 1.000 | 0.940 | 3.53 | 100.0% | 0.0 |
+
+| per-type recall | order (40) | omit (6) | correction (3) | repeat (3) | search+slow (18) |
+|---|---|---|---|---|---|
+| HSMM | 0.425 | 0.000 | 0.000 | 0.333 | 0.278 |
+| arm 3, no recipes | 0.950 | 0.667 | 0.667 | 1.000 | 0.944 |
+| arm 3, + instruction order | 0.950 | 0.667 | 0.667 | 1.000 | 0.833 |
+| *null:* every boundary | 0.975 | 0.667 | 0.667 | 1.000 | 0.944 |
+
+HSMM precision *rises* (0.419 → 0.511): hits go 18 → 23 and merged false positives 25 → 22, because
+some flags the `procedural` group charged as false alarms were landing on search/slow spans — real
+anomalies, penalised there only because that group removes them.
+
+The temporal group was added for the duration channels, and they are not what catches it: of the
+5 search/slow spans the HSMM finds, 4 fire first on `s_transition`, 1 on `s_temporal`.
+
+### Reading the tables: the nulls and the two alarm measures
+
+**Every F1 here needs its null.** 29% of test ticks lie inside some annotated span, an order of
+magnitude above anything else measured, and span F1 merges false positives but not hits — so
+flagging every tick scores F1 0.92–0.94, and 0.016–0.023 with merging off. That gap is the metric's,
+not any detector's. Two nulls are printed: flag-every-tick for tick-dense detectors, and
+**flag-every-boundary for boundary-sparse ones, which is what arm 3 is**. `MERGE_TOL` favours
+tick-dense detectors (a run of ticks collapses to one alarm; one flag per step boundary does not),
+so scoring arm 3 against flag-every-tick alone would flatter it.
+
+**The healthy side is reported two ways, and needs both.** *Alarms per 10 minutes* counts distinct
+(merged) alarms during error-free activity; *alarm time* is the share of those seconds spent
+alarming. Neither is enough alone: flag-every-tick scores ~3 alarms/10 min — the same as the HSMM —
+because it is one alarm that never stops (100% alarm time).
+
+The runner also prints a *fragment FPR* (share of healthy fragments raising anything). It is kept
+for continuity but **cannot be compared across groups**: it is binary per fragment, so it grows with
+fragment length, and removing a type merges fragments into longer ones (48 → 33 between six types
+and `procedural`). The per-10-minute rate is the comparable one — and the one a deployment lives
+with.
+
+### Why a separate runner
+
+1. **Several anomalies per trial, of mixed type.** `run_llm_eval.py` loops over
+   `error_injection.ERROR_TYPES` with one degraded copy of each trial per type. EPIC-Tent sessions
+   carry a median of 10 annotated errors spanning up to five types at once, so the unit of
+   iteration is the trial, not (trial, type).
+2. **No element/step layer.** `element_metrics.score_trial_steps` breaks at the first hit and
+   returns one verdict per trial, and `relabel_with_sequence`'s `scope="trial"` default is
+   documented as unsound for multi-anomaly trials ([`anomaly.md`](anomaly.md) §6). Those metrics
+   are **not reported** on this corpus rather than reported wrongly.
+3. **No healthy trial.** All 29 sessions carry something. The healthy population is the error-free
+   *fragments* — recomputed per error group, since removing a type turns its ticks healthy — with
+   flags sliced out of the full trial's decode, never re-decoded.
+4. **No counterfactual layer.** §5 needs the same trial with and without the anomaly. A real error
+   has no healthy twin, and pairing across trials would destroy the matched-null property that is
+   the layer's whole justification.
+
+Two numbers from this file explicitly **do not transfer**: §7's $\text{acc} = (5R + (1-h))/(6+5s)$
+and the "F1 ≈ 0.625 is free" calibration are both hard-wired to the injector's 1 healthy : 5
+degraded pool ratio. A real-anomaly corpus has a data-determined ratio, so neither is comparable.
+
+Two numbers from this file explicitly **do not transfer**: §7's $\text{acc} = (5R + (1-h))/(6+5s)$
+and the "F1 ≈ 0.625 is free" calibration are both hard-wired to the injector's 1 healthy : 5
+degraded pool ratio. A real-anomaly corpus has a data-determined ratio, so neither is comparable.
+
+### `evaluate_spans_multi`, and why the obvious shape is wrong
+
+`span_metrics.evaluate_spans_multi` is a sibling of `evaluate_spans`, not a generalisation of it,
+so every number ever measured through the latter keeps the code path it was measured on. It takes
+`[(flags, [(span, error_type), ...]), ...]` — one entry per trial.
+
+The tempting alternative is to reuse `evaluate_spans` with
+`{etype: [(flags, spans_of_that_type)]}`. That is wrong, and quietly so: it passes one trial's
+flag list in once per type, so its false positives are counted once per type, **and a flag that
+correctly hit a `transposition` span is also charged as a false positive in the `substitution`
+entry.** Pooled precision needs every span of the trial visible at once. Recall does not, which is
+why `evaluate_spans`' shape is fine on an injected corpus — there, each trial carries exactly one
+anomaly. Per-type recall stays exact in the sibling because `score_trial` returns `per_span` rows
+in input order.
+
+### The emission channels fire zero times, and `misuse` is the reason
+
+Raw flagged ticks per channel over the 7533-tick test split (error-excised fit):
+
+    s_emit 0   s_verb 0   s_noun 0   s_recipe_transition 0
+    s_temporal 49   s_transition 36   s_dur_two 6
+
+Not "rarely" — **never**. Two causes compound. The state space is exact — 12 action classes factor
+injectively into 12 pairs, lexical init anchors one state per pair, subtask ARI 1.000 — so emissions
+are near-deterministic. And **the errors mostly do not touch the observation stream.** Measured per
+record over the scored ground-truth window, asking whether the observed `(verb, noun)` still
+includes the annotation's own host action:
+
+| EPIC-Tent label | symbolically unchanged |
+|---|---|
+| misuse | **94%** |
+| order | 90% |
+| search / slow | 80% |
+| correction | 75% |
+| omit | 44% |
+
+(`omit`'s scored window is the collapsed onset tick rather than the annotated span; over its full
+span it is 88% unchanged like the rest.)
+
+`misuse` is annotated *within a correctly-labelled action* — the wrong guyline during a step the
+annotator still called `place guyline` — so the tick stream is identical with or without it. That is
+why it is excluded from both groups. `order` is the informative contrast: also 90% unchanged, but
+what is wrong is the *position* of an unchanged pair, which a transition model can see — hence
+`s_transition` is the earliest channel on 16 of the 17 order errors the HSMM catches.
+
+That is still not detecting *out-of-orderness*, which [`data.md`](data.md) §7b.6 measured a
+first-order model cannot represent (the transition into an out-of-order segment has median corpus
+count 23 against a 22 baseline). It is detecting that the specific pair is locally unusual — a
+weaker, differently-distributed signal that happens to correlate.
+
+### Why the HSMM is trained on error-excised data
+
+Every training session contains annotated errors, so a model fitted on whole sessions partly learns
+the errors as normal. Measured before the switch — on all six mapped types, same 9 test sessions,
+same 48 healthy fragments:
+
+| fitted on | precision | recall | F1 | fragment FPR |
+|---|---|---|---|---|
+| whole train sessions (contaminated) | **0.806** | 0.197 | 0.316 | **0.146** |
+| error-excised fragments | 0.647 | **0.260** | **0.371** | 0.354 |
+
+Contamination makes the model permissive: it alarms less on both counts. The largest single move
+was order recall, 0.300 → 0.425 — once out-of-order transitions are cut from training the model stops
+treating them as ordinary. `run_epic_tent_eval.py` and `run_tent_test.sh` now use the excised fit
+only. The caveat stands: excision needs the labels, so this is the best *normal* model the labels
+allow, not one a deployment could fit from unlabelled data.
+
+One consequence to keep in mind: the excised corpus removes *all six* mapped types, including
+search/slow. When the `procedural` group then treats search/slow as normal, a model that never saw
+them in training can flag them — and is charged a false positive for it. That is at least part of
+the precision gap between the two groups.
+
+### The injected control, and one number in it not to trust
+
+The same HSMM on the same sessions, but with *injected* anomalies: precision 0.093, recall 0.370,
+F1 0.148. Injected anomalies are found more often and far less cleanly than annotated ones — the
+price of realism, separated from the price of the corpus. Its healthy rate is **not** a
+false-alarm rate: `run_llm_eval`'s pool treats the un-injected sessions as healthy, and here those
+carry all their real errors. It is an upper bound on alarm volume.
 
 ---
 

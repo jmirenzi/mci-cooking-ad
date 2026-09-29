@@ -300,9 +300,57 @@ answer rather than as a cautious answer.
 """
 
 
-def predictive_task_block():
+# A FOURTH sibling, for EPIC-Tent. Same reason the other three are siblings: the text is part
+# of the response-cache key, so producing the cooking wording by substitution would risk
+# invalidating every collected reply over a whitespace change. Only two phrases differ from
+# _PREDICTIVE_TASK -- the opener and "working normally" for "cooking normally" -- which is why
+# arm 3 is the cheap head to port: it asks for no verdict and names no anomaly type, so there
+# is no cooking-specific anomaly example to rewrite.
+_PREDICTIVE_TASK_ASSEMBLY = """You are watching a person assemble a camping tent outdoors,
+following a printed set of instructions. Each step is one uninterrupted stretch of a single
+action on a single object.
+
+You will be given a numbered list of the steps taken SO FAR, in order. Completed steps are written
+as:
+
+    VERB NOUN for NUMBER seconds
+
+The LAST line is the step the person has just STARTED and is still performing. Its action and
+object are known, but not yet how long it will last, so it is written as:
+
+    VERB NOUN (in progress)
+
+You are NOT being asked to spot anything wrong. Assume the person is working normally and predict
+what a normal continuation looks like:
+
+  1. how long the step now IN PROGRESS will last in total, counting from when it began, and
+  2. which single step will come NEXT, after the one in progress finishes.
+
+Reply with EXACTLY these two lines and nothing else -- no preamble, no explanation, no markdown:
+
+    DURATION: <N> seconds
+    NEXT: <verb> <noun>
+
+where <N> is a whole number of seconds and <verb> and <noun> are drawn from the vocabularies
+below. Always give both lines, even when you are unsure; a missing line is scored as a failure to
+answer rather than as a cautious answer.
+"""
+
+# The corpus a preprompt describes. "cooking" is the default everywhere so every existing call
+# -- and therefore every cached response -- is byte-identical to what it was.
+DOMAINS = ("cooking", "assembly")
+
+_PREDICTIVE_TASK_BY_DOMAIN = {
+    "cooking": _PREDICTIVE_TASK,
+    "assembly": _PREDICTIVE_TASK_ASSEMBLY,
+}
+
+
+def predictive_task_block(domain="cooking"):
     """The `--protocol predictive` preprompt head: predict, do not judge."""
-    return _PREDICTIVE_TASK
+    if domain not in DOMAINS:
+        raise ValueError(f"unknown domain: {domain!r} (expected one of {DOMAINS})")
+    return _PREDICTIVE_TASK_BY_DOMAIN[domain]
 
 
 SHOT_SELECT = ("random", "autocot")
@@ -521,11 +569,81 @@ def recipe_block(labels):
     return "\n".join(lines)
 
 
+def _median_step_durations(labels):
+    """-> {subtask label: median run length in ticks}, pooled over every run in every trial.
+
+    _canonical_recipes' durations come only from the steps in the MODAL sequence, which on a
+    single-task corpus is one 57-run trial order -- useless as a per-step summary. This pools
+    instead, so a step's typical length is measured over every time anyone did it.
+    """
+    runs = collections.defaultdict(list)
+    for trial in labels:
+        collapsed = []
+        for label in trial["subtask_labels"]:
+            if collapsed and collapsed[-1][0] == label:
+                collapsed[-1][1] += 1
+            else:
+                collapsed.append([label, 1])
+        for label, duration in collapsed:
+            runs[label].append(duration)
+    return {label: int(statistics.median(ds)) for label, ds in runs.items()}
+
+
+def assembly_block(labels, canonical_order, interleaved=()):
+    """The with-recipes addendum for a single-task corpus: the PRESCRIBED step order.
+
+    recipe_block is wrong here in substance, not just wording. It opens "The person is making
+    exactly one of the following recipes" and reports how often each modal order occurs, because
+    on Breakfast the order is an empirical fact about 10 recipes. EPIC-Tent has one task and a
+    printed instruction sheet, and its `order` errors are annotated against THAT sheet -- so the
+    reference is prescriptive, and reporting empirical order frequencies would describe the
+    errors rather than the procedure.
+
+    That is also why this block does not say how often people deviate. Arm 3 is asked to predict
+    a NORMAL continuation and the disagreement is what flags the anomaly; telling the model that
+    deviation is common would make it predict deviations and erase the signal. Measured
+    justification for the block existing at all: the transition into an out-of-order segment has
+    median corpus count 23 against a 22 baseline over all 1223 transitions, so a first-order
+    transition model -- which is what the HSMM has -- cannot represent this reference at all.
+
+    `canonical_order` is passed in rather than imported so this module stays corpus-agnostic,
+    exactly as `labels` already is. `interleaved` names steps with no position in the sequence.
+    """
+    medians = _median_step_durations(labels)
+    lines = [
+        "The person is assembling a camping tent outdoors, following a printed set of "
+        "instructions. The instructions prescribe this order of steps, with each step's typical "
+        "duration in seconds:",
+        "",
+    ]
+    for i, (verb, noun) in enumerate(canonical_order, start=1):
+        label = f"{verb}_{noun}"
+        median = medians.get(label)
+        suffix = f" (~{median}s)" if median is not None else ""
+        lines.append(f"  {i:2d}. {verb} {noun}{suffix}")
+    if interleaved:
+        lines += ["", "These steps have no fixed position in that sequence -- doing them at any "
+                      "point is normal:"]
+        for verb, noun in interleaved:
+            label = f"{verb}_{noun}"
+            median = medians.get(label)
+            suffix = f" (~{median}s)" if median is not None else ""
+            lines.append(f"      {verb} {noun}{suffix}")
+    lines += [
+        "",
+        "Steps above use the same vocabulary as the steps you will be shown. Durations are "
+        "medians over recorded sessions; the order is what the instructions specify.",
+    ]
+    return "\n".join(lines)
+
+
 PREDICTIVE_PROTOCOL = "predictive"
 
 
 def build_system_prompt(vocab, with_recipes=False, labels=None, protocol="incremental",
-                        unit="step", exemplars=None, rationales=None):
+                        unit="step", exemplars=None, rationales=None, domain="cooking",
+                        sil_verb="stall", sil_noun="kitchen", canonical_order=None,
+                        interleaved=()):
     """The full preprompt. with_recipes=True requires labels (parsed labels.json) -- see this
     module's docstring for why that arm is not a like-for-like comparison against the HSMM.
 
@@ -539,18 +657,43 @@ def build_system_prompt(vocab, with_recipes=False, labels=None, protocol="increm
     something you make once per step, not once per tick. `exemplars` (select_exemplars) are
     appended last, after the world description, so the demonstrations follow the vocabulary and
     the recipes rather than interrupting them.
+
+    `domain` picks the head and the structure block: "assembly" is EPIC-Tent, whose with-recipes
+    addendum is assembly_block (one prescribed order) rather than recipe_block (ten empirical
+    ones), and which therefore needs `canonical_order`. Only the predictive head has an assembly
+    sibling so far; the two verdict heads still open with the cooking sentence, and asking for
+    them on this domain raises rather than silently mislabelling the task.
+
+    `sil_verb`/`sil_noun` name the idle sentinel. They default to Breakfast's pair, which is
+    what every existing caller relied on implicitly -- and which is WRONG on EPIC, whose vocab
+    contains both `idle` (its sentinel) and `kitchen` (a real noun class), so the block was
+    naming a real object as the placeholder. Pass them from config["ambient_gaps"].
     """
     if with_recipes and labels is None:
         raise ValueError("with_recipes=True requires labels (the parsed labels.json)")
     if unit not in textify.UNITS:
         raise ValueError(f"unknown unit: {unit!r} (expected one of {textify.UNITS})")
+    if domain not in DOMAINS:
+        raise ValueError(f"unknown domain: {domain!r} (expected one of {DOMAINS})")
     if protocol == PREDICTIVE_PROTOCOL:
-        head = predictive_task_block()
+        head = predictive_task_block(domain)
+    elif domain != "cooking":
+        raise ValueError(
+            f"protocol {protocol!r} has no {domain!r} head: the verdict blocks open with the "
+            "cooking sentence and carry cooking anomaly examples. Add a sibling constant rather "
+            "than templating the existing ones -- they are frozen response-cache keys."
+        )
     else:
         head = task_block(protocol) if unit == "step" else tick_task_block(protocol)
-    blocks = [head, vocab_block(vocab)]
+    blocks = [head, vocab_block(vocab, sil_verb=sil_verb, sil_noun=sil_noun)]
     if with_recipes:
-        blocks.append(recipe_block(labels))
+        if domain == "assembly":
+            if canonical_order is None:
+                raise ValueError("domain='assembly' with_recipes=True requires canonical_order "
+                                 "(e.g. data.parse_epic_tent.CANONICAL_ORDER)")
+            blocks.append(assembly_block(labels, canonical_order, interleaved))
+        else:
+            blocks.append(recipe_block(labels))
     if protocol == PREDICTIVE_PROTOCOL and exemplars:
         blocks.append(fewshot_block(exemplars, rationales))
     return "\n\n".join(blocks).strip()
@@ -560,9 +703,10 @@ VARIANTS = ("no-recipes", "with-recipes")
 
 
 def build_variant(variant, vocab, labels=None, protocol="incremental", unit="step",
-                  exemplars=None, rationales=None):
+                  exemplars=None, rationales=None, **domain_kwargs):
+    """`domain_kwargs` forwards domain / sil_verb / sil_noun / canonical_order / interleaved."""
     if variant not in VARIANTS:
         raise ValueError(f"unknown prompt variant: {variant!r} (expected one of {VARIANTS})")
     return build_system_prompt(vocab, with_recipes=(variant == "with-recipes"), labels=labels,
                                protocol=protocol, unit=unit, exemplars=exemplars,
-                               rationales=rationales)
+                               rationales=rationales, **domain_kwargs)

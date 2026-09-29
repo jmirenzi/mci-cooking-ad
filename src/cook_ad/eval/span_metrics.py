@@ -257,3 +257,104 @@ def evaluate_spans(healthy_flags, degraded_by_type, deadline=DEADLINE, merge_tol
         "deadline": deadline,
         "strength_threshold": threshold,
     }
+
+
+def evaluate_spans_multi(healthy_flags, trials, deadline=DEADLINE, merge_tol=MERGE_TOL,
+                         threshold=STRENGTH_THRESHOLD, error_types=None):
+    """The same report as evaluate_spans, for trials carrying SEVERAL anomalies of MIXED type.
+
+    healthy_flags: [flags_for_one_control_trial, ...].
+    trials: [(flags, [(span, error_type), ...]), ...] -- one entry per trial, not per type.
+
+    A sibling rather than a generalisation, so every number ever measured through
+    evaluate_spans keeps the code path it was measured on.
+
+    The reason it cannot be expressed as evaluate_spans({etype: [(flags, spans_of_that_type)]}):
+    that would pass one trial's flag list in once per type, so its false positives would be
+    counted once per type, and a flag that correctly hit a `transposition` span would ALSO be
+    charged as a false positive in the `substitution` entry. Pooled precision needs every span
+    of the trial visible at once. Recall does not, which is why evaluate_spans gets away with
+    its shape on an injected corpus -- there, each trial carries exactly one anomaly.
+
+    Per-type recall is still exact here: score_trial returns per_span rows in input order, so
+    each row is attributed to the type of the span that produced it.
+    """
+    tp = fn = 0
+    fp_merged = fp_raw = 0
+    extra_in_span = 0
+    latencies = []
+
+    types = list(error_types) if error_types else []
+    if not types:
+        seen = {}
+        for _, spans in trials:
+            for _, etype in spans:
+                seen[etype] = True
+        types = list(seen)
+    acc = {etype: {"tp": 0, "fn": 0, "widths": [], "lat": [], "n_trials": 0} for etype in types}
+
+    for flags, spans in trials:
+        ordered = [span for span, _ in spans]
+        etypes = [etype for _, etype in spans]
+        for etype in set(etypes):
+            if etype in acc:
+                acc[etype]["n_trials"] += 1
+        result = score_trial(flags, ordered, deadline, merge_tol, threshold)
+        for row, etype in zip(result["per_span"], etypes):
+            bucket = acc.get(etype)
+            if bucket is None:
+                continue
+            bucket["widths"].append(row["width"])
+            if row["hit"]:
+                bucket["tp"] += 1
+                bucket["lat"].append(row["latency"])
+                latencies.append(row["latency"])
+                tp += 1
+            else:
+                bucket["fn"] += 1
+                fn += 1
+        fp_merged += len(result["fp_merged"])
+        fp_raw += len(result["fp_raw"])
+        extra_in_span += result["extra_in_span"]
+
+    per_type = {
+        etype: {
+            "n_trials": bucket["n_trials"],
+            "n_spans": bucket["tp"] + bucket["fn"],
+            "recall": (bucket["tp"] / (bucket["tp"] + bucket["fn"])
+                       if (bucket["tp"] + bucket["fn"]) else 0.0),
+            "median_span_width": (float(statistics.median(bucket["widths"]))
+                                  if bucket["widths"] else float("nan")),
+            "median_latency": (float(statistics.median(bucket["lat"]))
+                               if bucket["lat"] else float("nan")),
+            "tp": bucket["tp"], "fn": bucket["fn"],
+        }
+        for etype, bucket in acc.items()
+    }
+
+    healthy_fp_trials = sum(1 for f in healthy_flags if _kept_ticks(f, threshold))
+    n_healthy = len(healthy_flags)
+    healthy_raw = sum(len(_kept_ticks(f, threshold)) for f in healthy_flags)
+    healthy_merged = sum(len(merge_flags(_kept_ticks(f, threshold), merge_tol))
+                         for f in healthy_flags)
+
+    precision = tp / (tp + fp_merged) if (tp + fp_merged) else 0.0
+    recall = tp / (tp + fn) if (tp + fn) else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+
+    return {
+        "pooled": {"precision": precision, "recall": recall, "f1": f1,
+                   "tp": tp, "fn": fn, "fp": fp_merged},
+        "per_type": per_type,
+        "healthy": {"n": n_healthy, "false_positive_trials": healthy_fp_trials,
+                    "false_positive_rate": healthy_fp_trials / n_healthy if n_healthy else 0.0,
+                    "flags_raw": healthy_raw, "flags_merged": healthy_merged},
+        "latency": {"median": float(statistics.median(latencies)) if latencies else float("nan"),
+                    "p90": float(np.percentile(latencies, 90)) if latencies else float("nan"),
+                    "n": len(latencies)},
+        "false_positives": {"merged": fp_merged, "raw": fp_raw},
+        "extra_in_span": extra_in_span,
+        "merge_tol": merge_tol,
+        "deadline": deadline,
+        "strength_threshold": threshold,
+    }

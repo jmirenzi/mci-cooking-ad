@@ -483,8 +483,8 @@ def threshold_tables_joint_per_channel(joint_log_probs, r_hat, log_trans_margina
         verb=quantile.categorical_quantile_threshold(joint_log_probs.log_emit_v, alphas["s_verb"]),
         noun=quantile.categorical_quantile_threshold(joint_log_probs.log_emit_n, alphas["s_noun"]),
         transition=quantile.transition_quantile_threshold(log_trans_r, alphas["s_transition"]),
-        recipe=quantile.excess_quantile_threshold(
-            log_trans_r, log_trans_marginal, alphas["s_recipe_transition"]),
+        recipe=quantile.recipe_excess_thresholds(
+            joint_log_probs, log_trans_r, log_trans_marginal, alphas["s_recipe_transition"]),
     )
 
 
@@ -662,7 +662,17 @@ def assemble_trace_joint(joint_hsmm_params, joint_log_probs, r_hat, log_trans_ma
     s_temporal = temporal.live_stall_surprise(segments, log_dur_survival_r, log_dur_survival_r.shape[1])
     s_transition, expected_next_state = transition_surprise(segments, log_trans_r)
     s_transition_marginal, _ = transition_surprise(segments, log_trans_marginal)
-    s_recipe_transition = s_transition - s_transition_marginal
+    if joint_log_probs.log_trans.shape[0] == 1:
+        # One recipe: the recipe-attributable excess is undefined -- there is no other recipe for
+        # a transition to be ordinary under -- so it is zero here by definition. The subtraction
+        # does not produce that: marginal_log_trans floors probabilities, so on rare transitions
+        # it leaves a flooring artifact of up to ~6 nats (float noise elsewhere). Before this
+        # branch s_recipe_transition was the earliest channel on 17 of 25 caught spans on
+        # EPIC-Tent. Zeroing the statistic is only half the fix: the thresholds are built from
+        # the same artifact, and quantile.recipe_excess_thresholds sets them to +inf.
+        s_recipe_transition = np.zeros_like(np.asarray(s_transition))
+    else:
+        s_recipe_transition = s_transition - s_transition_marginal
     expected_next_recipe = np.where(expected_next_state != -1, int(r_hat), -1).astype(np.int64)
 
     s_long, s_short, s_two, temporal_attr = temporal.completed_segment_surprise(segments, dur_r_r, dur_p_r)
