@@ -335,6 +335,10 @@ arithmetic there before running it against a metered API.
 ./py run_epic_tent_eval.py --skip-llm                 # HSMM + nulls, no server needed
 ./py run_epic_tent_eval.py --variant both             # + the predictive LLM arm (arm 3)
 ./run_tent_test.sh                                    # the whole pipeline, end to end
+./py run_epic_tent_eval.py --trim \
+    --split-file dataset/processed/epic_tent/split_prego.json \
+    --joint-params dataset/processed/epic_tent/joint_params_clean_prego.npz
+                                                      # PREGO's exact split AND protocol
 ```
 
 The only path in the repo where ground truth was not manufactured. Every arm is scored per **error

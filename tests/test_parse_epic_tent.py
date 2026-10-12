@@ -155,6 +155,43 @@ def test_excise_emits_label_rows_that_zip_with_its_sequences():
     assert clean_labels[0]["participant_label"] == "p07"
 
 
+# ---- errors whose host action preprocessing deleted ---------------------------------------
+# Segments are (t0, t1, verb_id, noun_id) in seconds; ACTIONS maps an action name to its ids.
+ACTIONS = {"tie top": (6, 11), "insert support": (1, 4)}
+TIE, SUPPORT = (*ACTIONS["tie top"],), (*ACTIONS["insert support"],)
+
+
+def test_an_error_on_a_swallowed_action_is_unobservable():
+    raw = [(0.0, 60.0, *SUPPORT), (20.0, 30.0, *TIE)]     # tie top interrupts insert support
+    kept = [(0.0, 60.0, *SUPPORT)]                        # ... and first-come-wins drops it
+    assert pet.host_swallowed(22.0, 28.0, "transposition", "tie top", raw, kept, ACTIONS)
+
+
+def test_an_error_on_a_surviving_action_is_kept():
+    raw = kept = [(0.0, 20.0, *SUPPORT), (20.0, 30.0, *TIE)]
+    assert not pet.host_swallowed(22.0, 28.0, "transposition", "tie top", raw, kept, ACTIONS)
+
+
+def test_a_partly_surviving_action_is_kept():
+    """resolve_overlaps pushes a late start forward rather than dropping the segment; if any of
+    it still overlaps the error, the stream does show the action there."""
+    raw = [(0.0, 25.0, *SUPPORT), (20.0, 30.0, *TIE)]
+    kept = [(0.0, 25.0, *SUPPORT), (25.0, 30.0, *TIE)]
+    assert not pet.host_swallowed(22.0, 28.0, "transposition", "tie top", raw, kept, ACTIONS)
+
+
+def test_omissions_and_annotation_inconsistencies_are_never_dropped():
+    raw = [(0.0, 60.0, *SUPPORT), (20.0, 30.0, *TIE)]
+    kept = [(0.0, 60.0, *SUPPORT)]
+    # An omitted action is absent by definition.
+    assert not pet.host_swallowed(22.0, 22.0, "omission", "tie top", raw, kept, ACTIONS)
+    # No raw tie-top segment overlaps at all: the annotation disagrees with itself, and the
+    # stream around the error is intact -- not preprocessing's doing.
+    assert not pet.host_swallowed(40.0, 45.0, "transposition", "tie top", raw, kept, ACTIONS)
+    # No host action.
+    assert not pet.host_swallowed(22.0, 28.0, "stall", "between actions", raw, kept, ACTIONS)
+
+
 def test_fps_overrides_only_apply_to_the_three_published_exceptions():
     assert pet.fps_for(1) == pet.FPS_SRC
     assert pet.fps_for(3) != pet.FPS_SRC
@@ -216,11 +253,22 @@ def test_the_procedural_subset_matches_pregos_published_count(built):
     """PREGO and TI-PREGO both report EPIC-Tent's procedural errors as order + omit +
     correction + repeat. Recovering their 163 is the check that the taxonomy mapping is right."""
     _, _, _, truth, _, _, _ = built
-    procedural = [r for t in truth for r in t["records"] if r["procedural"]]
+    every = [t["records"] + t["unobservable_records"] for t in truth]
+    procedural = [r for records in every for r in records if r["procedural"]]
     assert len(procedural) == 163
-    assert sum(1 for t in truth if any(r["procedural"] for r in t["records"])) == 28, (
+    assert sum(1 for records in every if any(r["procedural"] for r in records)) == 28, (
         "28 of 29 participants make at least one procedural error; only p08 does not"
     )
+
+
+@needs_data
+def test_fifteen_errors_lose_their_host_action_to_overlap_resolution(built):
+    """Measured 2026-10-06: 15 rows, none an omission. They leave `records` but are still
+    excised from the training corpus, so the clean-tick count below does not move."""
+    _, _, _, truth, _, _, stats = built
+    gone = [r for t in truth for r in t["unobservable_records"]]
+    assert len(gone) == stats["errors_unobservable"] == 15
+    assert not any(r["error_type"] == "omission" for r in gone)
 
 
 @needs_data
@@ -250,7 +298,7 @@ def test_every_truth_record_lands_inside_its_trial(built):
 def test_clean_fragments_never_touch_an_error_span(built):
     _, _, _, truth, clean, _, _ = built
     for trial in truth:
-        spans = [tuple(r["window"]) for r in trial["records"]]
+        spans = [tuple(r["window"]) for r in trial["records"] + trial["unobservable_records"]]
         for a, b in trial["clean_fragments"]:
             assert b - a + 1 >= pet.MIN_FRAGMENT_TICKS
             assert not any(start <= b and a <= end for start, end in spans)

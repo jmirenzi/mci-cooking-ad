@@ -180,8 +180,21 @@ def _bar(ax, y, steps, color, letters, min_label_ticks, height=0.52, fontsize=8.
                 color="white" if inside else "#333", fontweight="bold", zorder=3)
 
 
-def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path, unit="step"):
+def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path, unit="step",
+         gt_spans=None, row_labels=("unaltered\n(what happened)", "observations\n(fed to detector)"),
+         window_label="injected window", x_offset=0, card_window=None, step_offset=0):
     """hsmm: ({tick: strength_ratio}, queries)
+
+    The keyword options exist for corpora with REAL, multiple anomalies (render_epic_tent_narrate
+    _png.py); their defaults reproduce the Breakfast figure exactly.
+      gt_spans     -- [(t0, t1, label)] drawn instead of the single injected `gt_ticks` window.
+      row_labels   -- the two stream rows' labels.
+      window_label -- the legend entry for the shaded truth.
+      x_offset     -- ticks were re-based to a crop window; the axis and cards print absolute
+                      seconds.
+      step_offset  -- likewise for step numbers: the index in the crop of the session's step 1.
+      card_window  -- (lo, hi): an LLM verdict outside it keeps its marker but gets no card, so
+                      a long window does not bury the error under a hundred false-alarm quotes.
     llm_arms: [(label, steps, verdicts, gt_steps, debris_steps), ...]
     unit: "step" (default, unchanged rendering) or "tick" -- see the module docstring for what
     changes. `steps` inside each llm_arms tuple must already be at this unit (llm/textify's
@@ -206,7 +219,7 @@ def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path, unit="step")
 
     cards = []
     for i, q in enumerate(hsmm[1], 1):
-        cards.append(f"{i}. [HSMM]  t={q['tick']}  {q['channel']}  {q['severity']}")
+        cards.append(f"{i}. [HSMM]  t={q['tick'] + x_offset}  {q['channel']}  {q['severity']}")
         cards.append("     " + q["text"])
     # Only verdicts the LLM actually raised get a card AND a bar. A step it passed on has nothing
     # to quote, and drawing a "missed" marker for it just repeats what the empty row inside the
@@ -236,16 +249,19 @@ def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path, unit="step")
         for v in verdicts:
             if not v.is_anomaly:
                 continue
+            st = steps[v.step_index]
+            if card_window and not (st.tick_start <= card_window[1]
+                                    and st.tick_start + st.duration >= card_window[0]):
+                continue
             k += 1
             card_no[(lab, v.step_index)] = k
-            st = steps[v.step_index]
             if v.step_index in gt_steps:
                 mark = "HIT"
             elif v.step_index in debris:
                 mark = "DEBRIS (excluded, not scored)"
             else:
                 mark = "FALSE ALARM"
-            cards.append(f"{k}. [{lab}]  step {v.step_index + 1} "
+            cards.append(f"{k}. [{lab}]  step {v.step_index + 1 + step_offset} "
                          f"({st.verb} {st.noun}, {st.duration}s)  {mark}")
             cards.append("     " + v.raw.strip().replace("\n", " "))
     cards = cards or ["(nothing to report)"]
@@ -291,7 +307,12 @@ def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path, unit="step")
     cb_w = 2.2 / fig_w
     bar_ax = fig.add_axes([0.5 - cb_w / 2, (fig_h - 0.40) / fig_h, cb_w, 0.12 / fig_h])
 
-    if gt_ticks:
+    for s0, s1, span_label in gt_spans or ():
+        ax.add_patch(Rectangle((s0, obs_bottom - pad_bot), s1 - s0 + 1, ax_data_h,
+                               color=WIN_C, zorder=0))
+        ax.axvline(s0, color="#c44e52", ls="--", lw=1.2, zorder=1)
+        ax.text(s0 + 0.5, pad_top - 0.10, span_label, color="#c44e52", fontsize=8, zorder=4)
+    if gt_ticks and not gt_spans:
         ax.add_patch(Rectangle((gt_ticks[0], obs_bottom - pad_bot),
                                gt_ticks[1] - gt_ticks[0] + 1, ax_data_h,
                                color=WIN_C, zorder=0))
@@ -411,10 +432,8 @@ def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path, unit="step")
                     fontweight="bold", color="#222", zorder=5,
                     bbox=dict(boxstyle="square,pad=0.08", fc="white", ec="none", alpha=0.85))
 
-    ax.text(-t_max * 0.012, y_unalt, "unaltered\n(what happened)", ha="right", va="center",
-            fontsize=8.5)
-    ax.text(-t_max * 0.012, y_fed, "observations\n(fed to detector)", ha="right", va="center",
-            fontsize=8.5)
+    ax.text(-t_max * 0.012, y_unalt, row_labels[0], ha="right", va="center", fontsize=8.5)
+    ax.text(-t_max * 0.012, y_fed, row_labels[1], ha="right", va="center", fontsize=8.5)
     for lab, y in zip(lane_names, lane_ys):
         ax.text(-t_max * 0.010, y, lab, ha="right", va="center", fontsize=7.3,
                 fontweight="bold" if "HSMM" in lab or "gemma" in lab else "normal")
@@ -423,10 +442,14 @@ def plot(unaltered, fed, gt_ticks, hsmm, llm_arms, title, out_path, unit="step")
     ax.set_ylim(obs_bottom - pad_bot, pad_top)
     ax.set_yticks([])
     ax.set_xlabel("tick (seconds)")
+    if x_offset:
+        from matplotlib.ticker import FuncFormatter
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v + x_offset:g}"))
+        ax.set_xlabel("time in session (seconds)")
     for sp in ("top", "right", "left"):
         ax.spines[sp].set_visible(False)
     handles = [Rectangle((0, 0), 1, 1, color=WIN_C)]
-    labels = ["injected window"]
+    labels = [window_label]
     for kind in ("hit", "false_alarm", "debris"):
         handles.append(ax.scatter([], [], marker="v", s=90, edgecolors=LLM_EDGE,
                                   linewidths=0.8, **LLM_STYLE[kind]))

@@ -258,12 +258,34 @@ def predictive_flags_per_trial(trajectories, lexicon, client, system_prompt, voc
     }
 
 
-def score(flags_by_trial, truth, group, merge_tol):
-    """One arm's per-trial flags, scored against `group` with every other type removed."""
+def step_false_alarms(flags, trajectory, lexicon, sil, spans):
+    """-> (flagged correct steps, correct steps) over a WHOLE session: the trimmed protocol's
+    false-alarm rate, on untrimmed sessions. Steps are PREGO's (step_extents: idle charged to the
+    step it follows, repeats across idle merged); a step is correct if its extent overlaps no
+    in-group span, and a false alarm if any flag lands in it. Steps touching a mistake are neither
+    -- they are what recall scores."""
+    ticks = sorted({f if isinstance(f, (int, np.integer)) else f.tick for f in flags})
+    flagged = n = 0
+    for a, b in step_extents(trajectory, lexicon, sil):
+        if any(t0 <= b and t1 >= a for (t0, t1), _ in spans):
+            continue
+        n += 1
+        flagged += any(a <= t <= b for t in ticks)
+    return flagged, n
+
+
+def score(flags_by_trial, truth, group, merge_tol, trajectories=None, lexicon=None, sil=None):
+    """One arm's per-trial flags, scored against `group` with every other type removed. With
+    `trajectories`, also the step-level false-alarm rate (see step_false_alarms)."""
     trials, healthy, healthy_ticks, alarmed_ticks = [], [], 0, 0
-    for flags, trial in zip(flags_by_trial, truth):
+    steps_flagged = steps_correct = 0
+    for i, (flags, trial) in enumerate(zip(flags_by_trial, truth)):
         spans, fragments = group_truth(trial, group)
         trials.append((flags, spans))
+        if trajectories is not None:
+            k, n = step_false_alarms(flags, trajectories[i], lexicon, sil, spans)
+            steps_flagged += k
+            steps_correct += n
         for fragment in fragments:
             inside = slice_flags(flags, fragment)
             healthy.append(inside)
@@ -286,7 +308,160 @@ def score(flags_by_trial, truth, group, merge_tol):
     report["healthy"]["alarms_per_10min"] = (
         600.0 * report["healthy"]["flags_merged"] / healthy_ticks if healthy_ticks else 0.0)
     report["healthy"]["alarm_time_frac"] = alarmed_ticks / healthy_ticks if healthy_ticks else 0.0
+    if trajectories is not None:
+        # Same unit as the trimmed protocol's false_alarm_rate, so the two blocks can be read
+        # side by side. Alarm time cannot: a 1-tick flag on a 30 s step is 1/30 there, 1/1 here.
+        report["healthy"]["steps_correct"] = steps_correct
+        report["healthy"]["steps_flagged"] = steps_flagged
+        report["healthy"]["step_false_alarm_rate"] = (
+            steps_flagged / steps_correct if steps_correct else 0.0)
     return report
+
+
+# ---- PREGO's trimmed step protocol (--trim) --------------------------------------------------
+#
+# Reproduces the scorer in PREGO's step_anticipation/src/models/llm_hf.py:
+#     correct = matches[:-1]; mistake = matches[-1]
+#     tn += sum(correct); fp += sum(~correct); tp += int(not mistake); fn += int(mistake)
+# Each test video is trimmed "up to the last frame of the first mistake"; the collapsed action
+# sequence up to there is scored step by step; the last step is THE mistake (one positive per
+# video) and every earlier step is a negative. Videos with no mistake are "maintained
+# unaltered" -- every step a negative.
+
+def trim_at_first_mistake(sequences, truth, group):
+    """-> [(sequence, (t0, t1) or None)]: each session cut after the last tick of its FIRST
+    in-group mistake (earliest onset). Out-of-group types were already removed by group_truth, so
+    an earlier misuse neither triggers the cut nor survives as a positive -- PREGO's treatment."""
+    out = []
+    for seq, trial in zip(sequences, truth):
+        spans, _ = group_truth(trial, group)
+        if not spans:
+            out.append((seq, None))
+            continue
+        (t0, t1), _ = min(spans, key=lambda s: s[0])
+        end = t1 + 1
+        out.append(({"trial_id": seq["trial_id"], "verb_ids": seq["verb_ids"][:end],
+                     "noun_ids": seq["noun_ids"][:end]}, (t0, t1)))
+    return out
+
+
+def step_extents(trajectory, lexicon, sil):
+    """PREGO's steps are the COLLAPSED ACTION sequence: idle removed, then consecutive repeats
+    merged -- their gt never repeats an action, so `insert stake, idle, insert stake` is ONE step.
+    Each step owns the ticks from its start to the next step's start, so a flag raised during an
+    idle gap is charged to the step it follows (leading idle goes to the first). -> [(a, b)]."""
+    steps = []
+    for st in textify.steps_from_trajectory(trajectory, lexicon):
+        if (st.verb, st.noun) == sil:
+            continue
+        if steps and (steps[-1].verb, steps[-1].noun) == (st.verb, st.noun):
+            continue            # same action resuming after idle: still the same step
+        steps.append(st)
+    n_ticks = len(trajectory["verb_ids"])
+    if not steps:
+        return [(0, n_ticks - 1)]
+    starts = [0] + [st.tick_start for st in steps[1:]]
+    ends = [st.tick_start - 1 for st in steps[1:]] + [n_ticks - 1]
+    return list(zip(starts, ends))
+
+
+def drop_truncated_under_run(flags, trajectory, lexicon):
+    """Arm 3's under-run channel fires at a step's closing tick if it ran shorter than predicted.
+    Trimming cuts the final step artificially, so that step never closed -- and the cut is
+    exactly the mistake step, so an under-run there would be a manufactured true positive. The
+    HSMM needs no equivalent: temporal.completed_segment_surprise censors the final segment."""
+    steps = textify.steps_from_trajectory(trajectory, lexicon)
+    last_tick = steps[-1].tick_end - 1 if steps else -1
+    return [f for f in flags if not (f.channel == predict.DUR_SHORT and f.tick == last_tick)]
+
+
+def score_prego(flags_by_trial, trimmed, trajectories, lexicon, sil, truth, group):
+    """Step-level TP/FN/FP/TN exactly as PREGO counts them, plus per-type recall of the FIRST
+    mistake. A mistake whose span covers several steps is still ONE positive, hit if any of them
+    is flagged -- PREGO's sequence has exactly one mistake step per video."""
+    tp = fn = fp = tn = 0
+    per_type = {etype: {"tp": 0, "fn": 0} for etype in group}
+    for flags, (_, window), trajectory, trial in zip(flags_by_trial, trimmed, trajectories,
+                                                     truth):
+        extents = step_extents(trajectory, lexicon, sil)
+        ticks = sorted({f if isinstance(f, (int, np.integer)) else f.tick for f in flags})
+        flagged = [any(a <= t <= b for t in ticks) for a, b in extents]
+        if window is None:
+            fp += sum(flagged)
+            tn += len(flagged) - sum(flagged)
+            continue
+        t0, t1 = window
+        positives = [i for i, (a, b) in enumerate(extents) if a <= t1 and b >= t0]
+        negatives = [i for i, (_, b) in enumerate(extents) if b < t0]
+        hit = any(flagged[i] for i in positives)
+        tp += hit
+        fn += not hit
+        fp += sum(flagged[i] for i in negatives)
+        tn += sum(not flagged[i] for i in negatives)
+        spans, _ = group_truth(trial, group)
+        first_type = min(spans, key=lambda s: s[0])[1]
+        per_type[first_type]["tp" if hit else "fn"] += 1
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    # TI-PREGO (arXiv 2411.02570, eq. 3) switched to BALANCED precision,
+    #     Prec_b = TP / (TP + (N+/N-) FP)  ==  TPR / (TPR + FPR),
+    # which is why its Epic-tent-O table reads 20-40% where PREGO's paper read <=10.7%: it is a
+    # different metric, not a better detector. Chance (TPR == FPR) scores exactly 0.5, and
+    # flagging every step scores Prec_b 0.5 / F1_b 0.667 -- above every Epic-tent-O row TI-PREGO
+    # reports. Reported so our numbers can be read on their scale; never compare across the two.
+    n_pos, n_neg = tp + fn, fp + tn
+    precision_b = tp / (tp + (n_pos / n_neg) * fp) if n_neg and (tp or fp) else 0.0
+    return {
+        "tp": tp, "fn": fn, "fp": fp, "tn": tn,
+        "precision": precision, "recall": recall,
+        "f1": 2 * precision * recall / (precision + recall) if precision + recall else 0.0,
+        "precision_b": precision_b,
+        "f1_b": (2 * precision_b * recall / (precision_b + recall)
+                 if precision_b + recall else 0.0),
+        "accuracy": (tp + tn) / (tp + tn + fp + fn) if tp + tn + fp + fn else 0.0,
+        "false_alarm_rate": fp / (fp + tn) if fp + tn else 0.0,
+        "per_type": {k: {**v, "recall": v["tp"] / (v["tp"] + v["fn"]) if v["tp"] + v["fn"]
+                         else float("nan")} for k, v in per_type.items()},
+    }
+
+
+def print_prego_protocol(name, group, reports):
+    labels = ", ".join(SOURCE_NAME[t] for t in group)
+    first = next(iter(reports.values()))
+    print(f"\n{'=' * 96}\nPREGO PROTOCOL (trimmed at first mistake, step-level): {name}  "
+          f"({labels})\n{'=' * 96}")
+    print(f"  {first['tp'] + first['fn']} positives (one per session with an in-group mistake), "
+          f"{first['fp'] + first['tn']} negative steps before them")
+    print(f"\n  {'arm':<38}{'tp':>4}{'fn':>4}{'fp':>6}{'tn':>6}{'prec':>8}{'recall':>8}"
+          f"{'F1':>7}{'false-alarm/step':>18}{'prec_b':>9}{'F1_b':>7}")
+    for arm, r in reports.items():
+        print(f"  {arm:<38}{r['tp']:>4}{r['fn']:>4}{r['fp']:>6}{r['tn']:>6}{r['precision']:>8.3f}"
+              f"{r['recall']:>8.3f}{r['f1']:>7.3f}{r['false_alarm_rate']:>18.3f}"
+              f"{r['precision_b']:>9.3f}{r['f1_b']:>7.3f}")
+    if name == "procedural":
+        # Flag-every-step on PREGO's OWN gt sequences (the `gt` lists in their
+        # step_anticipation/data/predictions/output_miniROAD_Epic-tent-O.json): 15 mistakes, 153
+        # correct steps. The one row here computed on exactly their sequences -- ours reproduce
+        # their gt exactly in 6/15 sessions (overlap resolution differs), so it is the reference
+        # the published numbers should be read against.
+        print(f"  {'null on PREGO own gt (15 pos, 153 neg)':<38}{15:>4}{0:>4}{153:>6}{0:>6}"
+              f"{15 / 168:>8.3f}{1.0:>8.3f}{2 * (15 / 168) / (1 + 15 / 168):>7.3f}{1.0:>18.3f}"
+              f"{0.5:>9.3f}{2 / 3:>7.3f}")
+        # Classical precision, PREGO CVPR'24 Table 2 (oracle steps).
+        print(f"  {'PREGO + Llama 2 (CVPR24, classical)':<38}{'':>28}{0.107:>8.3f}{0.867:>8.3f}"
+              f"{0.191:>7.3f}")
+        # BALANCED precision, TI-PREGO arXiv 2411.02570 Table 2 (oracle steps). Their FP and N-
+        # cannot be counted in the same unit -- at recall 1.0, Prec_b 0.407 implies FP > N- --
+        # and the scorer is not public, so only the definition is reproduced here, not the count.
+        print(f"  {'TI-PREGO + Llama 3.1 (balanced)':<38}{'':>28}{'':>8}{1.000:>8.3f}{'':>7}"
+              f"{'':>18}{0.407:>9.3f}{0.578:>7.3f}")
+    header = "".join(f"{SOURCE_NAME[t][:12]:>13}" for t in group)
+    counts = "".join(f"{'n=' + str(first['per_type'][t]['tp'] + first['per_type'][t]['fn']):>13}"
+                     for t in group)
+    print(f"\n  recall by type of the FIRST mistake{' ' * 3}{header}\n  {' ' * 38}{counts}")
+    for arm, r in reports.items():
+        cells = "".join(f"{_fmt(r['per_type'][t]['recall']):>13}" for t in group)
+        print(f"  {arm:<38}{cells}")
 
 
 def _fmt(value, spec=".3f"):
@@ -307,16 +482,20 @@ def print_group(name, group, reports, truth):
           f"{sum(b - a + 1 for a, b in fragments)} ticks")
 
     print(f"\n  {'arm':<38}{'prec':>7}{'recall':>8}{'F1':>7}{'alarms/10min':>14}"
-          f"{'alarm time':>12}{'frag FPR':>10}{'lat med':>9}")
+          f"{'alarm time':>12}{'step FPR':>10}{'frag FPR':>10}{'lat med':>9}")
     for arm, r in reports.items():
         p, h, lat = r["pooled"], r["healthy"], r["latency"]
+        step_fpr = h.get("step_false_alarm_rate")
         print(f"  {arm:<38}{p['precision']:>7.3f}{p['recall']:>8.3f}{p['f1']:>7.3f}"
               f"{h['alarms_per_10min']:>14.2f}{h['alarm_time_frac']:>11.1%}"
-              f"{h['false_positive_rate']:>10.3f}{_fmt(lat['median'], '.1f'):>9}")
+              f"{_fmt(step_fpr):>10}{h['false_positive_rate']:>10.3f}"
+              f"{_fmt(lat['median'], '.1f'):>9}")
     print("  On error-free activity only: alarms/10min = distinct (merged) alarms; alarm time =\n"
           "  share of seconds spent alarming. Read them together -- flag-everything has few\n"
-          "  alarms because it is one alarm that never stops. frag FPR = share of healthy\n"
-          "  fragments raising anything; it grows with fragment length, so compare WITHIN a group.")
+          "  alarms because it is one alarm that never stops. step FPR = share of correct steps\n"
+          "  (no in-group error) with any alarm -- the trimmed protocol's unit. frag FPR = share\n"
+          "  of healthy fragments raising anything; it grows with fragment length, so compare\n"
+          "  WITHIN a group.")
 
     header = "".join(f"{SOURCE_NAME[t][:12]:>13}" for t in group)
     counts = "".join(f"{'n=' + str(reports[next(iter(reports))]['per_type'][t]['n_spans']):>13}"
@@ -354,7 +533,8 @@ def print_prego_comparison(reports, split_file, split_part):
         print(f"  {arm:<38}  precision {p['precision']:.3f}  recall {p['recall']:.3f}  "
               f"F1 {p['f1']:.3f}")
     print(f"  {'PREGO + Llama 2 (published)':<38}  precision 0.107  recall 0.867  F1 0.191")
-    print(f"  {'TI-PREGO + Llama 3.1 (published)':<38}  precision 0.106  recall 0.935  F1 0.224")
+    print(f"  {'TI-PREGO + Llama 3.1 (published)':<38}  BALANCED precision 0.407  recall 1.000  "
+          f"F1_b 0.578 -- a different metric; see --trim")
     print("  NOT interchangeable. PREGO scores STEPS of the collapsed action sequence, and trims\n"
           "  each test video at the end of its FIRST procedural mistake: one positive per video\n"
           "  (recall 0.867 = 13/15), every earlier step a negative. This run scores tick SPANS\n"
@@ -377,6 +557,10 @@ def main():
     # fitted on whole sessions partly learns the errors as normal -- measured: it alarms less on
     # both counts (recall 0.197 vs 0.260, healthy FPR 0.146 vs 0.354 on all six types).
     ap.add_argument("--joint-params", default=f"{D}/joint_params_clean.npz")
+    ap.add_argument("--trim", action="store_true",
+                    help="PREGO's protocol instead of span scoring: trim each session at the end "
+                         "of its first in-group mistake and score STEPS, one positive per "
+                         "session. Detectors are re-run on the trimmed streams.")
     ap.add_argument("--groups", nargs="+", choices=list(ERROR_GROUPS),
                     default=list(ERROR_GROUPS),
                     help="error groups to score; each is scored with every other type removed")
@@ -467,100 +651,139 @@ def main():
         joint, sequences, d_max, chunk_size=args.chunk_size
     )
 
-    # ---- every arm's flags, once -----------------------------------------------------------
-    # Flags do not depend on the error group -- only the scoring does -- so each arm runs once
-    # and is re-scored per group below.
-    flags_by_arm, meta = {}, {}
+    # ---- every arm's flags -----------------------------------------------------------
+    def collect(trajectories, trimmed=False):
+        """Every arm's per-trial flags over `trajectories`. Flags do not depend on the error group
+        -- only the scoring does -- except under --trim, where the streams themselves differ."""
+        # Flags do not depend on the error group -- only the scoring does -- so each arm runs once
+        # and is re-scored per group below.
+        flags_by_arm, meta = {}, {}
 
-    # The two nulls. flag-everything is the null for a tick-dense detector; flag-every-boundary
-    # for a boundary-sparse one, which is what arm 3 is. MERGE_TOL structurally favours tick-dense
-    # detectors (a run of ticks collapses to one alarm), so scoring arm 3 against flag-everything
-    # alone would flatter it.
-    flags_by_arm["control/flag-everything"] = [flag_everything(len(sq["verb_ids"]))
-                                               for sq in sequences]
-    flags_by_arm["control/flag-every-boundary"] = [
-        flag_every_boundary(textify.steps_from_trajectory(t, lexicon)) for t in trajectories
-    ]
+        # The two nulls. flag-everything is the null for a tick-dense detector; flag-every-boundary
+        # for a boundary-sparse one, which is what arm 3 is. MERGE_TOL structurally favours tick-dense
+        # detectors (a run of ticks collapses to one alarm), so scoring arm 3 against flag-everything
+        # alone would flatter it.
+        flags_by_arm["control/flag-everything"] = [flag_everything(len(sq["verb_ids"]))
+                                                   for sq in sequences]
+        flags_by_arm["control/flag-every-boundary"] = [
+            flag_every_boundary(textify.steps_from_trajectory(t, lexicon)) for t in trajectories
+        ]
 
-    if not args.skip_hsmm:
-        flags_by_arm["hsmm-joint"] = hsmm_flags_per_trial(
-            trajectories, model, args.chunk_size, args.alpha, channel_alpha)
+        if not args.skip_hsmm:
+            flags_by_arm["hsmm-joint"] = hsmm_flags_per_trial(
+                trajectories, model, args.chunk_size, args.alpha, channel_alpha)
 
-    if not args.skip_llm:
-        variants = list(prompts.VARIANTS) if args.variant == "both" else [args.variant]
-        # Exemplars come from the error-free FRAGMENTS, not from whole sessions. fewshot_block
-        # opens "Here are some complete, correctly-executed trials", and on this corpus no whole
-        # session is correctly executed -- 28 of 29 carry a procedural error. The fragments are.
-        exemplars = []
-        if args.n_shot > 0:
-            clean = json.loads(open(args.clean_sequences).read())
-            if split:
-                members = set(split["train_trial_ids"])
-                clean = [c for c in clean if c["trial_id"].rsplit("_f", 1)[0] in members]
-            exemplars = prompts.select_exemplars(
-                [{"verb_ids": t["verb_ids"], "noun_ids": t["noun_ids"]} for t in clean],
-                lexicon, args.n_shot, args.seed, method=args.shot_select, vocab=vocab,
-            )
-            steps = sum(len(e) for e in exemplars)
-            print(f"  few-shot: {args.n_shot} error-free fragments, {steps} steps total")
-            if steps > 60:
-                print("  WARNING: that is a long demonstration block relative to the 34-line "
-                      "response grammar it follows. Measured on whole sessions (184 steps): "
-                      "gemma3:27b abandoned the DURATION/NEXT grammar entirely and continued "
-                      "the step list instead, on every request.")
-
-        for variant in variants:
-            system_prompt = prompts.build_variant(
-                variant, vocab, labels=labels, protocol=predict.PROTOCOL,
-                exemplars=exemplars, domain=DOMAIN, sil_verb=sil_verb, sil_noun=sil_noun,
-                canonical_order=CANONICAL_ORDER, interleaved=INTERLEAVED,
-            )
-            arm = f"llm-predictive-{variant}"
-            if args.dry_run:
-                # The LONGEST trial's LAST boundary -- that is the request that decides whether
-                # the served context length is enough.
-                steps = max((textify.steps_from_trajectory(t, lexicon) for t in trajectories),
-                            key=len)
-                print(f"\n{'=' * 92}\nDRY RUN: {arm}\n{'=' * 92}\n{system_prompt}")
-                print(f"\n---- longest user turn ({len(steps)} steps) ----")
-                last_request = predict.predictive_messages(system_prompt, steps)[-1]
-                print(last_request[-1]["content"])
-                words = len(system_prompt.split()) + len(last_request[-1]["content"].split())
-                print(f"\n---- {len(steps)} requests for this trial; longest is ~{words} words "
-                      f"(~{int(1.4 * words)} tokens) ----")
-                continue
-            if not args.skip_preflight:
-                preflight_context(
-                    args.base_url, args.model, system_prompt,
-                    max((textify.steps_from_trajectory(t, lexicon) for t in trajectories),
-                        key=len),
+        if not args.skip_llm:
+            variants = list(prompts.VARIANTS) if args.variant == "both" else [args.variant]
+            # Exemplars come from the error-free FRAGMENTS, not from whole sessions. fewshot_block
+            # opens "Here are some complete, correctly-executed trials", and on this corpus no whole
+            # session is correctly executed -- 28 of 29 carry a procedural error. The fragments are.
+            exemplars = []
+            if args.n_shot > 0:
+                clean = json.loads(open(args.clean_sequences).read())
+                if split:
+                    members = set(split["train_trial_ids"])
+                    clean = [c for c in clean if c["trial_id"].rsplit("_f", 1)[0] in members]
+                exemplars = prompts.select_exemplars(
+                    [{"verb_ids": t["verb_ids"], "noun_ids": t["noun_ids"]} for t in clean],
+                    lexicon, args.n_shot, args.seed, method=args.shot_select, vocab=vocab,
                 )
-            client = llm_client.ChatClient(
-                model=args.model, base_url=args.base_url, api_key_env=args.api_key_env,
-                cache_dir=args.cache_dir, rpm=args.rpm, concurrency=args.concurrency,
-                max_requests=args.max_requests, temperature=R.PREDICTIVE_TEMPERATURE,
-                max_tokens=R.PREDICTIVE_MAX_TOKENS,
-            )
-            flags_by_arm[arm], stats = predictive_flags_per_trial(
-                trajectories, lexicon, client, system_prompt, vocab, arm
-            )
-            meta[arm] = {"predictive": stats, "prompt_variant": variant,
-                         "client": {"model": args.model, "base_url": args.base_url}}
-        if "llm-predictive-with-recipes" in flags_by_arm:
-            print("  NOTE: the with-recipes preprompt states the printed instruction order and\n"
-                  "  per-step median durations taken from labels.json (all sessions, as on\n"
-                  "  Breakfast). Read it against the no-recipes arm, not against the HSMM.")
+                steps = sum(len(e) for e in exemplars)
+                print(f"  few-shot: {args.n_shot} error-free fragments, {steps} steps total")
+                if steps > 60:
+                    print("  WARNING: that is a long demonstration block relative to the 34-line "
+                          "response grammar it follows. Measured on whole sessions (184 steps): "
+                          "gemma3:27b abandoned the DURATION/NEXT grammar entirely and continued "
+                          "the step list instead, on every request.")
 
-    if args.dry_run:
-        return
+            for variant in variants:
+                system_prompt = prompts.build_variant(
+                    variant, vocab, labels=labels, protocol=predict.PROTOCOL,
+                    exemplars=exemplars, domain=DOMAIN, sil_verb=sil_verb, sil_noun=sil_noun,
+                    canonical_order=CANONICAL_ORDER, interleaved=INTERLEAVED,
+                )
+                arm = f"llm-predictive-{variant}"
+                if args.dry_run:
+                    # The LONGEST trial's LAST boundary -- that is the request that decides whether
+                    # the served context length is enough.
+                    steps = max((textify.steps_from_trajectory(t, lexicon) for t in trajectories),
+                                key=len)
+                    print(f"\n{'=' * 92}\nDRY RUN: {arm}\n{'=' * 92}\n{system_prompt}")
+                    print(f"\n---- longest user turn ({len(steps)} steps) ----")
+                    last_request = predict.predictive_messages(system_prompt, steps)[-1]
+                    print(last_request[-1]["content"])
+                    words = len(system_prompt.split()) + len(last_request[-1]["content"].split())
+                    print(f"\n---- {len(steps)} requests for this trial; longest is ~{words} words "
+                          f"(~{int(1.4 * words)} tokens) ----")
+                    continue
+                if not args.skip_preflight:
+                    preflight_context(
+                        args.base_url, args.model, system_prompt,
+                        max((textify.steps_from_trajectory(t, lexicon) for t in trajectories),
+                            key=len),
+                    )
+                client = llm_client.ChatClient(
+                    model=args.model, base_url=args.base_url, api_key_env=args.api_key_env,
+                    cache_dir=args.cache_dir, rpm=args.rpm, concurrency=args.concurrency,
+                    max_requests=args.max_requests, temperature=R.PREDICTIVE_TEMPERATURE,
+                    max_tokens=R.PREDICTIVE_MAX_TOKENS,
+                )
+                flags_by_arm[arm], stats = predictive_flags_per_trial(
+                    trajectories, lexicon, client, system_prompt, vocab, arm
+                )
+                meta[arm] = {"predictive": stats, "prompt_variant": variant,
+                             "client": {"model": args.model, "base_url": args.base_url}}
+            if "llm-predictive-with-recipes" in flags_by_arm:
+                print("  NOTE: the with-recipes preprompt states the printed instruction order and\n"
+                      "  per-step median durations taken from labels.json (all sessions, as on\n"
+                      "  Breakfast). Read it against the no-recipes arm, not against the HSMM.")
+
+        if args.dry_run:
+            return flags_by_arm, meta
+
+        if trimmed:
+            for arm in [a for a in flags_by_arm if a.startswith("llm-")]:
+                flags_by_arm[arm] = [drop_truncated_under_run(f, t, lexicon)
+                                     for f, t in zip(flags_by_arm[arm], trajectories)]
+        return flags_by_arm, meta
+
+    sil = (sil_verb, sil_noun)
+    reports = {}
+
+    # ---- PREGO's protocol: trim per group, re-run every arm, score steps -----------------------
+    if args.trim:
+        for name in args.groups:
+            group = ERROR_GROUPS[name]
+            trimmed = trim_at_first_mistake(sequences, truth, group)
+            trimmed_traj = generate.trajectories_from_real_joint(
+                joint, [seq for seq, _ in trimmed], d_max, chunk_size=args.chunk_size)
+            print(f"\n[{name}] trimmed to {sum(len(seq['verb_ids']) for seq, _ in trimmed)} "
+                  f"ticks (from {n_ticks}); re-running every arm on the trimmed streams")
+            flags_by_arm, meta = collect(trimmed_traj, trimmed=True)
+            if args.dry_run:
+                return
+            # At step level flag-everything and flag-every-boundary are the same detector (every
+            # step flagged), so only the latter is kept.
+            flags_by_arm.pop("control/flag-everything", None)
+            by_arm = {}
+            for arm, flags in flags_by_arm.items():
+                by_arm[arm] = score_prego(flags, trimmed, trimmed_traj, lexicon, sil, truth, group)
+                by_arm[arm].update(meta.get(arm, {}))
+            print_prego_protocol(name, group, by_arm)
+            for arm, report in by_arm.items():
+                reports[f"trimmed/{name}/{arm}"] = report
+    else:
+        flags_by_arm, meta = collect(trajectories)
+        if args.dry_run:
+            return
 
     # ---- score every arm under every group ---------------------------------------------------
-    reports = {}
-    for name in args.groups:
+    for name in ([] if args.trim else args.groups):
         group = ERROR_GROUPS[name]
         by_arm = {}
         for arm, flags in flags_by_arm.items():
-            report = score(flags, truth, group, args.merge_tol)
+            report = score(flags, truth, group, args.merge_tol,
+                           trajectories=trajectories, lexicon=lexicon, sil=sil)
             if not arm.startswith("control/"):
                 report["attribution"] = attribution(flags, truth, group)
             report.update(meta.get(arm, {}))
@@ -579,7 +802,7 @@ def main():
     # Not group-specific: it asks whether the same detector on the same sessions finds INJECTED
     # anomalies more easily than annotated ones, which separates "this corpus is harder" from
     # "real errors are harder".
-    if not args.skip_hsmm and not args.skip_injected:
+    if not args.skip_hsmm and not args.skip_injected and not args.trim:
         rng = np.random.default_rng(args.seed)
         pool = R.build_pool(trajectories, rng, inject_params)
         stream = R.empty_stream()
@@ -609,6 +832,9 @@ def main():
         "groups": {name: list(ERROR_GROUPS[name]) for name in args.groups},
         "removal": "out-of-group types relabelled normal: dropped from ground truth, ticks "
                    "rejoin the healthy population (PREGO's treatment)",
+        "protocol": ("prego-trimmed: each session cut after its first in-group mistake; "
+                     "step-level TP/FN/FP/TN with one positive per session") if args.trim
+                    else "spans: whole sessions, every in-group mistake a positive",
         "reports": reports,
     }
     with open(args.out, "w") as handle:

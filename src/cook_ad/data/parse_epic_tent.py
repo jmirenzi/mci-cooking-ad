@@ -30,6 +30,13 @@ a decision:
    The `action_label` column on an error row is context, not position. That matters because 35
    of 365 kept error rows lose their host segment to (3) and would otherwise be unplaceable.
 
+   Placeable is not the same as observable, though. For 15 of them the action the error was
+   committed DURING is itself gone: a raw segment of that action overlaps the error, but (3)
+   swallowed it, so the stream every detector reads shows the interrupted action instead and
+   nothing about the error survives preprocessing. Those 15 leave the ground truth
+   (`unobservable_records`, kept for audit) -- see host_swallowed. Omissions are exempt, since an
+   omitted action is absent by definition.
+
 5. **Order errors are defined against the printed instructions**, not against what participants
    actually did. CANONICAL_ORDER records that sequence. Measured: the transition INTO an
    order-error segment has median corpus count 23 against a 22 baseline over all 1223
@@ -272,6 +279,29 @@ def load_error_labels(root, origins):
     return by_subject, kept, dropped
 
 
+def host_swallowed(t0, t1, error_type, action, raw, kept, action_ids):
+    """True when preprocessing deleted the action this error was committed during.
+
+    That is: some RAW segment of `action` overlaps [t0, t1] seconds, and no segment of it that
+    survived resolve_overlaps does. The detectors read the post-overlap stream, so such an error
+    has no trace in their input -- scoring it would charge every arm, and the flag-every-boundary
+    null, for a miss that preprocessing manufactured.
+
+    Deliberately narrow. Not dropped: omissions (the action is SUPPOSED to be missing); errors
+    with no host action (`between actions`); and errors whose action has no raw segment there
+    either (14 rows) -- that is an inconsistency in the annotation itself, not something
+    preprocessing did, and the stream around it is intact.
+    """
+    if error_type == "omission" or action not in action_ids:
+        return False
+    pair = action_ids[action]
+
+    def overlaps(segments):
+        return any((v, n) == pair and a <= t1 and b >= t0 for a, b, v, n in segments)
+
+    return overlaps(raw) and not overlaps(kept)
+
+
 def _to_ticks(t0, t1, tick_seconds, n_ticks):
     """Seconds since the trial origin -> a closed inclusive tick interval clipped to the trial.
 
@@ -388,10 +418,13 @@ def build_dataset(config, root, trim_terminal=True):
     sequences, labels, truth, clean, clean_labels = [], [], [], [], []
     stats = dict(seen=len(videos), swallowed=0, too_short=0, segments=0, trimmed=0,
                  dropped_rows=dropped_rows, errors_kept=errors_kept,
-                 errors_dropped=errors_dropped, errors_clipped=0, fragments=0, clean_ticks=0)
+                 errors_dropped=errors_dropped, errors_unobservable=0, errors_clipped=0,
+                 fragments=0, clean_ticks=0)
 
     verb_name = {i: v for v, i in verb_to_id.items()}
     noun_name = {i: n for n, i in noun_to_id.items()}
+    action_ids = {ACTION_NAMES[k]: (verb_to_id[v], noun_to_id[n])
+                  for k, (v, n) in ACTION_TO_VERB_NOUN.items()}
 
     for subject, entry in sorted(videos.items()):
         trial_id = f"p{subject:02d}"
@@ -416,13 +449,26 @@ def build_dataset(config, root, trim_terminal=True):
         sequences.append(sequence)
 
         n_ticks = len(verb_ids)
-        records = build_truth(errors_by_subject.get(subject, []), tick_seconds, n_ticks)
+        errors = errors_by_subject.get(subject, [])
+        swallowed_host = [host_swallowed(t0, t1, etype, action, entry["narrations"], kept,
+                                         action_ids)
+                          for t0, t1, etype, _, action in errors]
+        all_records = build_truth(errors, tick_seconds, n_ticks)
+        records = [r for r, gone in zip(all_records, swallowed_host) if not gone]
+        unobservable = [r for r, gone in zip(all_records, swallowed_host) if gone]
+        stats["errors_unobservable"] += len(unobservable)
         stats["errors_clipped"] += sum(1 for r in records if r["window"][1] == n_ticks - 1)
-        fragments = clean_fragments([tuple(r["window"]) for r in records], n_ticks)
+        # Excision still cuts EVERY annotated error, unobservable ones included: they are real
+        # errors in the video, the training corpus is the conservative place to keep them out
+        # of, and it keeps sequences_clean.json -- hence every fitted checkpoint -- unchanged.
+        # So clean_fragments here is the TRAINING excision. Evaluation recomputes its healthy
+        # population from `records` (run_epic_tent_eval.group_truth), where they count as normal.
+        fragments = clean_fragments([tuple(r["window"]) for r in all_records], n_ticks)
         stats["fragments"] += len(fragments)
         stats["clean_ticks"] += sum(b - a + 1 for a, b in fragments)
 
         truth.append({"trial_id": trial_id, "n_ticks": n_ticks, "records": records,
+                      "unobservable_records": unobservable,
                       "clean_fragments": [list(f) for f in fragments]})
 
         # `{verb}_{noun}` mirrors Breakfast's `pour_milk`, which is what prompts._label_to_step_text
@@ -502,6 +548,8 @@ def main():
     logger.info("anomalies: %d kept, %d dropped as non-symbolic (motor/failure); %s",
                 stats["errors_kept"], stats["errors_dropped"],
                 ", ".join(f"{k} {v}" for k, v in sorted(by_type.items(), key=lambda kv: -kv[1])))
+    logger.info("dropped from the ground truth: %d errors whose host action was swallowed by "
+                "an overlap (kept as unobservable_records)", stats["errors_unobservable"])
     logger.info("healthy: %d clean fragments, %d ticks (%.0f%% of the corpus)",
                 stats["fragments"], stats["clean_ticks"],
                 100 * stats["clean_ticks"] / max(ticks, 1))

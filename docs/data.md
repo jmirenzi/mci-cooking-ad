@@ -366,7 +366,11 @@ a no-op by construction rather than an unsupervised guess — which turns out to
   later, when the error-excised fit (whose artifact-derived thresholds dip below zero) still fired 6
   ticks on `0 > threshold` that the contaminated fit (thresholds all ≥ 0) had hidden. The gate is on
   the number of recipes, not a per-row "recipe row equals marginal" test: that test also matches 112
-  of 1024 rows of the Breakfast `k_recipe=16` fit and would have moved its numbers.
+  of 1024 rows of the Breakfast `k_recipe=16` fit and would have moved its numbers. Those Breakfast
+  rows were checked separately and are **safe as they stand**: they are whole states flat in every
+  recipe, so every entry's excess is the *same* float, the statistic ties its threshold exactly, and
+  the strict `>` never fires — zero flags from a flat row on either Breakfast checkpoint, either
+  split. That safety depends on the comparison staying strict.
 
 ### 7b.2 The 12 action classes factor injectively into `(verb, noun)`
 
@@ -537,6 +541,33 @@ it, and recomputes the healthy fragments per group accordingly — `anomalies.js
 The one part of PREGO's protocol **not** adopted is the trimming: this run scores whole sessions
 with every in-group mistake a positive, where PREGO scores one positive per video. Same subset,
 same removal rule, different denominator.
+
+### 7b.9 Errors whose action preprocessing deleted leave the ground truth
+
+When §7b.3 swallows an interrupting action, an error committed *during* that action is left with
+nothing in the stream: the detectors see the interrupted action continuing unbroken. Example:
+p20 ties the top (an `order` error, 28 s) in the middle of a 119 s `insert support`. The raw
+labels have both; the tick stream has only `insert support`. Scoring such a span charges every
+arm — and the flag-every-boundary null — for a miss that preprocessing manufactured.
+
+`parse_epic_tent.host_swallowed` removes exactly those: a raw segment of the error's action
+overlaps the error, and no segment of it survives `resolve_overlaps`. **15 records** (10 order,
+2 correction, 3 misuse), moved from `records` to `unobservable_records` in `anomalies.json`.
+Deliberately not removed:
+
+- **omissions** — the action is *supposed* to be missing;
+- **14 records whose action has no raw segment there either** — the annotation disagrees with
+  itself, which is not preprocessing's doing, and the stream around them is intact;
+- errors with no host action (`between actions`).
+
+They are still **excised from the training corpus**, which is conservative (they are real errors
+in the video) and leaves `sequences_clean.json` and every fitted checkpoint byte-identical. So
+`clean_fragments` in `anomalies.json` is the *training* excision; evaluation recomputes its
+healthy population from `records`, where these ticks count as normal.
+
+PREGO does not need this rule because its stream keeps the interrupter: their test `gt` for p20
+ends `… insert support, instruction, tie top`, i.e. their per-frame labels let the later action
+win. Under first-come-wins the same error is invisible.
 
 ---
 

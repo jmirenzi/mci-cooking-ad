@@ -571,16 +571,18 @@ error-excised data** ([`data.md`](data.md) §7b.5, §7b.8):
 
 | group | EPIC-Tent labels | spans (9 test sessions) |
 |---|---|---|
-| `procedural` | order, omit, correction, repeat — PREGO's subset | 52 |
-| `procedural+temporal` | + search, slow | 70 |
+| `procedural` | order, omit, correction, repeat — PREGO's subset | 51 |
+| `procedural+temporal` | + search, slow | 69 |
 
 `misuse` is in neither: 94% of its spans leave the `(verb, noun)` stream unchanged (below), so it
-would measure the representation rather than the detector. **Findings up front:**
+would measure the representation rather than the detector. Also out of the ground truth: 15 errors
+committed during an action that overlap resolution deleted from the stream ([`data.md`](data.md)
+§7b.9) — nothing about them survives preprocessing, so no arm could see them. **Findings up front:**
 
-- **The HSMM is the only arm that beats its null.** Procedural F1 0.379 against 0.261 for flagging
+- **The HSMM is the only arm that beats its null.** Procedural F1 0.383 against 0.262 for flagging
   every step boundary, at **2.8 alarms per 10 min** of error-free activity and 1.0% of that time
   spent alarming — against 26–30 alarms/10 min for the null and the LLM arm. Its weakness is recall
-  (0.346), and it catches **none** of the 6 omissions or 3 corrections.
+  (0.353), and it catches **none** of the 6 omissions or 3 corrections.
 - **The predictive LLM arm is dominated by flagging every step boundary, in both groups** — lower
   precision, no better recall, more alarms. Its ~0.90 recall is alarm volume, not detection.
 - **Giving the LLM the printed instruction order bought nothing**: identical on `procedural`,
@@ -603,54 +605,55 @@ So the other types were **relabelled as correct**, never excised. Here the equiv
 `run_epic_tent_eval.group_truth`: an out-of-group span drops out of the ground truth and its ticks
 rejoin the healthy population, so a flag on one is a false positive.
 
-Not adopted: PREGO **trims each test video at the end of its first procedural mistake**, so each
-video contributes exactly one positive (their recall 0.867 = 13/15) and every earlier step is a
-negative. This run scores whole sessions with every in-group mistake a positive. Same subset, same
-removal rule, different denominator — the numbers below are not interchangeable with theirs.
+By default this run does not trim: PREGO **cuts each test video at the end of its first
+procedural mistake**, so each video contributes exactly one positive (their recall 0.867 = 13/15)
+and every earlier step is a negative, while the default here scores whole sessions with every
+in-group mistake a positive. `--trim` reproduces their protocol instead — see "On PREGO's exact
+split" below, which reports both.
 
 ### Results: `procedural`
 
 | arm | precision | recall | F1 | alarms / 10 min | alarm time | lat (med) |
 |---|---|---|---|---|---|---|
-| **HSMM** (error-excised fit) | **0.419** | 0.346 | **0.379** | **2.81** | **1.0%** | 3.5 |
-| arm 3, no recipes | 0.134 | 0.904 | 0.233 | 29.92 | 9.2% | 0.0 |
-| arm 3, + instruction order | 0.135 | 0.904 | 0.235 | 29.56 | 8.9% | 1.0 |
-| *null:* flag every step boundary | 0.152 | 0.923 | 0.261 | 26.47 | 7.4% | 0.0 |
-| *null:* flag every tick | 0.852 | 1.000 | 0.920 | 2.99 | 100.0% | 0.0 |
+| **HSMM** (error-excised fit) | **0.419** | 0.353 | **0.383** | **2.81** | **1.0%** | 3.5 |
+| arm 3, no recipes | 0.134 | 0.922 | 0.233 | 29.89 | 9.2% | 0.0 |
+| arm 3, + instruction order | 0.135 | 0.922 | 0.236 | 29.53 | 8.9% | 1.0 |
+| *null:* flag every step boundary | 0.152 | 0.941 | 0.262 | 26.45 | 7.4% | 0.0 |
+| *null:* flag every tick | 0.850 | 1.000 | 0.919 | 2.90 | 100.0% | 0.0 |
 | PREGO + Llama 2 *(published, own protocol)* | 0.107 | 0.867 | 0.191 | — | — | — |
-| TI-PREGO + Llama 3.1 *(published, own protocol)* | 0.106 | 0.935 | 0.224 | — | — | — |
 
-| per-type recall | order (40) | omit (6) | correction (3) | repeat (3) |
+| per-type recall | order (39) | omit (6) | correction (3) | repeat (3) |
 |---|---|---|---|---|
-| HSMM | 0.425 | **0.000** | **0.000** | 0.333 |
-| arm 3, no recipes | 0.950 | 0.667 | 0.667 | 1.000 |
-| arm 3, + instruction order | 0.950 | 0.667 | 0.667 | 1.000 |
-| *null:* every boundary | 0.975 | 0.667 | 0.667 | 1.000 |
+| HSMM | 0.436 | **0.000** | **0.000** | 0.333 |
+| arm 3, no recipes | 0.974 | 0.667 | 0.667 | 1.000 |
+| arm 3, + instruction order | 0.974 | 0.667 | 0.667 | 1.000 |
+| *null:* every boundary | 1.000 | 0.667 | 0.667 | 1.000 |
 
 Arm 3 matches the null on every type and loses to it on order. Correction and repeat are n = 3 —
 read the counts, not the rates. HSMM attribution: order 16 × `s_transition`, 1 × `s_temporal`;
 repeat 1 × `s_transition`.
 
-Arm 3's procedural numbers land close to the published PREGO line (0.134 / 0.904 / 0.233 against
-0.107 / 0.867 / 0.191), on an independent implementation and a different denominator. So does the
-boundary null — and nobody in that line reports one.
+Arm 3's procedural numbers land close to PREGO's published classical line (0.134 / 0.922 / 0.233
+against 0.107 / 0.867 / 0.191), on an independent implementation and a different denominator. So
+does the boundary null — and nobody in that line reports one. (TI-PREGO's higher Epic-tent-O
+figures use *balanced* precision, a different metric — see "On PREGO's exact split" below.)
 
 ### Results: `procedural+temporal`
 
 | arm | precision | recall | F1 | alarms / 10 min | alarm time | lat (med) |
 |---|---|---|---|---|---|---|
-| **HSMM** (error-excised fit) | **0.511** | 0.329 | **0.400** | **2.77** | **0.8%** | 3.0 |
-| arm 3, no recipes | 0.181 | 0.914 | 0.303 | 30.16 | 9.3% | 0.0 |
-| arm 3, + instruction order | 0.179 | 0.886 | 0.298 | 29.59 | 9.0% | 1.0 |
-| *null:* flag every step boundary | 0.204 | 0.929 | 0.335 | 26.92 | 7.5% | 1.0 |
-| *null:* flag every tick | 0.886 | 1.000 | 0.940 | 3.53 | 100.0% | 0.0 |
+| **HSMM** (error-excised fit) | **0.511** | 0.333 | **0.404** | **2.77** | **0.8%** | 3.0 |
+| arm 3, no recipes | 0.181 | 0.928 | 0.303 | 30.13 | 9.3% | 0.0 |
+| arm 3, + instruction order | 0.179 | 0.899 | 0.299 | 29.56 | 9.0% | 1.0 |
+| *null:* flag every step boundary | 0.204 | 0.942 | 0.336 | 26.89 | 7.5% | 1.0 |
+| *null:* flag every tick | 0.885 | 1.000 | 0.939 | 3.43 | 100.0% | 0.0 |
 
-| per-type recall | order (40) | omit (6) | correction (3) | repeat (3) | search+slow (18) |
+| per-type recall | order (39) | omit (6) | correction (3) | repeat (3) | search+slow (18) |
 |---|---|---|---|---|---|
-| HSMM | 0.425 | 0.000 | 0.000 | 0.333 | 0.278 |
-| arm 3, no recipes | 0.950 | 0.667 | 0.667 | 1.000 | 0.944 |
-| arm 3, + instruction order | 0.950 | 0.667 | 0.667 | 1.000 | 0.833 |
-| *null:* every boundary | 0.975 | 0.667 | 0.667 | 1.000 | 0.944 |
+| HSMM | 0.436 | 0.000 | 0.000 | 0.333 | 0.278 |
+| arm 3, no recipes | 0.974 | 0.667 | 0.667 | 1.000 | 0.944 |
+| arm 3, + instruction order | 0.974 | 0.667 | 0.667 | 1.000 | 0.833 |
+| *null:* every boundary | 1.000 | 0.667 | 0.667 | 1.000 | 0.944 |
 
 HSMM precision *rises* (0.419 → 0.511): hits go 18 → 23 and merged false positives 25 → 22, because
 some flags the `procedural` group charged as false alarms were landing on search/slow spans — real
@@ -658,6 +661,82 @@ anomalies, penalised there only because that group removes them.
 
 The temporal group was added for the duration channels, and they are not what catches it: of the
 5 search/slow spans the HSMM finds, 4 fire first on `s_transition`, 1 on `s_temporal`.
+
+### On PREGO's exact split, with and without their trimming
+
+PREGO's split is recoverable exactly ([`data.md`](data.md) §7b.7): 14 train / 15 test, the test ids
+matching their own prediction file. The HSMM here is refitted on the error-excised fragments of
+*their* 14 training sessions (`joint_params_clean_prego.npz`, 57 fragments, subtask ARI 1.000).
+
+**Untrimmed** (whole sessions, every in-group mistake a positive; 107 procedural spans):
+
+| `procedural` | precision | recall | F1 | alarms / 10 min | alarm time | step FPR |
+|---|---|---|---|---|---|---|
+| **HSMM** | **0.464** | 0.364 | **0.408** | **2.90** | **1.9%** | **0.142** |
+| arm 3, no recipes | 0.169 | 0.972 | 0.287 | 30.22 | 9.8% | 0.973 |
+| arm 3, + instruction order | 0.169 | 0.981 | 0.288 | 30.48 | 9.5% | 0.923 |
+| *null:* flag every step boundary | 0.189 | 0.981 | 0.317 | 26.75 | 7.7% | 1.000 |
+
+`procedural+temporal` tells the same story (HSMM 0.551 / 0.353 / 0.430, step FPR 0.138; arm 3
+0.222 / 0.978 / 0.362, step FPR 0.971; null 0.246 / 0.978 / 0.394). The conclusions from the 20/9
+split carry over unchanged.
+
+**Step FPR** is the trimmed protocol's false-alarm unit carried onto whole sessions: the share of
+*correct* steps (PREGO's collapsed steps, overlapping no in-group span; 337 procedural, 312
+procedural+temporal) with any alarm in them. It is the only false-alarm column comparable across
+the trimmed and untrimmed tables. Alarm time is not: a 1-tick boundary flag on a 30 s step is 1/30 of
+that step's time but the whole step's verdict, which is why flag-every-boundary reads 7.7% there and
+1.000 here.
+
+**Trimmed — PREGO's protocol** (`--trim`). Each session is cut after its first in-group mistake and
+every detector is **re-run on the cut stream**, then scored at step level exactly as PREGO's
+`llm_hf.py` counts: one positive per session, every earlier step a negative. Steps are the collapsed
+action sequence — idle removed, then repeats merged, since PREGO's `gt` never repeats an action. The
+LLM's under-run alarm is suppressed on the truncated final step, which never closed; the HSMM
+already censors its final segment.
+
+| `procedural`, trimmed | tp | fn | fp | tn | precision | recall | F1 | alarms / correct step | **Prec_b** | **F1_b** |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **HSMM** | 3 | 12 | 10 | 114 | **0.231** | 0.200 | **0.214** | **0.081** | **0.713** | 0.312 |
+| arm 3, no recipes | 15 | 0 | 118 | 6 | 0.113 | 1.000 | 0.203 | 0.952 | 0.512 | 0.678 |
+| arm 3, + instruction order | 11 | 4 | 106 | 18 | 0.094 | 0.733 | 0.167 | 0.855 | 0.462 | 0.567 |
+| *null:* flag every step (our sequences) | 15 | 0 | 124 | 0 | 0.108 | 1.000 | 0.195 | 1.000 | 0.500 | 0.667 |
+| *null:* flag every step, **on PREGO's own `gt`** | 15 | 0 | 153 | 0 | 0.089 | 1.000 | 0.164 | 1.000 | 0.500 | 0.667 |
+| PREGO + Llama 2 *(CVPR'24, classical)* | | | | | 0.107 | 0.867 | 0.191 | ≈ 0.71 | | |
+| TI-PREGO + Llama 3.1 *(arXiv, balanced)* | | | | | | 1.000 | | | 0.407 | 0.578 |
+
+All 15 first mistakes are `order`. (`procedural+temporal`, trimmed: HSMM 0.308 / 0.267 / 0.286; arm 3
+no recipes 0.126 / 1.000 / 0.224; null 0.120 / 1.000 / 0.214.)
+
+**What this shows.** Under PREGO's own protocol, a detector that flags every step scores precision
+0.089–0.108 at recall 1.0. PREGO's published 0.107 / 0.867 is on top of that null: at 13 hits and
+precision 0.107 they raise ~108 false alarms over 153 correct steps, i.e. they flag **about 71% of
+correct steps**. Arm 3 here reproduces the same regime — it flags 95% of correct steps. The HSMM is
+the only detector that is not near the null: it flags 8% of correct steps, and pays for it with
+recall 3/15.
+
+**Two different precisions are in circulation — read the right column.** PREGO's CVPR'24 paper
+reports *classical* precision on Epic-tent-O: at most 0.107 across every configuration (their
+Table 2; Assembly101-O reaches 0.307, which is where "PREGO gets ~0.3" comes from). The
+journal-length TI-PREGO (arXiv 2411.02570, eq. 3) switches to **balanced precision**,
+$\text{Prec}_b = TP / (TP + \tfrac{N^+}{N^-} FP) = \text{TPR} / (\text{TPR} + \text{FPR})$, and
+re-reports the same PREGO rows much higher (PREGO + GPT-3.5, oracle: 9.9 → 25.6). It is a different
+metric, not a better detector, and it has a property that matters here: **chance scores 0.5**, and
+flagging every step scores **Prec_b 0.500, F1_b 0.667** — above *every* Epic-tent-O row TI-PREGO
+reports (best: 40.7 / 100 / 57.8). One further inconsistency stops their balanced figures from
+being reproduced exactly: at recall 1.0, Prec_b = 1 / (1 + FP/N⁻), so 0.407 implies FP ≈ 1.46 N⁻ —
+more false positives than negative steps — which is only possible if FP and N⁻ are counted in
+different units. Their recalls (93.5, 92.0, 90.6) are also not multiples of 1/15. The balanced
+scorer is not in their public repository (the only similar formula there is a calibrated-precision
+helper for frame-level *step recognition*), so the definition is reproduced here, not the count.
+
+**How exact the reproduction is.** PREGO publishes its trimmed `gt` step sequences, so ours can be
+checked against them session by session: **6 of 15 match exactly**, and most of the rest end on the
+same mistake step but are 1–3 steps shorter. Negative steps total 123 here against their 153. The
+difference is overlap resolution — first-come-wins drops nested segments (mostly instruction reads,
+[`data.md`](data.md) §7b.3). Rebuilding from the authors' per-frame labels instead matches only 5/15,
+so PREGO used neither construction exactly. The published-`gt` null row is the one computed on
+precisely their sequences, and is the reference their numbers should be read against.
 
 ### Reading the tables: the nulls and the two alarm measures
 
