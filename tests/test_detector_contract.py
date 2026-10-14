@@ -167,3 +167,121 @@ def test_narrate_matches_the_pre_restructure_narration():
         assert [q[:7] for q in old] == [tuple(q) for q in new]
         n_queries += len(new)
     assert n_queries > 0
+
+
+# ---------------------------------------------------------------------------------------------
+# LLM detectors, against a deterministic fake client
+
+import hashlib  # noqa: E402
+
+from cook_ad.detectors.llm_predictive import LLMPredictiveDetector  # noqa: E402
+from cook_ad.detectors.llm_verdict import LLMVerdictDetector  # noqa: E402
+from cook_ad.llm import prompts  # noqa: E402
+
+LLM_VOCAB = {"verbs": {f"v{i}": i for i in range(V)}, "nouns": {f"n{i}": i for i in range(N)},
+             "recipes": {}}
+
+
+class _Lexicon:
+    def verb(self, v):
+        return f"v{int(v)}"
+
+    def noun(self, n):
+        return f"n{int(n)}"
+
+
+class FakeClient:
+    """Replies are a pure function of the messages, like a cache; records every request."""
+
+    def __init__(self, kind):
+        self.kind, self.requests, self.n_would_request = kind, [], 0
+
+    def complete(self, messages):
+        self.requests.append(json.dumps(messages))
+        h = int(hashlib.sha256(json.dumps(messages).encode()).hexdigest(), 16)
+        if self.kind == "predict":
+            return f"DURATION: {1 + h % 5}\nNEXT: v{h % V} n{(h // 7) % N}"
+        if h % 3:
+            return "No Anomaly"
+        return f"Substitution Anomaly. Correct move would have been v{h % V} n{h % N} for 3 seconds"
+
+    def complete_many(self, message_lists):
+        return [self.complete(m) for m in message_lists]
+
+
+def _llm_case(det, client, trials):
+    det.fit([])
+    n_alarms = 0
+    for trial in trials:
+        client.requests = []
+        fast = det.detect_trial(trial)
+        fast_requests, client.requests = sorted(client.requests), []
+        slow = AnomalyDetector.detect_trial(det, trial)
+        assert sorted(client.requests) == fast_requests      # same requests: same cache keys
+        assert _key(fast.alarms) == _key(slow.alarms)
+        assert all(a.known_at >= a.tick for a in fast.alarms)
+        n_alarms += len(fast.alarms)
+    assert n_alarms > 0
+
+
+def test_llm_predictive_fast_path_equals_step_loop():
+    client = FakeClient("predict")
+    _llm_case(LLMPredictiveDetector(client, LLM_VOCAB, _Lexicon()), client, _trials(n=6))
+
+
+@pytest.mark.parametrize("protocol", ["incremental", "conversational"])
+@pytest.mark.parametrize("unit", ["run", "tick"])
+def test_llm_verdict_fast_path_equals_step_loop(protocol, unit):
+    client = FakeClient("verdict")
+    det = LLMVerdictDetector(client, LLM_VOCAB, _Lexicon(), protocol=protocol, unit=unit)
+    _llm_case(det, client, _trials(n=3))
+
+
+def test_llm_batch_verdict_refuses_to_step():
+    det = LLMVerdictDetector(FakeClient("verdict"), LLM_VOCAB, _Lexicon(), protocol="batch")
+    det.fit([])
+    det.reset()
+    assert not det.causal
+    with pytest.raises(NotImplementedError):
+        det.step(0, 0)
+
+
+def test_llm_prompt_bytes_are_prompts_build_variant():
+    det = LLMVerdictDetector(None, LLM_VOCAB, _Lexicon(), protocol="incremental", unit="tick",
+                             variant="no-recipes")
+    det.fit([])
+    assert det.system_prompt == prompts.build_variant("no-recipes", LLM_VOCAB, None,
+                                                      "incremental", "tick", exemplars=[])
+
+
+BREAKFAST = "dataset/processed/breakfast"
+GOLDEN_VERDICT = "runs/golden/streams_verdict.pkl"
+
+
+@pytest.mark.skipif(not (os.path.exists(GOLDEN_VERDICT) and os.path.exists(f"{BREAKFAST}/llm_cache")),
+                    reason="golden verdict streams or the Breakfast LLM cache not present")
+def test_llm_verdict_step_loop_replays_from_cache():
+    """The causal path, on real cached responses: zero uncached requests, golden alarms."""
+    import pickle
+
+    from cook_ad.anomaly import narrate as old_narrate
+    from cook_ad.hsmm import joint_params
+    from cook_ad.llm import client as llm_client
+
+    golden = pickle.load(open(GOLDEN_VERDICT, "rb"))
+    vocab = json.load(open(f"{BREAKFAST}/vocab.json"))
+    labels = json.load(open(f"{BREAKFAST}/labels.json"))
+    lexicon = old_narrate.Lexicon(vocab, joint_params.collapse_to_marginal(
+        joint_params.load_params(f"{BREAKFAST}/joint_params.npz")))
+    client = llm_client.ChatClient(model="gemma3:27b", base_url="http://localhost:11435/v1",
+                                   cache_dir=f"{BREAKFAST}/llm_cache/gemma3:27b", max_requests=0,
+                                   concurrency=1)
+    det = LLMVerdictDetector(client, vocab, lexicon, protocol="incremental", unit="tick",
+                             variant="no-recipes", labels=labels)
+    det.fit([])
+    for i in range(2):
+        traj = golden["pools"]["real"][i][0]
+        d = AnomalyDetector.detect_trial(det, Trial("t", traj["verb_ids"], traj["noun_ids"]))
+        expected = golden["streams"]["real/llm-no-recipes"]["healthy"][i]
+        assert sorted((a.tick, a.channel) for a in d.alarms) == [(f.tick, f.channel) for f in expected]
+    assert client.n_would_request == 0

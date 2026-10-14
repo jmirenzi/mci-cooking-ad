@@ -4,6 +4,12 @@ Dated entries, newest first, ≤ 5 lines each: what was tried, the number, the v
 script or commit that measured it. (Older history is folded in from the previous docs during the
 restructure's Phase G.)
 
+## 2026-10-14 — restructure, Phase D
+
+`LLMVerdictDetector` and `LLMPredictiveDetector` (detectors/) replay all 158,234 cached LLM
+requests with 0 misses, through both the concurrent fast path and the tick-by-tick step loop;
+every golden stream and table reproduces bitwise.
+
 ## 2026-10-14 — restructure, Phase C
 
 `LiveHSMMDetector`, `LagHSMMDetector`, `HindsightHSMMDetector` and `narrate` (detectors/)

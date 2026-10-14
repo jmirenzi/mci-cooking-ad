@@ -1,6 +1,6 @@
 # Restructure plan
 
-Status: **in progress — Phases A, B and C done** (tag `pre-restructure`; goldens in `runs/golden/`,
+Status: **in progress — Phases A–D done** (tag `pre-restructure`; goldens in `runs/golden/`,
 made by `scripts/verify/{dump_golden.py,run_tables.sh}`, checked by `compare_golden.py`; see
 "Progress notes" at the end). Written 2026-10-14 with the repo owner. The agent doing the work
 reads this file top to bottom before touching code, works on branch `restructure`, and deletes this
@@ -629,3 +629,35 @@ the predictive occupancy stays. (2) r̂ from the filter's final recipe belief eq
 r̂ on 582/582 trials but is **not adopted**: the full (r, i, j) filter costs several times the
 batched per-recipe forward pass, which would break the 1.10× budget. `test_hsmm_model` asserts
 the two agree. (3) Viterbi stays its own kernel, as planned.
+
+**Phase D deviations from §3.6.**
+- `LLMDetector(client, vocab, lexicon, variant, labels, n_shot, shot_select, shot_cot, seed,
+  rationale_client, prompt_unit, **prompt_kwargs)`. `fit(train)` draws the exemplars (and
+  Auto-CoT rationales, through `rationale_client`, which Breakfast gives its own token cap) and
+  calls `build_prompt()`; a harness that shares one exemplar draw across variants sets
+  `exemplars`/`rationales` and calls `build_prompt()` itself. `prompt_kwargs` carries EPIC-Tent's
+  domain, SIL tokens, canonical order and interleaving. `prompt_unit` is the unit the prompt is
+  built with (Breakfast's predictive arm passes "tick", as before).
+- `LLMVerdictDetector(unit="run" | "tick")`; "run" maps to the "step" that the prompt text and
+  `llm/` use, which are untouched. `known_at`: a run's verdict is known at the next run's first
+  tick (T - 1 for the last run), a tick's at that tick, and every batch verdict at T - 1. An
+  alarm's channel is the verdict's error type ("" when none parsed), as `Flag.channel` was.
+- `LLMPredictiveDetector`: `p_dur_short` has `known_at = min(tick + 1, T - 1)`, so the last run
+  of a trial (closed by the trial's end) is known at T - 1.
+- `Detection.trace` is the list of `llm.detect.Verdict`s (verdict) or the parse statistics
+  (predictive). The response parsers and the request builders stay in `llm/detect.py` and
+  `llm/predict.py`, unchanged; `run_llm_eval.py` still feeds the verdicts to metric B until
+  Phase E deletes it.
+- The step loop issues exactly the requests the fast path does (`test_detector_contract`
+  asserts the request sets are equal), so it replays from the same cache entries.
+
+**Phase D results.** `dump_golden.py --impl new` (EPIC-Tent predictive arms replayed through
+`LLMPredictiveDetector`'s step loop) and `run_tables.sh` (every Breakfast and EPIC-Tent LLM arm
+through the detectors' fast paths) into `runs/golden_D`: all 20 files pass bitwise. Cache
+replay: 158,234 requests served from cache, 0 uncached (Breakfast verdict 2 × 70,486, predictive
+4 × 3,790; EPIC-Tent predictive 2 × (561 + 258 + 232); the EPIC-Tent report runs abort on any miss
+and completed). `test_detector_contract.py` now has 20 tests: LLMPredictive and LLMVerdict
+(incremental and conversational, run and tick units) fast path == step loop with identical
+request sets, batch refuses `step()`, prompt bytes equal `prompts.build_variant`, and a real-cache
+step-loop replay of two Breakfast trials (tick unit) with 0 uncached requests. Full suite: 533
+passed.

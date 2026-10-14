@@ -38,7 +38,7 @@ import run_llm_eval as R  # noqa: E402
 from cook_ad.anomaly import live, narrate, quantile, surprise  # noqa: E402
 from cook_ad.data import split as split_mod  # noqa: E402
 from cook_ad.data.config import load_config  # noqa: E402
-from cook_ad.eval import batch  # noqa: E402
+from cook_ad.eval import batch, span_metrics  # noqa: E402
 from cook_ad.hsmm import joint_em, joint_params  # noqa: E402
 from cook_ad.llm import client as llm_client  # noqa: E402
 from cook_ad.llm import predict, prompts  # noqa: E402
@@ -273,13 +273,35 @@ def et_llm_flags(trajectories, lexicon, vocab, labels, sil, trimmed):
             cache_dir=f"{ET_DIR}/llm_cache", max_requests=0,
             temperature=R.PREDICTIVE_TEMPERATURE, max_tokens=R.PREDICTIVE_MAX_TOKENS)
         arm = f"llm-predictive-{variant}"
-        flags, _ = ET.predictive_flags_per_trial(trajectories, lexicon, client, system_prompt,
-                                                 vocab, arm)
+        if IMPL == "new":
+            flags = et_llm_step_loop(trajectories, lexicon, vocab, labels, sil, variant, client,
+                                     system_prompt)
+        else:
+            flags, _ = ET.predictive_flags_per_trial(trajectories, lexicon, client, system_prompt,
+                                                     vocab, arm)
         if trimmed:
             flags = [ET.drop_truncated_under_run(f, t, lexicon) for f, t in zip(flags, trajectories)]
         out[arm] = [[(int(f.tick), float(f.strength), str(f.channel)) for f in fl] for fl in flags]
         stats[arm] = client.stats()
     return out, stats
+
+
+def et_llm_step_loop(trajectories, lexicon, vocab, labels, sil, variant, client, old_prompt):
+    """--impl new: LLMPredictiveDetector, one tick at a time (reset, step, finish), so the
+    golden also proves the causal path issues exactly the cached requests."""
+    from cook_ad.core import AnomalyDetector, Trial
+    from cook_ad.detectors.llm_predictive import LLMPredictiveDetector
+    det = LLMPredictiveDetector(client, vocab, lexicon, variant=variant, labels=labels,
+                                domain=ET.DOMAIN, sil_verb=sil[0], sil_noun=sil[1],
+                                canonical_order=ET.CANONICAL_ORDER, interleaved=ET.INTERLEAVED)
+    det.fit([])
+    assert det.system_prompt == old_prompt, "system prompt bytes changed"
+    out = []
+    for t in trajectories:
+        d = AnomalyDetector.detect_trial(det, Trial("t", np.asarray(t["verb_ids"]),
+                                                    np.asarray(t["noun_ids"])))
+        out.append(sorted(span_metrics.Flag(a.tick, a.score, a.channel) for a in d.alarms))
+    return out
 
 
 def et_rows(eng, trajectories, chunk_size, live_alpha):

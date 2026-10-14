@@ -18,8 +18,10 @@ the design constraint the rest of the architecture serves.
 > `hsmm/model.py` (`class HSMM`), `hsmm/batch.py` (many-trial inference),
 > `detectors/thresholds.py` (`class BadSets`), and the HSMM detectors
 > `detectors/hsmm_live.py` (`LiveHSMMDetector`), `hsmm_lag.py` (`LagHSMMDetector`),
-> `hsmm_hindsight.py` (`HindsightHSMMDetector`) with `detectors/narrate.py`.
-> `run_epic_tent_eval.py` and `run_llm_eval.py`'s HSMM arm already run on the detectors. The
+> `hsmm_hindsight.py` (`HindsightHSMMDetector`) with `detectors/narrate.py`, and the LLM
+> detectors `detectors/llm_base.py`, `llm_verdict.py` (`LLMVerdictDetector`) and
+> `llm_predictive.py` (`LLMPredictiveDetector`). `run_epic_tent_eval.py` and `run_llm_eval.py`
+> already run every arm on the detectors. The
 > table below still describes the old layout until the docs rewrite (Phase G).
 
 ---

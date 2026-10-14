@@ -257,19 +257,21 @@ def live_flags_per_trial(trajectories, hsmm, bad_sets, lags, alpha, channel_alph
     return out
 
 
-def predictive_flags_per_trial(trajectories, lexicon, client, system_prompt, vocab, tag):
-    """Arm 3 over whole trials. One request per step boundary -- ~57 per session here, against
-    the ~2124 a tick-unit verdict arm would send on the longest one."""
+def predictive_flags_per_trial(trajectories, det, tag):
+    """Arm 3 over whole trials, through detectors.LLMPredictiveDetector. One request per step
+    boundary -- ~57 per session here, against the ~2124 a tick-unit verdict arm would send on the
+    longest one."""
+    from cook_ad.core import Trial
     out = []
     totals = {"n_boundaries": 0, "duration_parse_failures": 0, "next_parse_failures": 0}
     for i, traj in enumerate(trajectories):
-        steps = textify.steps_from_trajectory(traj, lexicon)
-        flags, stats = predict.run_predictive(client, system_prompt, steps, vocab)
+        d = det.detect_trial(Trial("t", np.asarray(traj["verb_ids"]), np.asarray(traj["noun_ids"])))
+        flags = sorted(span_metrics.Flag(a.tick, a.score, a.channel) for a in d.alarms)
         for key in totals:
-            totals[key] += stats[key]
+            totals[key] += d.trace[key]
         out.append(flags)
-        print(f"  [{tag}] trial {i + 1}/{len(trajectories)}: {len(steps)} steps, "
-              f"{len(flags)} flags ({client.n_would_request} uncached requests so far)",
+        print(f"  [{tag}] trial {i + 1}/{len(trajectories)}: {d.trace['n_boundaries']} steps, "
+              f"{len(flags)} flags ({det.client.n_would_request} uncached requests so far)",
               flush=True)
     boundaries = max(totals["n_boundaries"], 1)
     return out, {
@@ -776,11 +778,13 @@ def main():
                           "the step list instead, on every request.")
 
             for variant in variants:
-                system_prompt = prompts.build_variant(
-                    variant, vocab, labels=labels, protocol=predict.PROTOCOL,
-                    exemplars=exemplars, domain=DOMAIN, sil_verb=sil_verb, sil_noun=sil_noun,
-                    canonical_order=CANONICAL_ORDER, interleaved=INTERLEAVED,
-                )
+                from cook_ad.detectors.llm_predictive import LLMPredictiveDetector
+                det = LLMPredictiveDetector(
+                    None, vocab, lexicon, variant=variant, labels=labels, domain=DOMAIN,
+                    sil_verb=sil_verb, sil_noun=sil_noun, canonical_order=CANONICAL_ORDER,
+                    interleaved=INTERLEAVED)
+                det.exemplars = exemplars
+                system_prompt = det.build_prompt()
                 arm = f"llm-predictive-{variant}"
                 if args.dry_run:
                     # The LONGEST trial's LAST boundary -- that is the request that decides whether
@@ -807,9 +811,8 @@ def main():
                     max_requests=args.max_requests, temperature=R.PREDICTIVE_TEMPERATURE,
                     max_tokens=R.PREDICTIVE_MAX_TOKENS,
                 )
-                flags_by_arm[arm], stats = predictive_flags_per_trial(
-                    trajectories, lexicon, client, system_prompt, vocab, arm
-                )
+                det.client = client
+                flags_by_arm[arm], stats = predictive_flags_per_trial(trajectories, det, arm)
                 meta[arm] = {"predictive": stats, "prompt_variant": variant,
                              "client": {"model": args.model, "base_url": args.base_url}}
             if "llm-predictive-with-recipes" in flags_by_arm:

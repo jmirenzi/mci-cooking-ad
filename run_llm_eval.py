@@ -296,7 +296,31 @@ def hsmm_arm(pool, model, lexicon, chunk_size, alpha=surprise.DEFAULT_ALPHA,
 # the LLM arm
 # --------------------------------------------------------------------------------------------
 
-def llm_arm(pool, lexicon, client, system_prompt, vocab, protocol, tag, unit="step", tol=None):
+def make_llm_detector(predictive, client, vocab, lexicon, variant, labels, protocol, unit,
+                      exemplars, rationales):
+    """The detectors/llm_*.py detector for one arm, its prompt built from the given shots."""
+    from cook_ad.detectors.llm_predictive import LLMPredictiveDetector
+    from cook_ad.detectors.llm_verdict import LLMVerdictDetector
+    if predictive:
+        det = LLMPredictiveDetector(client, vocab, lexicon, variant=variant, labels=labels,
+                                    prompt_unit=unit)
+    else:
+        det = LLMVerdictDetector(client, vocab, lexicon, protocol=protocol,
+                                 unit="run" if unit == "step" else unit, variant=variant,
+                                 labels=labels)
+    det.exemplars, det.rationales = exemplars, rationales
+    det.build_prompt()
+    return det
+
+
+def _detect(det, traj):
+    """(detection, span Flags) for one trajectory-shaped dict."""
+    from cook_ad.core import Trial
+    d = det.detect_trial(Trial("t", np.asarray(traj["verb_ids"]), np.asarray(traj["noun_ids"])))
+    return d, sorted(span_metrics.Flag(a.tick, a.score, a.channel) for a in d.alarms)
+
+
+def llm_arm(pool, lexicon, det, tag, unit="step", tol=None):
     """The two verdict arms. Returns `(report, stream)` -- see hsmm_arm.
 
     A step verdict becomes a flag at the FIRST TICK of the element it judges, which is the moment
@@ -304,12 +328,11 @@ def llm_arm(pool, lexicon, client, system_prompt, vocab, protocol, tag, unit="st
     """
     healthy_verdicts = []
     stream = empty_stream()
+    client = det.client
     for traj, _ in pool:
-        steps = textify.elements_from_trajectory(traj, lexicon, unit)
-        verdicts = element_metrics.from_llm_verdicts(
-            detect.run_trial(client, system_prompt, steps, vocab, protocol, unit))
-        healthy_verdicts.append(verdicts)
-        stream["healthy"].append(span_metrics.flags_from_verdicts(verdicts, steps))
+        d, flags = _detect(det, traj)
+        healthy_verdicts.append(element_metrics.from_llm_verdicts(d.trace))
+        stream["healthy"].append(flags)
     print(f"  [{tag}] healthy: {len(healthy_verdicts)} trials "
           f"({client.n_would_request} uncached requests so far)", flush=True)
 
@@ -321,12 +344,10 @@ def llm_arm(pool, lexicon, client, system_prompt, vocab, protocol, tag, unit="st
         for traj, degraded in pool:
             steps, gt_steps, correction, debris = steps_and_truth(
                 traj, degraded[error_type], lexicon, unit)
-            verdicts = element_metrics.from_llm_verdicts(
-                detect.run_trial(client, system_prompt, steps, vocab, protocol, unit))
-            rows.append((verdicts, gt_steps, correction))
+            d, flags = _detect(det, degraded[error_type])
+            rows.append((element_metrics.from_llm_verdicts(d.trace), gt_steps, correction))
             debris_rows.append(debris)
-            stream["degraded"][error_type].append(
-                span_metrics.flags_from_verdicts(verdicts, steps))
+            stream["degraded"][error_type].append(flags)
         degraded_by_type[error_type] = rows
         artifact_steps[error_type] = debris_rows
         print(f"  [{tag}] {error_type}: {len(rows)} degraded trials "
@@ -343,7 +364,7 @@ def llm_arm(pool, lexicon, client, system_prompt, vocab, protocol, tag, unit="st
 # the predictive arm (arm 3)
 # --------------------------------------------------------------------------------------------
 
-def predictive_arm(pool, lexicon, client, system_prompt, vocab, tag, unit="step", tol=None):
+def predictive_arm(pool, lexicon, det, tag, unit="step", tol=None):
     """The PREGO-style arm: the model predicts, llm/predict.py decides. Returns (report, stream).
 
     Runs at STEP BOUNDARIES whatever `unit` the report is scored in -- a prediction is something
@@ -359,10 +380,12 @@ def predictive_arm(pool, lexicon, client, system_prompt, vocab, tag, unit="step"
     healthy_verdicts = []
     n_boundaries = n_dur_fail = n_next_fail = 0
 
+    client = det.client
+
     def _run(traj_like, elements_unit):
         nonlocal n_boundaries, n_dur_fail, n_next_fail
-        steps = textify.steps_from_trajectory(traj_like, lexicon)
-        flags, st = predict.run_predictive(client, system_prompt, steps, vocab)
+        d, flags = _detect(det, traj_like)
+        st = d.trace
         n_boundaries += st["n_boundaries"]
         n_dur_fail += st["duration_parse_failures"]
         n_next_fail += st["next_parse_failures"]
@@ -980,16 +1003,13 @@ def main():
             )
             print(f"  client: rpm={client.rpm} concurrency={client.concurrency} "
                   f"temperature={client.temperature}", flush=True)
-            system_prompt = prompts.build_variant(variant, vocab, labels, args.protocol,
-                                                  args.unit, exemplars=exemplars,
-                                                  rationales=rationales)
+            det = make_llm_detector(predictive, client, vocab, lexicon, variant, labels,
+                                    args.protocol, args.unit, exemplars, rationales)
             try:
                 if predictive:
-                    report, stream = predictive_arm(pool, lexicon, client, system_prompt, vocab,
-                                                    tag, args.unit, args.tol)
+                    report, stream = predictive_arm(pool, lexicon, det, tag, args.unit, args.tol)
                 else:
-                    report, stream = llm_arm(pool, lexicon, client, system_prompt, vocab,
-                                             args.protocol, tag, args.unit, args.tol)
+                    report, stream = llm_arm(pool, lexicon, det, tag, args.unit, args.tol)
             except (llm_client.LLMError, llm_client.BudgetExceeded) as e:
                 # Running out of quota part-way through is an expected operating condition on a
                 # free tier, not a crash. Write the arms that DID finish rather than discarding an
