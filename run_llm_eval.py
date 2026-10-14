@@ -220,18 +220,27 @@ def _hsmm_flags(trials, model, chunk_size, alpha=surprise.DEFAULT_ALPHA, channel
             raise SystemExit("error: --channel-alpha is only supported for the joint model; "
                              "drop --cascade or drop the overrides")
         return [surprise.flag(t, log_probs, recipe_log_trans, alpha=alpha) for t in traces], traces
-    traces, log_probs, r_hat, log_trans_marginal = batch.compute_traces_joint(
-        model["joint"], trials, model["d_max"], chunk_size=chunk_size
-    )
-    if channel_alpha:
-        alphas = surprise.per_channel_alphas(channel_alpha, alpha)
-        flags = [surprise.flag_joint_per_channel(t, log_probs, int(r_hat[i]),
-                                                 log_trans_marginal, alphas)
-                 for i, t in enumerate(traces)]
-    else:
-        flags = [surprise.flag_joint(t, log_probs, int(r_hat[i]), log_trans_marginal, alpha=alpha)
-                 for i, t in enumerate(traces)]
-    return flags, traces
+    return hindsight_flags(trials, model, chunk_size, alpha, channel_alpha)
+
+
+def hindsight_flags(trials, model, chunk_size, alpha=surprise.DEFAULT_ALPHA, channel_alpha=None):
+    """(flags, traces) from detectors.HindsightHSMMDetector over trajectory-shaped dicts."""
+    from cook_ad.core import OperatingPoint, Trial
+    from cook_ad.detectors.hsmm_hindsight import HindsightHSMMDetector
+    from cook_ad.detectors.thresholds import BadSets
+    from cook_ad.hsmm import params as hsmm_params
+    from cook_ad.hsmm.model import HSMM
+
+    if "hsmm_model" not in model:
+        model["hsmm_model"] = HSMM(hsmm_params.JointHSMMParams(*model["joint"][:7]), model["d_max"])
+    op = OperatingPoint(surprise.per_channel_alphas(channel_alpha, alpha) if channel_alpha
+                        else alpha)
+    alphas = sorted(set(op.alpha.values()) if isinstance(op.alpha, dict) else {op.alpha})
+    hsmm = model["hsmm_model"]
+    det = HindsightHSMMDetector(hsmm, BadSets(hsmm, alphas), op, chunk_size)
+    traces = det.traces([Trial(str(i), np.asarray(t["verb_ids"]), np.asarray(t["noun_ids"]))
+                         for i, t in enumerate(trials)])
+    return [det.flags(tr) for tr in traces], traces
 
 
 def hsmm_arm(pool, model, lexicon, chunk_size, alpha=surprise.DEFAULT_ALPHA,

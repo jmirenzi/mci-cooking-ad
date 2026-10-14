@@ -1,6 +1,6 @@
 # Restructure plan
 
-Status: **in progress — Phases A and B done** (tag `pre-restructure`; goldens in `runs/golden/`,
+Status: **in progress — Phases A, B and C done** (tag `pre-restructure`; goldens in `runs/golden/`,
 made by `scripts/verify/{dump_golden.py,run_tables.sh}`, checked by `compare_golden.py`; see
 "Progress notes" at the end). Written 2026-10-14 with the repo owner. The agent doing the work
 reads this file top to bottom before touching code, works on branch `restructure`, and deletes this
@@ -577,8 +577,55 @@ reproduce exactly. An old-code worktree for re-timing lives at `../mci-cooking-a
 
 **Phase B results.** `compare_golden.py runs/golden runs/golden_B`: all 20 files pass, bitwise —
 every flag matrix, r̂, z*, log-likelihood and float diagnostic, every table, every LLM stream
-(0 uncached requests). Full test suite green (513 + the new `tests/test_hsmm_model.py`). Training
+(0 uncached requests). Full test suite green (513 tests, including the 14 in the new `tests/test_hsmm_model.py`). Training
 (`run_joint_lexical.py`, EPIC-Tent clean split, `--max-iters 2`): output `.npz` bitwise equal.
 Cost, warm, new / old: hindsight 18.2 / 17.7 s (1.03×), live L=0 100.2 / 100.1 s (1.00×),
 EPIC-Tent `--skip-llm` 11.8 / 11.7 s (1.01×). `HSMM.update` one tick at a time: 1.4 ms/tick
 (Breakfast lexhard, K_R=16, K=64, D=200).
+
+**Phase C deviations from §3.**
+- The old `anomaly/`, `eval/batch.py` and `anomaly/live.py` code is left intact (not shimmed) as
+  the reference until Phase E deletes it. The detectors are proven against it two ways:
+  `dump_golden.py --impl new` (every per-trial golden through the detector API) and the
+  switched eval scripts — `run_epic_tent_eval.py` (hindsight, injected control, live/lag arms)
+  and `run_llm_eval.py`'s HSMM arm now call the detectors. `run_live_eval.py` and
+  `run_detect_eval.py` still call the old library (both are deleted in Phase E; the new harness
+  replaces them).
+- New module `hsmm/batch.py` (not in §2's layout): `infer_recipe`, `occupancy` and `viterbi` for
+  many trials at once — the chunked, globally padded batching `detect_many` needs to stay
+  bitwise with the old `compute_traces_joint`.
+- Live and Lag expose `trace(trial) -> LiveTrace` (scores at every grid alpha) and
+  `flags(trace, op)`, so a sweep thresholds one trace many times. `LiveTrace` keeps `pi_tilde`
+  instead of the diagnostic `switch`; `p_mix` is gone. Hindsight likewise has
+  `traces(trials)` / `flags(trace, op)` / `thresholds(trace, op)`.
+- Lag raises emission alarms at tick t (`known_at = t`): they are forecasts and final then. Only
+  the event alarms wait until t + L (`known_at = min(t + L, T - 1)`).
+- `narrate(detection, detector, vocab, op=None)` takes the detector rather than the HSMM, so a
+  question's severity is measured against exactly the threshold that gated its flag. `Query`
+  drops the `event` field (it fed `lifecycle/`, which Phase E deletes).
+- `HindsightTrace` keeps `r_hat, segments, z_star, verbs, nouns, surprise{channel}, pi_at_zstar,
+  from_state, expected_verb/noun/next_state, attribution, temporal_attribution`. Narration
+  recomputes π̃ under r̂ (exactly as the old `compute_pi_all_joint` did) rather than storing
+  a (T, K) table per trial.
+- Docstrings cite `docs/detectors.md` §3.1 emission p-values, §3.2–3.6 the event channels
+  (§3.3 stall, §3.4 transition, §3.5 early exit, §3.6 recipe), §4 Lag, §5 Hindsight (§5.1–5.5 its
+  channels), §6 narration. Phase G writes them with these numbers.
+
+**Phase C results.** `dump_golden.py --impl new` (every per-trial golden through the detector
+classes) and `run_tables.sh` (with the switched EPIC-Tent and LLM-eval scripts) into
+`runs/golden_C`: all 20 files pass `compare_golden.py` bitwise, float diagnostics included; 0
+uncached LLM requests. `tests/test_detector_contract.py` (12 tests): Live and Lag(2, 5) fast path
+== reset + step loop + finish, with and without a pinned recipe; `known_at` in [tick, tick + L];
+Hindsight `detect_many` == `detect_trial`; Hindsight and Lag(inf) refuse `step()`; Lag(inf) ==
+Lag(T); `narrate` raises on a Live detection and reproduces the old `narrate_joint` word for word
+on real EPIC-Tent sessions. Full suite: 525 passed. Cost, warm, new / old: Hindsight
+`detect_many` 17.7 / 17.7 s (1.00×), Live `detect_trial` 100.1 / 100.1 s (1.00×), EPIC-Tent
+`--skip-llm` 11.5 / 11.7 s. Informational: `HSMM.update` 1.6 ms/tick, `LiveHSMMDetector.step`
+5.6 ms/tick (Breakfast lexhard).
+
+Unifications (§3.2): (1) π̃ from `HSMM.filter(recipe=r̂)` instead of the one-recipe predictive
+occupancy changes the hindsight flags on 1 of 582 Breakfast lexhard golden trials — **rejected**,
+the predictive occupancy stays. (2) r̂ from the filter's final recipe belief equals the batched
+r̂ on 582/582 trials but is **not adopted**: the full (r, i, j) filter costs several times the
+batched per-recipe forward pass, which would break the 1.10× budget. `test_hsmm_model` asserts
+the two agree. (3) Viterbi stays its own kernel, as planned.

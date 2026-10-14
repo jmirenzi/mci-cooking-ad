@@ -17,6 +17,8 @@ import subprocess
 import sys
 import time
 
+import numpy as np
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 
 import dump_golden as G  # noqa: E402  (sets up XLA flags and x64 on import)
@@ -60,8 +62,30 @@ def main():
         print(name, out[name], flush=True)
 
     try:
+        from cook_ad.core import OperatingPoint, Trial
+        from cook_ad.detectors.hsmm_hindsight import HindsightHSMMDetector
+        from cook_ad.detectors.hsmm_live import LiveHSMMDetector
+        from cook_ad.detectors.thresholds import BadSets
         from cook_ad.hsmm.model import HSMM
         hsmm = HSMM.load(cfg["params"], d_max)
+        bad = BadSets(hsmm, G.BF_ALPHA_GRID)
+        trials = {g: [Trial(str(i), np.asarray(s["verb_ids"]), np.asarray(s["noun_ids"]))
+                      for i, s in enumerate(items)] for g, items in streams.items()}
+        hind = HindsightHSMMDetector(hsmm, bad, OperatingPoint(0.005), chunk_size=8)
+        livedet = LiveHSMMDetector(hsmm, bad, OperatingPoint(0.02, 0.5))
+
+        def hindsight_det():
+            for ts in trials.values():
+                hind.detect_many(ts)
+
+        def live_det():
+            for ts in trials.values():
+                for t in ts:
+                    livedet.detect_trial(t)
+
+        for name, fn in (("hindsight_detect_many", hindsight_det), ("live_detect_trial", live_det)):
+            out[name] = {"cold": timed(fn), "warm": timed(fn)}
+            print(name, out[name], flush=True)
         s = streams["healthy"][0]
         hsmm.reset()
         hsmm.update(int(s["verb_ids"][0]), int(s["noun_ids"][0]))  # compile
@@ -70,6 +94,12 @@ def main():
         sec = timed(lambda: [hsmm.update(int(v), int(w)) for v, w in zip(s["verb_ids"], s["noun_ids"])])
         out["step_per_tick_ms"] = 1000.0 * sec / n
         print("step", out["step_per_tick_ms"], "ms/tick", flush=True)
+        livedet.reset()
+        livedet.step(int(s["verb_ids"][0]), int(s["noun_ids"][0]))  # compile
+        livedet.reset()
+        sec = timed(lambda: [livedet.step(int(v), int(w)) for v, w in zip(s["verb_ids"], s["noun_ids"])])
+        out["live_step_per_tick_ms"] = 1000.0 * sec / n
+        print("live step", out["live_step_per_tick_ms"], "ms/tick", flush=True)
     except ImportError:
         pass
 

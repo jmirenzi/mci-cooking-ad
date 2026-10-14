@@ -118,6 +118,89 @@ def live_one(tb, s, recipe, per_channel_alpha, kappa):
 
 
 # --------------------------------------------------------------------------------------------
+# The same rows through the restructured detector API (--impl new)
+
+IMPL = "old"
+_EVENT_KEY = {"s_temporal": "stall", "s_dur_two": "early", "s_transition": "trans",
+              "s_recipe_transition": "recipe"}
+
+
+class NewEngine:
+    """hindsight / trial_ll / live_one with the detectors in place of the old library calls."""
+
+    def __init__(self, path, d_max, grid):
+        from cook_ad.detectors.thresholds import BadSets
+        from cook_ad.hsmm.model import HSMM
+        self.hsmm = HSMM.load(path, d_max)
+        self.bad = BadSets(self.hsmm, grid)
+
+    @staticmethod
+    def trials(seqs, known_r):
+        from cook_ad.core import Trial
+        return [Trial(str(i), np.asarray(s["verb_ids"]), np.asarray(s["noun_ids"]),
+                      None if known_r is None else int(known_r[i])) for i, s in enumerate(seqs)]
+
+    def hindsight(self, seqs, chunk_size, known_r, alphas, per_channel):
+        from cook_ad.core import OperatingPoint
+        from cook_ad.detectors.hsmm_hindsight import HindsightHSMMDetector
+        det = HindsightHSMMDetector(self.hsmm, self.bad, OperatingPoint(0.005), chunk_size)
+        pc = surprise.per_channel_alphas(per_channel)
+        out = []
+        for tr in det.traces(self.trials(seqs, known_r)):
+            arms = {f"hindsight@{a:g}": stack(det.flags(tr, OperatingPoint(a))) for a in alphas}
+            arms["hindsight@per_channel"] = stack(det.flags(tr, OperatingPoint(pc)))
+            out.append({"arms": arms, "r_hat": tr.r_hat, "z_star": tr.z_star,
+                        "values": {c: tr.surprise[c] for c in CHANNELS},
+                        "pi_at_zstar": tr.pi_at_zstar})
+        return out
+
+    def trial_ll(self, seqs, chunk_size):
+        from cook_ad.hsmm import batch as hbatch
+        verb, noun, mask = hbatch.pad([s["verb_ids"] for s in seqs], [s["noun_ids"] for s in seqs])
+        r, rho, ll = hbatch.infer_recipe(self.hsmm.tables, verb, noun, mask, self.hsmm.d_max,
+                                         chunk_size)
+        return np.asarray(r), np.asarray(rho), np.asarray(ll)
+
+    def live_one(self, s, recipe, per_channel_alpha, kappa):
+        from cook_ad.core import OperatingPoint, Trial
+        from cook_ad.detectors.hsmm_lag import LagHSMMDetector
+        from cook_ad.detectors.hsmm_live import LiveHSMMDetector
+        import math
+        op = OperatingPoint(dict(per_channel_alpha), kappa)
+        trial = Trial("t", np.asarray(s["verb_ids"]), np.asarray(s["noun_ids"]), recipe)
+        arms, events, tr = {}, {}, None
+        for lag in LAGS:
+            det = (LiveHSMMDetector(self.hsmm, self.bad, op) if lag == 0 else
+                   LagHSMMDetector(self.hsmm, self.bad, op, math.inf if lag == live.INF_LAG else lag))
+            tr = det.trace(trial)
+            arms[f"live_L{lag}"] = stack(det.flags(tr))
+            events[lag] = {_EVENT_KEY[c]: tr.events[c] for c in _EVENT_KEY}
+        diag = {"p_emit": tr.p["s_emit"], "p_verb": tr.p["s_verb"], "p_noun": tr.p["s_noun"],
+                "log_norm": tr.log_norm, "events": events, "alphas": np.asarray(tr.alphas)}
+        return arms, float(np.sum(tr.log_norm)), diag
+
+
+class OldEngine:
+    def __init__(self, path, d_max, grid):
+        self.jp = joint_params.load_params(path)
+        self.tb = live.build_tables(self.jp, d_max, grid)
+        self.d_max = d_max
+
+    def hindsight(self, seqs, chunk_size, known_r, alphas, per_channel):
+        return hindsight(self.jp, seqs, self.d_max, chunk_size, known_r, alphas, per_channel)
+
+    def trial_ll(self, seqs, chunk_size):
+        return trial_ll(self.jp, seqs, self.d_max, chunk_size)
+
+    def live_one(self, s, recipe, per_channel_alpha, kappa):
+        return live_one(self.tb, s, recipe, per_channel_alpha, kappa)
+
+
+def engine(path, d_max, grid):
+    return (NewEngine if IMPL == "new" else OldEngine)(path, d_max, grid)
+
+
+# --------------------------------------------------------------------------------------------
 # Breakfast
 
 
@@ -145,18 +228,18 @@ def dump_breakfast(name, cfg, out_dir, chunk_size=8):
     seqs = split_mod.filter_sequences(seqs, split_mod.load_split(f"{BF}/split.json"), "test")
     streams, known_r = breakfast_pool(jp, seqs, d_max, chunk_size, 0, cfg["recipe_labels"],
                                       f"{BF}/labels.json")
-    tb = live.build_tables(jp, d_max, BF_ALPHA_GRID)
+    eng = engine(cfg["params"], d_max, BF_ALPHA_GRID)
     alpha, kappa = BF_LIVE_OP
     live_alpha = {c: alpha for c in CHANNELS}
     groups = {}
     for g, items in streams.items():
         t0 = time.time()
-        hs = hindsight(jp, items, d_max, chunk_size, known_r, BF_HINDSIGHT_ALPHAS, PER_CHANNEL)
-        r_inf, rho, ll = trial_ll(jp, items, d_max, chunk_size)
+        hs = eng.hindsight(items, chunk_size, known_r, BF_HINDSIGHT_ALPHAS, PER_CHANNEL)
+        r_inf, rho, ll = eng.trial_ll(items, chunk_size)
         rows = []
         for i, (s, h) in enumerate(zip(items, hs)):
             rec = None if known_r is None else int(known_r[i])
-            arms, live_ll, diag = live_one(tb, s, rec, live_alpha, kappa)
+            arms, live_ll, diag = eng.live_one(s, rec, live_alpha, kappa)
             h["arms"].update(arms)
             rows.append({"verb_ids": np.asarray(s["verb_ids"]), "noun_ids": np.asarray(s["noun_ids"]),
                          "spans": [tuple(x) for x in s.get("spans", [])], **h,
@@ -199,12 +282,12 @@ def et_llm_flags(trajectories, lexicon, vocab, labels, sil, trimmed):
     return out, stats
 
 
-def et_rows(jp, tb, trajectories, d_max, chunk_size, live_alpha):
-    hs = hindsight(jp, trajectories, d_max, chunk_size, None, (), PER_CHANNEL)
-    r_inf, rho, ll = trial_ll(jp, trajectories, d_max, chunk_size)
+def et_rows(eng, trajectories, chunk_size, live_alpha):
+    hs = eng.hindsight(trajectories, chunk_size, None, (), PER_CHANNEL)
+    r_inf, rho, ll = eng.trial_ll(trajectories, chunk_size)
     rows = []
     for i, (t, h) in enumerate(zip(trajectories, hs)):
-        arms, live_ll, diag = live_one(tb, t, None, live_alpha, ET_KAPPA)
+        arms, live_ll, diag = eng.live_one(t, None, live_alpha, ET_KAPPA)
         h["arms"].update(arms)
         rows.append({"verb_ids": np.asarray(t["verb_ids"]), "noun_ids": np.asarray(t["noun_ids"]),
                      **h, "r_infer": int(r_inf[i]), "rho": rho[i], "trial_ll": float(ll[i]),
@@ -226,7 +309,7 @@ def dump_epic_tent(name, cfg, out_dir, skip_llm, chunk_size=8):
     lexicon = narrate.Lexicon(vocab, joint_params.collapse_to_marginal(jp), sil_verb=sil[0],
                               sil_noun=sil[1])
     pc = surprise.per_channel_alphas(PER_CHANNEL)
-    tb = live.build_tables(jp, d_max, sorted({surprise.DEFAULT_ALPHA, *PER_CHANNEL.values()}))
+    eng = engine(cfg["params"], d_max, sorted({surprise.DEFAULT_ALPHA, *PER_CHANNEL.values()}))
 
     sets = {}
     if cfg["trim"]:
@@ -240,7 +323,7 @@ def dump_epic_tent(name, cfg, out_dir, skip_llm, chunk_size=8):
     groups, llm, llm_stats = {}, {}, {}
     for key, trajectories in sets.items():
         t0 = time.time()
-        groups[key] = et_rows(jp, tb, trajectories, d_max, chunk_size, pc)
+        groups[key] = et_rows(eng, trajectories, chunk_size, pc)
         if cfg["llm"] and not skip_llm:
             llm[key], llm_stats[key] = et_llm_flags(trajectories, lexicon, vocab, labels, sil,
                                                     cfg["trim"])
@@ -258,7 +341,11 @@ def main():
     ap.add_argument("--out-dir", default="runs/golden")
     ap.add_argument("--only", default=None, help="comma-separated config names")
     ap.add_argument("--skip-llm", action="store_true")
+    ap.add_argument("--impl", choices=["old", "new"], default="old",
+                    help="old: the pre-restructure library calls; new: the detector classes")
     args = ap.parse_args()
+    global IMPL
+    IMPL = args.impl
     os.makedirs(args.out_dir, exist_ok=True)
     only = set(args.only.split(",")) if args.only else None
     for name, cfg in {**BF_CONFIGS, **ET_CONFIGS}.items():

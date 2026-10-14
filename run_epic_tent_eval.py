@@ -236,19 +236,23 @@ def hsmm_flags_per_trial(trajectories, model, chunk_size, alpha, channel_alpha):
     return [span_metrics.flags_from_channels(f, surprise.CHANNELS) for f in flags]
 
 
-def live_flags_per_trial(trajectories, tables, lags, alpha, channel_alpha, kappa):
-    """{lag: per-trial span Flags} from the causal detector. Each channel uses the same alpha the
-    hindsight arm does (channel_alpha overrides, e.g. s_temporal=1e-5, else alpha), so the two
-    arms differ in what they condition on, not in how strict they were set."""
-    from cook_ad.anomaly import live
-    per_channel = {c: channel_alpha.get(c, alpha) for c in surprise.CHANNELS}
+def live_flags_per_trial(trajectories, hsmm, bad_sets, lags, alpha, channel_alpha, kappa):
+    """{lag: per-trial span Flags} from the causal detectors (detectors/hsmm_live.py,
+    hsmm_lag.py). Each channel uses the same alpha the hindsight arm does (channel_alpha
+    overrides, e.g. s_temporal=1e-5, else alpha), so the two arms differ in what they condition
+    on, not in how strict they were set."""
+    import math
+    from cook_ad.core import OperatingPoint, Trial
+    from cook_ad.detectors.hsmm_lag import LagHSMMDetector
+    from cook_ad.detectors.hsmm_live import LiveHSMMDetector
+    op = OperatingPoint({c: channel_alpha.get(c, alpha) for c in surprise.CHANNELS}, kappa)
+    dets = {lag: LiveHSMMDetector(hsmm, bad_sets, op) if lag == 0 else
+            LagHSMMDetector(hsmm, bad_sets, op, math.inf if lag == "inf" else lag) for lag in lags}
     out = {lag: [] for lag in lags}
     for traj in trajectories:
-        lt = live.compute_live_trace(tables, traj["verb_ids"], traj["noun_ids"], lags=lags)
-        for lag in lags:
-            flags = {}
-            for c, a in per_channel.items():
-                flags[c] = live.flags(lt, tables.alphas, a, kappa, lag=lag)[c]
+        trial = Trial("t", np.asarray(traj["verb_ids"]), np.asarray(traj["noun_ids"]))
+        for lag, det in dets.items():
+            flags = det.flags(det.trace(trial))
             out[lag].append(span_metrics.flags_from_channels(flags, surprise.CHANNELS))
     return out
 
@@ -630,7 +634,7 @@ def main():
                          "kept so earlier reports reproduce. The trimmed tables are always E.")
     ap.add_argument("--skip-hsmm", action="store_true")
     ap.add_argument("--live", action="store_true",
-                    help="add the causal detector (anomaly/live.py, docs/live.md) as arm(s) "
+                    help="add the causal detectors (detectors/hsmm_live.py, hsmm_lag.py) as arm(s) "
                          "hsmm-live-L{lag}, at the same alpha and per-channel alphas as hsmm-joint")
     ap.add_argument("--live-lags", default="0,5",
                     help="comma-separated lags for --live; 'inf' is the smoother")
@@ -710,12 +714,15 @@ def main():
         joint, sequences, d_max, chunk_size=args.chunk_size
     )
 
-    live_tables, live_lags = None, []
+    live_hsmm, live_bad, live_lags = None, None, []
     if args.live:
-        from cook_ad.anomaly import live
-        live_lags = [x if x == live.INF_LAG else int(x) for x in args.live_lags.split(",")]
+        from cook_ad.detectors.thresholds import BadSets
+        from cook_ad.hsmm import params as hsmm_params
+        from cook_ad.hsmm.model import HSMM
+        live_lags = [x if x == "inf" else int(x) for x in args.live_lags.split(",")]
         grid = sorted({args.alpha, *channel_alpha.values()})
-        live_tables = live.build_tables(joint, d_max, grid)
+        live_hsmm = HSMM(hsmm_params.JointHSMMParams(*joint[:7]), d_max)
+        live_bad = BadSets(live_hsmm, grid)
         print(f"  live arm: lags={live_lags} kappa={args.live_kappa} alphas={grid}")
 
     # ---- every arm's flags -----------------------------------------------------------
@@ -740,7 +747,7 @@ def main():
             flags_by_arm["hsmm-joint"] = hsmm_flags_per_trial(
                 trajectories, model, args.chunk_size, args.alpha, channel_alpha)
         if args.live:
-            by_lag = live_flags_per_trial(trajectories, live_tables, live_lags, args.alpha,
+            by_lag = live_flags_per_trial(trajectories, live_hsmm, live_bad, live_lags, args.alpha,
                                           channel_alpha, args.live_kappa)
             for lag, fl in by_lag.items():
                 flags_by_arm[f"hsmm-live-L{lag}"] = fl
