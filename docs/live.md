@@ -442,9 +442,10 @@ best path (max-product) and thresholds emissions by it, whereas L = ∞ averages
 
 ## 8. Measured
 
-All headline numbers are **metric G** ([`eval.md`](eval.md) §0: alarm onsets find spans, merge 5,
-deadline 10), with alarms per 10 min of error-free activity and step FPR beside them. Hidden-event
-channels at κ = 0.5 unless an operating point says otherwise.
+All headline numbers are **metric G** ([`eval.md`](eval.md) §0: alarm onsets find spans, one alarm
+per run of constant (verb, noun), deadline 10), with alarms per 10 min of error-free activity and
+run FPR (share of error-free runs containing any flag) beside them. Hidden-event channels at
+κ = 0.5 unless an operating point says otherwise.
 
 ### 8.1 EPIC-Tent — real annotated mistakes (metric G)
 
@@ -453,36 +454,37 @@ EPIC-Tent is one recipe (`k_recipe: 1`), so the recipe channel is off in both ar
 
 **PREGO split** (15 test sessions; `epic_tent_report_G_llm_prego.json`):
 
-| procedural | precision | recall | F1 | alarms / 10 min | step FPR |
+| procedural | precision | recall | F1 | alarms / 10 min | run FPR |
 |---|---|---|---|---|---|
-| null: flag every step | 0.170 | 0.860 | 0.284 | 26.75 | 1.000 |
-| null: flag every tick | 0.000 | 0.000 | 0.000 | 4.10 | 1.000 |
-| HSMM hindsight | 0.458 | 0.355 | 0.400 | 2.90 | 0.142 |
-| **HSMM live** | **0.528** | 0.355 | **0.425** | **2.33** | **0.125** |
-| LLM predictive, no recipes | 0.149 | 0.841 | 0.254 | 30.22 | 0.973 |
-| LLM predictive, + instruction order | 0.149 | 0.850 | 0.254 | 30.48 | 0.923 |
+| null: flag every tick = flag every run | 0.117 | 0.981 | 0.209 | 47.7 | 1.000 |
+| HSMM hindsight | 0.448 | 0.364 | 0.402 | 3.06 | 0.065 |
+| **HSMM live** | **0.513** | 0.364 | **0.426** | **2.54** | **0.056** |
+| LLM predictive, no recipes | 0.124 | 0.972 | 0.220 | 43.4 | 0.927 |
+| LLM predictive, + instruction order | 0.127 | 0.981 | 0.226 | 42.9 | 0.909 |
 
-`procedural+temporal`: hindsight 0.545 / 0.345 / 0.423 (2.91 per 10 min); live 0.605 / 0.331 /
-0.428 (2.35); LLM 0.201 / 0.863 / 0.326 (31.0); every-step null 0.225 / 0.871 / 0.358. The
-default 20/9 split tells the same story (procedural: hindsight F1 0.366, live 0.378, LLM 0.216,
-every-step null 0.233).
+`procedural+temporal`: hindsight 0.538 / 0.353 / 0.426 (3.02 per 10 min); live 0.588 / 0.338 /
+0.429 (2.57); LLM 0.165–0.167 / 0.96–0.97 / 0.282–0.285 (~44); null 0.156 / 0.978 / 0.269 (49.4).
+The default 20/9 split tells the same story (procedural: hindsight F1 0.383, live 0.396, LLM
+0.186–0.187, null 0.175; `epic_tent_report_G_llm.json`).
 
-**Live finds exactly the spans hindsight finds** (identical per-type recall: order 0.411, omit
-0.000, correction 0.000, repeat 0.333) **with ~20% fewer alarms on error-free activity.** It is
-the only arm on the table that does not need the session to be over. Under G the flag-every-tick
-null collapses to 0.000 (it scored F1 0.93 under D), and flag-every-step is the null to beat --
-both HSMM arms do, at a tenth of its alarm rate; neither LLM arm does.
+**Live finds the same spans hindsight finds** (identical procedural per-type recall: order 0.422,
+omit 0.000, correction 0.000, repeat 0.333) **with ~15–20% fewer alarms on error-free activity.**
+It is the only HSMM arm that does not need the session to be over. Under run merging,
+flag-every-tick and flag-every-run are one null; both HSMM arms beat it by ~0.2 F1 at a fifteenth
+of its alarm rate. The LLM arms sit 0.01–0.02 F1 above it and flag ~91% of error-free runs.
 
 **PREGO-trimmed (metric E, the only protocol comparable with published PREGO):** hindsight 3/15
 sessions caught (P 0.231, F1 0.214, false alarm on 8.1% of correct steps), live 2/15 (P 0.143,
 F1 0.138, 9.7%), LLM no recipes 15/15 at 95.2% of correct steps flagged, flag-every-step null
-15/15 at 100%. One session separates the two HSMM arms.
+15/15 at 100%. One session separates the two HSMM arms. (Metric E is PREGO's step-level scorer,
+so "step" is their term.)
 
 ### 8.2 Breakfast — injected anomalies
 
-Metric G on the injector's own spans, 378 train / 97 test trials per group, operating points
-picked on **train** (by G-F1) and reported on **test** (`tools_live_summary.py --metric-g`; runs
-`live_{dishknownG,dishG,lexhardG}_{train,test}.json`). Three models/settings:
+Metric G (one alarm per run of constant (verb, noun), deadline 10) on the injector's own spans,
+378 train / 97 test trials per group. Operating points are picked on **train** by G-F1 and reported
+on **test** (`tools_live_summary.py --metric-g`; runs `live_{dishknownR,dishR,lexhardR}_{train,test}.json`).
+Three models/settings:
 
 * **dish, given** -- `joint_params_train_dish.npz` (recipe = labelled dish, K_R = 10, labels pinned
   in every fitting stage; `fit_dish_model.sh`), with the true dish handed to both arms;
@@ -490,61 +492,61 @@ picked on **train** (by G-F1) and reported on **test** (`tools_live_summary.py -
   live: the running posterior). Unlabelled, it names the dish on 94.1% of whole test trials;
 * **cluster** -- the shipped `joint_params_train_lexhard.npz` (16 latent recipe clusters).
 
-| setting | arm | α (κ) | precision | recall | F1 | alarms / 10 min | step FPR |
+| setting | arm | α (κ) | precision | recall | F1 | alarms / 10 min | run FPR |
 |---|---|---|---|---|---|---|---|
-| dish, given | hindsight | 0.02 | 0.759 | 0.567 | **0.649** | **1.39** | **0.055** |
-| dish, given | live L=0 | 0.035 (0.9) | 0.682 | 0.605 | 0.641 | 2.08 | 0.097 |
-| dish, given | live L=2…∞ | 0.02 (0.3–0.9) | 0.741 | 0.574 | 0.647 | 1.49 | 0.074 |
-| dish, inferred | hindsight | 0.02 | 0.755 | 0.560 | 0.643 | 1.39 | 0.054 |
-| dish, inferred | live L=0 | 0.02 (0.7) | 0.704 | 0.584 | 0.638 | 1.83 | 0.086 |
-| cluster | hindsight | 0.05 | 0.653 | 0.622 | 0.637 | 2.43 | 0.092 |
-| cluster | live L=0 | 0.015 (0.05) | 0.679 | 0.617 | 0.646 | 2.23 | 0.105 |
+| dish, given | hindsight | 0.07 | 0.624 | 0.704 | 0.662 | 3.27 | 0.112 |
+| dish, given | live L=0…∞ | 0.035 (0.1–0.9) | 0.693 | 0.636 | **0.663** | 2.13 | 0.097 |
+| dish, inferred | hindsight | 0.035 | 0.695 | 0.619 | 0.655 | 2.03 | **0.074** |
+| dish, inferred | live L=0 | 0.02 (0.7) | 0.707 | 0.613 | 0.657 | **1.93** | 0.086 |
+| cluster | hindsight | 0.05 | 0.667 | 0.656 | 0.661 | 2.43 | 0.092 |
+| cluster | live L=0 | 0.015 (0.05) | 0.689 | 0.643 | **0.665** | 2.23 | 0.105 |
 
 Matched alarm budget (best train recall with train alarms ≤ 1 per 10 min), on test:
 
-| setting | hindsight F1 / alarms / step FPR | live L=0 F1 / alarms / step FPR |
+| setting | hindsight F1 / alarms / run FPR | live L=0 F1 / alarms / run FPR |
 |---|---|---|
-| dish, given | 0.649 / 1.39 / 0.055 | 0.648 / 1.54 / 0.077 |
-| dish, inferred | 0.643 / 1.39 / 0.054 | 0.633 / 1.64 / 0.082 |
-| cluster | 0.634 / 1.44 / 0.060 | 0.647 / 1.78 / 0.094 |
+| dish, given | 0.667 / 1.44 / 0.055 | 0.669 / 1.54 / 0.077 |
+| dish, inferred | 0.663 / 1.44 / 0.054 | 0.652 / 1.73 / 0.082 |
+| cluster | 0.651 / 1.44 / 0.060 | 0.665 / 1.83 / 0.094 |
 
-Per-type test recall at the F1 pick (dish, given): substitution 0.96 / 0.95, abandonment 0.59 /
-**0.67**, omission 0.30 / **0.37**, transposition 0.65 / 0.66, repetition 0.26 / 0.31 (hindsight /
-live L=0).
+Per-type test recall at the F1 pick (dish, given; hindsight / live L=0): substitution 1.00 / 1.00,
+abandonment 0.79 / 0.69, omission 0.57 / 0.42, transposition 0.75 / 0.70, repetition 0.36 / 0.31.
+The hindsight pick there is a loose α = 0.07 (3.3 alarms per 10 min); at matched budget the
+per-type gap closes.
 
-**Reading.** Going live costs **no F1** on any setting -- every live-vs-hindsight F1 gap is within
-±0.01, against roughly ±0.03 of noise at 97 trials per type. What it costs is a little **alarm
-budget**: at matched F1 the live arm raises ~0.1–0.4 more alarms per 10 min and flags 2–4 more
-correct steps per hundred, in exchange for catching somewhat more abandonments and omissions. The
-dish model is quieter than the cluster model at its F1 pick (1.4 vs 2.4 alarms per 10 min) at the
-same F1, and **knowing the dish vs inferring it moves nothing** (≤ 0.006 F1) -- consistent with
-94% unlabelled dish accuracy. Lag again buys nothing. One caveat that applies to every arm: train
-alarm budgets do not hold on test (picked at ≤ 0.5 per 10 min on train, test lands at 1.2–1.5),
-because healthy *train* trials are the ones the model was fitted to.
+**Reading.** Going live costs **no F1** on any setting -- every live-vs-hindsight gap is within
+±0.01, against roughly ±0.03 of noise at 97 trials per type. At a matched train budget live raises
+0.1–0.4 more alarms per 10 min and flags 2–3 more error-free runs per hundred. **Knowing the dish
+vs inferring it moves ≤ 0.011 F1**, consistent with 94% unlabelled dish accuracy, and the dish
+model is no better than the 16-cluster model. Lag buys nothing (L = 0…∞ within 0.003). Train alarm
+budgets do not hold on test (≤ 1 per 10 min on train lands at 1.4–1.8 on test), because healthy
+*train* trials are the ones the model was fitted to.
 
 **One table with the nulls and the LLM** (`tools_breakfast_g_table.py`, `runs/breakfast_g_table.json`).
 The LLM's cached answers exist only for `run_llm_eval.py`'s own pool (97 test trials, injected via
 the older `joint_params.npz`), so that pool is the reference here: it was replayed from cache with
-`--dump-streams` (no new requests) and every other arm was scored on the same streams, the HSMM
-arms at the operating points picked on train above. Metric G:
+`--dump-streams` (no new requests; `runs/golden/streams_pred_*.pkl`) and every other arm was scored
+on the same streams, the HSMM arms at the train-picked points above. Metric G:
 
-| arm | precision | recall | F1 | alarms / 10 min | step FPR |
+| arm | precision | recall | F1 | alarms / 10 min | run FPR |
 |---|---|---|---|---|---|
-| null: flag every step | 0.224 | 0.899 | 0.359 | 26.87 | 1.000 |
-| null: flag every tick | 0.000 | 0.000 | 0.000 | 4.81 | 1.000 |
-| LLM predictive, no recipes | 0.202 | 0.840 | 0.326 | 27.26 | 0.800 |
-| LLM predictive, + recipes | 0.254 | 0.835 | 0.390 | 19.58 | 0.639 |
-| LLM predictive, + recipes, Auto-CoT | 0.258 | 0.845 | 0.395 | 19.78 | 0.618 |
-| HSMM dish, given: hindsight | 0.769 | 0.560 | **0.648** | 1.39 | 0.056 |
-| HSMM dish, given: live L=0 | 0.703 | 0.593 | 0.643 | 2.08 | 0.097 |
-| HSMM dish, inferred: live L=0 | 0.727 | 0.577 | 0.644 | 1.83 | 0.087 |
-| HSMM cluster: live L=0 | 0.684 | 0.598 | 0.638 | 2.23 | 0.107 |
+| null: flag every run = flag every tick | 0.211 | 0.997 | 0.348 | 32.17 | 1.000 |
+| LLM predictive, no recipes | 0.235 | 0.928 | 0.375 | 25.73 | 0.800 |
+| LLM predictive, + recipes | 0.267 | 0.885 | 0.410 | 20.13 | 0.639 |
+| LLM predictive, no recipes, Auto-CoT | 0.231 | 0.928 | 0.370 | 26.12 | 0.818 |
+| LLM predictive, + recipes, Auto-CoT | 0.276 | 0.893 | 0.422 | 19.63 | 0.618 |
+| HSMM dish, given: hindsight (α 0.07) | 0.638 | 0.682 | 0.659 | 3.27 | 0.109 |
+| HSMM dish, given: live L=0 (α 0.035, κ 0.1) | 0.711 | 0.620 | **0.662** | 2.13 | 0.097 |
+| HSMM dish, inferred: hindsight (α 0.035) | 0.709 | 0.607 | 0.654 | 2.03 | 0.075 |
+| HSMM dish, inferred: live L=0 (α 0.02, κ 0.7) | 0.725 | 0.601 | 0.657 | 1.93 | 0.087 |
+| HSMM cluster: hindsight (α 0.05) | 0.676 | 0.639 | 0.657 | 2.43 | 0.092 |
+| HSMM cluster: live L=0 (α 0.015, κ 0.05) | 0.697 | 0.620 | 0.656 | 2.23 | 0.107 |
 | HSMM `joint_params.npz` at α=0.005 (the arm in the old LLM reports) | 0.804 | 0.393 | 0.528 | **0.50** | **0.022** |
 
-The LLM arms sit at the flag-every-step null (no-recipes below it, with-recipes 0.03 above), flag
-two thirds of correct steps and raise ~20–27 alarms per 10 min; every HSMM arm is at roughly a
-tenth of that alarm rate with F1 ~0.64. The HSMM numbers reproduce the run_live_eval ones on a
-different pool to within 0.01, so the pool is not what is being measured.
+The LLM arms sit 0.02–0.07 F1 above the null, flag 62–82% of error-free runs and raise ~20–26
+alarms per 10 min; every train-picked HSMM arm scores F1 ~0.66 at about a tenth of that alarm
+rate. The HSMM numbers reproduce the run_live_eval ones on a different pool to within 0.01, so the
+pool is not what is being measured.
 
 ### 8.3 What the measurement corrected in the design
 

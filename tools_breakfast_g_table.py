@@ -33,9 +33,9 @@ from cook_ad.recipe import lexical_init
 B = "dataset/processed/breakfast"
 D_MAX = 200
 MODELS = {   # name -> (params, train-pick json, give the true dish?)
-    "HSMM dish model, true dish given": (f"{B}/joint_params_train_dish.npz", "runs/live_dishknownG_train.json", True),
-    "HSMM dish model, dish inferred": (f"{B}/joint_params_train_dish.npz", "runs/live_dishG_train.json", False),
-    "HSMM 16-cluster model (shipped)": (f"{B}/joint_params_train_lexhard.npz", "runs/live_lexhardG_train.json", False),
+    "HSMM dish model, true dish given": (f"{B}/joint_params_train_dish.npz", "runs/live_dishknownR_train.json", True),
+    "HSMM dish model, dish inferred": (f"{B}/joint_params_train_dish.npz", "runs/live_dishR_train.json", False),
+    "HSMM 16-cluster model (shipped)": (f"{B}/joint_params_train_lexhard.npz", "runs/live_lexhardR_train.json", False),
 }
 
 
