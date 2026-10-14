@@ -11,6 +11,13 @@ EM — deliberately *not* a neural model. Every question the system asks ("did y
 toasting?") traces back to a single argmax over a fitted parameter row. That auditability is
 the design constraint the rest of the architecture serves.
 
+> **Restructure in progress** ([`restructure.md`](restructure.md)). New homes so far, which the
+> old modules now call into: `core.py` (`Trial`, `Alarm`, `Detection`, `OperatingPoint`,
+> `AnomalyDetector`), `hsmm/params.py` (`JointHSMMParams`, `LogTables`, `load`/`save`),
+> `hsmm/kernels.py` (filter predict/update, backward messages, forward pass, Viterbi),
+> `hsmm/model.py` (`class HSMM`) and `detectors/thresholds.py` (`class BadSets`). The table
+> below still describes the old layout until the docs rewrite (Phase G).
+
 ---
 
 ## Reading order

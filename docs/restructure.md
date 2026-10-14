@@ -1,7 +1,8 @@
 # Restructure plan
 
-Status: **in progress — Phase A done** (tag `pre-restructure`; goldens in `runs/golden/`, made by
-`scripts/verify/{dump_golden.py,run_tables.sh}`, checked by `compare_golden.py`). Written 2026-10-14 with the repo owner. The agent doing the work
+Status: **in progress — Phases A and B done** (tag `pre-restructure`; goldens in `runs/golden/`,
+made by `scripts/verify/{dump_golden.py,run_tables.sh}`, checked by `compare_golden.py`; see
+"Progress notes" at the end). Written 2026-10-14 with the repo owner. The agent doing the work
 reads this file top to bottom before touching code, works on branch `restructure`, and deletes this
 file in its last commit. A one-paragraph summary of the restructure goes into `docs/logbook.md`.
 
@@ -542,3 +543,42 @@ Make one commit per phase. Each phase ends with §9.2 passing.
 - **Live "early exit" is causal by one tick.** Scored with metric G's deadline of 10 it is fine. Do not "fix" it by shifting ticks.
 - **The tied-emission tolerance** (`EMISSION_FLAG_ATOL = 1e-6`, `TIE_ATOL = 1e-10`) is what makes hindsight flags bitwise reproducible. Keep both values.
 - **Run lengths:** metric G's `run_starts` is computed from the stream the detector saw (the degraded one), not the healthy source.
+
+---
+
+## Progress notes (for the logbook entry)
+
+**Phase A (34ff480).** Goldens cover §9.1 plus the Breakfast verdict arms (replayed into
+`streams_verdict.pkl`). All LLM replays: 0 uncached requests. Two independent dumps of the old
+code are bitwise identical, float diagnostics included. Baseline cost on the old code
+(`runs/golden/timings.json`, warm): hindsight 17.7 s, live L=0 100.1 s, EPIC-Tent `--skip-llm`
+11.7 s. The historical `epic_tent_report_live*.json` on disk predate metric G and are not
+comparable to the regenerated reports (headline pooled numbers agree); the two LLM reports
+reproduce exactly. An old-code worktree for re-timing lives at `../mci-cooking-ad-old`.
+
+**Phase B deviations from §3.** Recorded here so Phase G's docs and the logbook pick them up.
+- `HSMM.smooth(fr, L)` takes the `FilterResult` instead of `(verbs, nouns)`, so the emission
+  log-likelihoods are not recomputed. `L = math.inf` is the full smoother.
+- `HSMM.infer_recipe` returns `(r_hat, log P(r | o), log P(o))`; in Phase B it is the per-recipe
+  forward pass (bitwise the old `joint_em.infer_recipe` arithmetic). The filter-based r̂
+  (unification 2) is tried in Phase C.
+- `HSMM.predict()` returns a `Forecast(b_pred, log_end, log_m)` with `pi_tilde`/`stay`/`switch`
+  properties; `log_end`/`log_m` are what the Live event channels need.
+- `HSMM.view(recipe)` returns the per-trial tables (`View`), replacing `pin_recipe` and
+  `with_recipe_prior`; `View.recipes` is the slice detectors apply to their bins.
+- The new 7-field `params.JointHSMMParams` coexists with the old tilt-capable
+  `joint_params.JointHSMMParams` (same field order, so `params.JointHSMMParams(*old[:7])`
+  converts) until Phase E deletes the old EM. The cascade `HSMMParams` section stays at the bottom
+  of `hsmm/params.py` until then.
+- Docstrings cite the planned `docs/model.md` sections: §1 tables and emissions, §3 the filter
+  (§3.1 predict, §3.2 update), §5 backward messages, §6 one-recipe forward pass and r̂, §7 Viterbi;
+  and `docs/detectors.md` §1 the detector contract, §2 bad sets (§2.3 the one-recipe rule),
+  §3 Live channels (§3.3 stall). Phase G must write them with these numbers.
+
+**Phase B results.** `compare_golden.py runs/golden runs/golden_B`: all 20 files pass, bitwise —
+every flag matrix, r̂, z*, log-likelihood and float diagnostic, every table, every LLM stream
+(0 uncached requests). Full test suite green (513 + the new `tests/test_hsmm_model.py`). Training
+(`run_joint_lexical.py`, EPIC-Tent clean split, `--max-iters 2`): output `.npz` bitwise equal.
+Cost, warm, new / old: hindsight 18.2 / 17.7 s (1.03×), live L=0 100.2 / 100.1 s (1.00×),
+EPIC-Tent `--skip-llm` 11.8 / 11.7 s (1.01×). `HSMM.update` one tick at a time: 1.4 ms/tick
+(Breakfast lexhard, K_R=16, K=64, D=200).

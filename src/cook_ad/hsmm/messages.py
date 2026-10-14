@@ -2,130 +2,14 @@ import jax
 import jax.numpy as jnp
 from jax.scipy.special import logsumexp
 
-
-def _padded_cumsum(loglik, d_max):
-    """loglik: (T,K). Returns (cum_padded, offset) where cum_padded[offset+i,:] = Cum[i,:]
-    for i=0..T, Cum[0,:]=0, Cum[i,:]=sum_{t<i} loglik[t,:]. Edge-replicated by d_max on both
-    sides so any window read during the scan stays in-bounds and finite; validity is
-    enforced separately via explicit masks, never by relying on the padding value itself.
-    """
-    zeros = jnp.zeros((1, loglik.shape[1]), dtype=loglik.dtype)
-    cum = jnp.concatenate([zeros, jnp.cumsum(loglik, axis=0)], axis=0)  # (T+1, K)
-    pad_left = jnp.tile(cum[0:1], (d_max, 1))
-    pad_right = jnp.tile(cum[-1:], (d_max, 1))
-    cum_padded = jnp.concatenate([pad_left, cum, pad_right], axis=0)
-    return cum_padded, d_max
+from cook_ad.hsmm import kernels
 
 
-def forward_pass(loglik, log_init, log_trans, log_dur_pmf, log_dur_survival, mask, d_max):
-    """Explicit-duration forward pass (Yu 2010), one jax.lax.scan over ticks.
-
-    loglik: (T,K) from emissions.sequence_loglik. mask: (T,) bool, True for real ticks.
-    Returns (log_norm: (T,), astar_all: (T,K)).
-
-    Carry is `window`, shape (D_max,K): window[r,:] = F(t-r,:), the log-probability that a
-    NEW segment starts at boundary tick t-r, for lookback r=0..D_max-1 (duration d=r+1).
-    Per step: Astar (pmf-weighted, feeds the next boundary/transition) and Aocc
-    (survival-weighted, feeds the per-tick normalizer -- this is what makes right-censoring
-    at any true sequence length work automatically, with no per-sequence special-casing).
-    """
-    T, K = loglik.shape
-    cum_padded, offset = _padded_cumsum(loglik, d_max)
-
-    r_range = jnp.arange(d_max)
-    log_dur_pmf_t = log_dur_pmf.T             # (D,K)
-    log_dur_survival_t = log_dur_survival.T   # (D,K)
-
-    window_init = jnp.concatenate(
-        [log_init[None, :], jnp.full((d_max - 1, K), -jnp.inf, dtype=loglik.dtype)], axis=0
-    )
-
-    def step(carry, t):
-        window, logc_prev = carry
-
-        end_val = jax.lax.dynamic_slice_in_dim(cum_padded, offset + t + 1, 1, axis=0)[0]  # (K,)
-        cum_window = jax.lax.dynamic_slice_in_dim(cum_padded, offset + t - d_max + 1, d_max, axis=0)
-        cum_window = jnp.flip(cum_window, axis=0)  # (D,K): Cum[t-r,:]
-        logL = end_val[None, :] - cum_window        # (D,K): logL(t-r, t, k)
-
-        valid_r = r_range <= t
-        logL = jnp.where(valid_r[:, None], logL, -jnp.inf)
-
-        astar_terms = window + log_dur_pmf_t + logL
-        aocc_terms = window + log_dur_survival_t + logL
-
-        astar = logsumexp(astar_terms, axis=0)  # (K,)
-        aocc = logsumexp(aocc_terms, axis=0)    # (K,)
-
-        logc_t = logsumexp(aocc)
-        log_norm_t = logc_t - logc_prev
-
-        new_boundary = logsumexp(astar[:, None] + log_trans, axis=0)  # (K,): F(t+1,:)
-        window_next = jnp.concatenate([new_boundary[None, :], window[:-1, :]], axis=0)
-
-        is_real = mask[t]
-        window_next = jnp.where(is_real, window_next, window)
-        logc_next = jnp.where(is_real, logc_t, logc_prev)
-        log_norm_t = jnp.where(is_real, log_norm_t, 0.0)
-
-        return (window_next, logc_next), (log_norm_t, astar)
-
-    init_carry = (window_init, jnp.array(0.0, dtype=loglik.dtype))
-    _, (log_norm, astar_all) = jax.lax.scan(step, init_carry, jnp.arange(T))
-    return log_norm, astar_all
-
-
-def predictive_occupancy(loglik, log_init, log_trans, log_dur_pmf, log_dur_survival, mask, d_max):
-    """Live (causal) state-occupancy prior: pi_all[t,:] = log P(Z_t=k | o_{0:t-1}), the belief
-    over the current state *before* seeing tick t's emission -- the weighting anomaly
-    detection needs, since scoring o_t against a distribution that already conditions on o_t
-    would be circular.
-
-    Mirrors forward_pass's window/cumsum recursion exactly (same carry, same window advance
-    using the real astar/aocc computed WITH o_t, so later ticks still benefit from o_t once
-    it's observed) -- the only difference is the extra `pred_terms` computed per step, which
-    reads the cumsum window through t-1 (excludes o_t) and combines it with the survival
-    weight (segment may still be in progress, duration not yet resolved), the same combination
-    forward_pass uses for its own right-censored final-tick normalizer. Row-normalized to a
-    proper log-distribution over k at every t.
-    """
-    T, K = loglik.shape
-    cum_padded, offset = _padded_cumsum(loglik, d_max)
-
-    r_range = jnp.arange(d_max)
-    log_dur_pmf_t = log_dur_pmf.T             # (D,K)
-    log_dur_survival_t = log_dur_survival.T   # (D,K)
-
-    window_init = jnp.concatenate(
-        [log_init[None, :], jnp.full((d_max - 1, K), -jnp.inf, dtype=loglik.dtype)], axis=0
-    )
-
-    def step(window, t):
-        end_val = jax.lax.dynamic_slice_in_dim(cum_padded, offset + t + 1, 1, axis=0)[0]  # (K,)
-        end_val_pred = jax.lax.dynamic_slice_in_dim(cum_padded, offset + t, 1, axis=0)[0]  # (K,)
-        cum_window = jax.lax.dynamic_slice_in_dim(cum_padded, offset + t - d_max + 1, d_max, axis=0)
-        cum_window = jnp.flip(cum_window, axis=0)  # (D,K): Cum[t-r,:]
-
-        valid_r = r_range <= t
-        logL = jnp.where(valid_r[:, None], end_val[None, :] - cum_window, -jnp.inf)
-        logL_pred = jnp.where(valid_r[:, None], end_val_pred[None, :] - cum_window, -jnp.inf)
-
-        pred_terms = window + log_dur_survival_t + logL_pred  # (D,K), excludes o_t
-        pi_unnorm = logsumexp(pred_terms, axis=0)  # (K,)
-        pi_t = pi_unnorm - logsumexp(pi_unnorm)
-
-        astar = logsumexp(window + log_dur_pmf_t + logL, axis=0)
-
-        new_boundary = logsumexp(astar[:, None] + log_trans, axis=0)  # (K,): F(t+1,:)
-        window_next = jnp.concatenate([new_boundary[None, :], window[:-1, :]], axis=0)
-
-        is_real = mask[t]
-        window_next = jnp.where(is_real, window_next, window)
-
-        return window_next, pi_t
-
-    _, pi_all = jax.lax.scan(step, window_init, jnp.arange(T))
-    return pi_all
+# Restructure shims: the inference kernels live in hsmm/kernels.py; backward_pass and the
+# E-step combination below are training-only and move to hsmm/train/ in Phase E.
+_padded_cumsum = kernels.padded_cumsum
+forward_pass = kernels.forward_pass
+predictive_occupancy = kernels.predictive_occupancy
 
 
 def backward_pass(loglik, log_trans, log_dur_pmf, log_dur_survival, mask, d_max):
