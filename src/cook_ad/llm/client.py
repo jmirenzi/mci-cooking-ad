@@ -133,7 +133,7 @@ def load_env_file(path=DEFAULT_ENV_FILE, override=False):
     Hand-rolled rather than adding python-dotenv: this is a dozen lines and the dependency list is
     deliberately lean. A missing file is fine (returns 0) -- exporting the variable directly is
     equally valid, and CI has no .env. Existing environment variables win by default, so an
-    explicit `GEMINI_API_KEY=... python run_llm_eval.py` is never silently overridden by a stale
+    explicit `GEMINI_API_KEY=... ./py scripts/eval/eval_breakfast.py` is never silently overridden by a stale
     file.
     """
     p = Path(path)

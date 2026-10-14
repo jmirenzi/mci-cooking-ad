@@ -24,6 +24,15 @@ IGNORE_JSON = {"out", "out_dir", "figures_dir", "dump_streams", "cache_dir", "ta
                "elapsed", "client"}
 
 
+class _Unpickler(pickle.Unpickler):
+    """Goldens made before the restructure name cook_ad.eval.span_metrics.Flag."""
+
+    def find_class(self, module, name):
+        if module == "cook_ad.eval.span_metrics":
+            module = "cook_ad.eval.metric_g"
+        return super().find_class(module, name)
+
+
 class Report:
     def __init__(self):
         self.hard, self.soft, self.checked = [], [], 0
@@ -116,7 +125,7 @@ def main():
         rep = Report()
         if f.endswith(".pkl"):
             with open(os.path.join(da, f), "rb") as ha, open(os.path.join(db, f), "rb") as hb:
-                a, b = pickle.load(ha), pickle.load(hb)
+                a, b = _Unpickler(ha).load(), _Unpickler(hb).load()
             # run_llm_eval's dump records its own argv (paths differ run to run)
             for x in (a, b):
                 if isinstance(x, dict):

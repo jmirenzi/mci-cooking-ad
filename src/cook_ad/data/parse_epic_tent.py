@@ -1,7 +1,7 @@
 """EPIC-Tent annotations -> the same sequences/labels/vocab contract parse_breakfast.py emits,
 plus a fourth file this corpus alone can supply: anomalies.json.
 
-Annotations only -- no video. Run tools_fetch_epic_tent.py and point --root at its output.
+Annotations only -- no video. Run scripts/data/fetch_epic_tent.py and point --root at its output.
 
 EPIC-Tent is the first corpus here that carries REAL anomaly labels: two observers annotated
 nine error types with begin and end frames. Everything else in the repo detects anomalies that
@@ -17,7 +17,7 @@ a decision:
 2. **The 12 action classes factor into 12 distinct (verb, noun) pairs**, with no collisions (see
    ACTION_TO_VERB_NOUN). That is unusual: Breakfast's labels are already `verb_noun`, EPIC has
    3806 pairs the subtask layer must group, and here the pairs ARE the states. So k_subtask is
-   16 against 12 real pairs plus SIL, and recipe/lexical_init hands the state space over almost
+   16 against 12 real pairs plus SIL, and hsmm/train/lexical_init hands the state space over almost
    directly instead of discovering it.
 
 3. **Action segments overlap** -- 10.5% of consecutive pairs, because the paper's own design
@@ -174,7 +174,7 @@ CANONICAL_ORDER = (
 
 # Minimum length of an error-free run kept as a healthy fragment. Below this a fragment carries
 # no usable duration evidence and its first ticks are still inside the previous anomaly's
-# detection deadline (span_metrics.DEADLINE = 10).
+# detection deadline (metric_g.DEADLINE = 10).
 MIN_FRAGMENT_TICKS = 10
 
 RECIPE_LABEL = "tent"
@@ -462,7 +462,7 @@ def build_dataset(config, root, trim_terminal=True):
         # errors in the video, the training corpus is the conservative place to keep them out
         # of, and it keeps sequences_clean.json -- hence every fitted checkpoint -- unchanged.
         # So clean_fragments here is the TRAINING excision. Evaluation recomputes its healthy
-        # population from `records` (run_epic_tent_eval.group_truth), where they count as normal.
+        # population from `records` (eval/pools.group_truth), where they count as normal.
         fragments = clean_fragments([tuple(r["window"]) for r in all_records], n_ticks)
         stats["fragments"] += len(fragments)
         stats["clean_ticks"] += sum(b - a + 1 for a, b in fragments)

@@ -17,14 +17,12 @@ Breakfast LLM streams come from run_llm_eval.py --dump-streams (see run_tables.s
 """
 import argparse
 import json
+import math
 import os
 import pickle
-import sys
 import time
 
-sys.path.insert(0, os.getcwd())  # run_epic_tent_eval / run_llm_eval live at the repo root
-
-from cook_ad.xla_env import disable_gpu_autotuning  # noqa: E402
+from cook_ad.xla_env import disable_gpu_autotuning
 
 disable_gpu_autotuning()
 
@@ -33,19 +31,28 @@ import numpy as np  # noqa: E402
 
 jax.config.update("jax_enable_x64", True)
 
-import run_epic_tent_eval as ET  # noqa: E402
-import run_llm_eval as R  # noqa: E402
-from cook_ad.anomaly import live, narrate, quantile, surprise  # noqa: E402
+from cook_ad.core import AnomalyDetector, OperatingPoint, Trial  # noqa: E402
 from cook_ad.data import split as split_mod  # noqa: E402
 from cook_ad.data.config import load_config  # noqa: E402
-from cook_ad.eval import batch, span_metrics  # noqa: E402
-from cook_ad.hsmm import joint_em, joint_params  # noqa: E402
+from cook_ad.data.parse_epic_tent import CANONICAL_ORDER, ERROR_GROUPS  # noqa: E402
+from cook_ad.detectors import llm_predictive as llm_pred  # noqa: E402
+from cook_ad.detectors.hsmm_hindsight import CHANNELS, HindsightHSMMDetector  # noqa: E402
+from cook_ad.detectors.hsmm_lag import LagHSMMDetector  # noqa: E402
+from cook_ad.detectors.hsmm_live import LiveHSMMDetector  # noqa: E402
+from cook_ad.detectors.narrate import Lexicon  # noqa: E402
+from cook_ad.detectors.thresholds import BadSets  # noqa: E402
+from cook_ad.eval import metric_e, metric_g, pools  # noqa: E402
+from cook_ad.hsmm import batch as hbatch  # noqa: E402
+from cook_ad.hsmm import params as hparams  # noqa: E402
+from cook_ad.hsmm.model import HSMM  # noqa: E402
+from cook_ad.hsmm.train.lexical_init import recipe_label_assignment  # noqa: E402
 from cook_ad.llm import client as llm_client  # noqa: E402
-from cook_ad.llm import predict, prompts  # noqa: E402
-from cook_ad.recipe import lexical_init  # noqa: E402
-from cook_ad.synthetic import error_injection, generate  # noqa: E402
+from cook_ad.llm import prompts  # noqa: E402
+from cook_ad.synthetic import generate  # noqa: E402
 
-CHANNELS = surprise.CHANNELS
+DOMAIN, INTERLEAVED = "assembly", (("read", "instruction"),)   # as scripts/eval/eval_epic_tent.py
+INF_LAG = "inf"
+DEFAULT_ALPHA = 5e-3
 # run_detect_eval.ALPHAS, the grid run_live_eval builds its live tables on. Copied, not imported:
 # the binned event mass is a cumsum over this grid, so the grid itself is part of the golden.
 BF_ALPHA_GRID = [0.5, 0.35, 0.2, 0.15, 0.1, 0.07, 0.05, 0.035, 0.02, 0.015, 0.01, 0.007, 0.005,
@@ -53,7 +60,7 @@ BF_ALPHA_GRID = [0.5, 0.35, 0.2, 0.15, 0.1, 0.07, 0.05, 0.035, 0.02, 0.015, 0.01
 BF_HINDSIGHT_ALPHAS = (0.01, 0.05)
 PER_CHANNEL = {"s_temporal": 1e-5}          # on top of DEFAULT_ALPHA = 0.005
 BF_LIVE_OP = (0.02, 0.5)                    # (alpha, kappa)
-LAGS = [0, 5, live.INF_LAG]
+LAGS = [0, 5, INF_LAG]
 ET_KAPPA = 0.5
 EVENT_KEYS = ("stall", "early", "trans", "recipe")
 
@@ -78,73 +85,27 @@ def stack(flag_dict):
     return np.stack([np.asarray(flag_dict[c], dtype=bool) for c in CHANNELS], axis=1)
 
 
-def trial_ll(jp, seqs, d_max, chunk_size):
-    verb, noun, mask = batch._pad(seqs, max(len(s["verb_ids"]) for s in seqs))
-    r_hat, rho, ll = joint_em.infer_recipe(jp, verb, noun, mask, d_max, chunk_size=chunk_size)
-    return np.asarray(r_hat), np.asarray(rho), np.asarray(ll)
-
-
-def hindsight(jp, seqs, d_max, chunk_size, known_r, alphas, per_channel):
-    """-> per-trial dicts: flags per arm, r_hat, z_star, channel values."""
-    traces, lp, r_hat, ltm = batch.compute_traces_joint(jp, seqs, d_max, chunk_size=chunk_size,
-                                                        r_hat=known_r)
-    cache = quantile.JointThresholdCache(lp, ltm)
-    pc = surprise.per_channel_alphas(per_channel)
-    out = []
-    for tr, r in zip(traces, np.asarray(r_hat)):
-        arms = {f"hindsight@{a:g}": stack(surprise.flag_joint_cached(cache, tr, lp, int(r), ltm,
-                                                                     alpha=a)) for a in alphas}
-        arms["hindsight@per_channel"] = stack(
-            surprise.flag_joint_per_channel(tr, lp, int(r), ltm, pc))
-        out.append({
-            "arms": arms, "r_hat": int(r), "z_star": np.asarray(tr.z_star),
-            "values": {c: np.asarray(getattr(tr, c), dtype=np.float64) for c in CHANNELS},
-            "pi_at_zstar": np.asarray(tr.pi_at_zstar),
-        })
-    return out
-
-
-def live_one(tb, s, recipe, per_channel_alpha, kappa):
-    """per_channel_alpha: {channel: alpha}. -> (arms {live_L<lag>: (T,7)}, diagnostics)."""
-    lt = live.compute_live_trace(tb, s["verb_ids"], s["noun_ids"], lags=LAGS, recipe=recipe)
-    arms, events = {}, {}
-    for lag in LAGS:
-        fl = {c: live.flags(lt, tb.alphas, a, kappa, lag=lag)[c] for c, a in per_channel_alpha.items()}
-        arms[f"live_L{lag}"] = stack(fl)
-        events[lag] = {k: np.asarray(lt.events[lag][k]) for k in EVENT_KEYS}
-    diag = {"p_emit": lt.p_emit, "p_verb": lt.p_verb, "p_noun": lt.p_noun,
-            "log_norm": lt.log_norm, "events": events, "alphas": np.asarray(tb.alphas)}
-    return arms, float(np.sum(lt.log_norm)), diag
-
-
 # --------------------------------------------------------------------------------------------
-# The same rows through the restructured detector API (--impl new)
-
-IMPL = "old"
+# The rows, through the detector API
 _EVENT_KEY = {"s_temporal": "stall", "s_dur_two": "early", "s_transition": "trans",
               "s_recipe_transition": "recipe"}
 
 
 class NewEngine:
-    """hindsight / trial_ll / live_one with the detectors in place of the old library calls."""
+    """hindsight / trial_ll / live_one through the detector classes."""
 
     def __init__(self, path, d_max, grid):
-        from cook_ad.detectors.thresholds import BadSets
-        from cook_ad.hsmm.model import HSMM
         self.hsmm = HSMM.load(path, d_max)
         self.bad = BadSets(self.hsmm, grid)
 
     @staticmethod
     def trials(seqs, known_r):
-        from cook_ad.core import Trial
         return [Trial(str(i), np.asarray(s["verb_ids"]), np.asarray(s["noun_ids"]),
                       None if known_r is None else int(known_r[i])) for i, s in enumerate(seqs)]
 
     def hindsight(self, seqs, chunk_size, known_r, alphas, per_channel):
-        from cook_ad.core import OperatingPoint
-        from cook_ad.detectors.hsmm_hindsight import HindsightHSMMDetector
         det = HindsightHSMMDetector(self.hsmm, self.bad, OperatingPoint(0.005), chunk_size)
-        pc = surprise.per_channel_alphas(per_channel)
+        pc = per_channel_alphas(per_channel)
         out = []
         for tr in det.traces(self.trials(seqs, known_r)):
             arms = {f"hindsight@{a:g}": stack(det.flags(tr, OperatingPoint(a))) for a in alphas}
@@ -155,23 +116,18 @@ class NewEngine:
         return out
 
     def trial_ll(self, seqs, chunk_size):
-        from cook_ad.hsmm import batch as hbatch
         verb, noun, mask = hbatch.pad([s["verb_ids"] for s in seqs], [s["noun_ids"] for s in seqs])
         r, rho, ll = hbatch.infer_recipe(self.hsmm.tables, verb, noun, mask, self.hsmm.d_max,
                                          chunk_size)
         return np.asarray(r), np.asarray(rho), np.asarray(ll)
 
     def live_one(self, s, recipe, per_channel_alpha, kappa):
-        from cook_ad.core import OperatingPoint, Trial
-        from cook_ad.detectors.hsmm_lag import LagHSMMDetector
-        from cook_ad.detectors.hsmm_live import LiveHSMMDetector
-        import math
         op = OperatingPoint(dict(per_channel_alpha), kappa)
         trial = Trial("t", np.asarray(s["verb_ids"]), np.asarray(s["noun_ids"]), recipe)
         arms, events, tr = {}, {}, None
         for lag in LAGS:
             det = (LiveHSMMDetector(self.hsmm, self.bad, op) if lag == 0 else
-                   LagHSMMDetector(self.hsmm, self.bad, op, math.inf if lag == live.INF_LAG else lag))
+                   LagHSMMDetector(self.hsmm, self.bad, op, math.inf if lag == INF_LAG else lag))
             tr = det.trace(trial)
             arms[f"live_L{lag}"] = stack(det.flags(tr))
             events[lag] = {_EVENT_KEY[c]: tr.events[c] for c in _EVENT_KEY}
@@ -180,53 +136,35 @@ class NewEngine:
         return arms, float(np.sum(tr.log_norm)), diag
 
 
-class OldEngine:
-    def __init__(self, path, d_max, grid):
-        self.jp = joint_params.load_params(path)
-        self.tb = live.build_tables(self.jp, d_max, grid)
-        self.d_max = d_max
-
-    def hindsight(self, seqs, chunk_size, known_r, alphas, per_channel):
-        return hindsight(self.jp, seqs, self.d_max, chunk_size, known_r, alphas, per_channel)
-
-    def trial_ll(self, seqs, chunk_size):
-        return trial_ll(self.jp, seqs, self.d_max, chunk_size)
-
-    def live_one(self, s, recipe, per_channel_alpha, kappa):
-        return live_one(self.tb, s, recipe, per_channel_alpha, kappa)
-
-
 def engine(path, d_max, grid):
-    return (NewEngine if IMPL == "new" else OldEngine)(path, d_max, grid)
+    return NewEngine(path, d_max, grid)
+
+
+def per_channel_alphas(overrides, alpha=DEFAULT_ALPHA):
+    out = {c: alpha for c in CHANNELS}
+    out.update(overrides)
+    return out
 
 
 # --------------------------------------------------------------------------------------------
 # Breakfast
 
 
-def breakfast_pool(jp, seqs, d_max, chunk_size, seed, recipe_labels, labels_path):
-    """run_live_eval.main's stream loop, verbatim in rng order. -> ({group: [seq]}, known_r)."""
-    marg = joint_params.collapse_to_marginal(jp)
-    traj = generate.trajectories_from_real_joint(jp, seqs, d_max, chunk_size=chunk_size)
-    keep = [i for i, t in enumerate(traj) if len(t["segments"]) >= error_injection.MIN_SEGMENTS]
-    usable = [traj[i] for i in keep]
-    rng = np.random.default_rng(seed)
-    streams = {"healthy": usable}
+def breakfast_pool(params, seqs, d_max, chunk_size, recipe_labels, labels_path):
+    """The per-type pool, placement by the scored model. -> ({group: [trajectory]}, known_r)."""
+    streams, keep = pools.injected_per_type(params, seqs, d_max, seed=0, chunk_size=chunk_size)
     known_r = None
     if recipe_labels:
-        known_r, _ = lexical_init.recipe_label_assignment([seqs[i] for i in keep],
-                                                          json.load(open(labels_path)))
-    for et in error_injection.ERROR_TYPES:
-        streams[et] = [error_injection.inject(et, t, rng, marg, select="random") for t in usable]
+        known_r, _ = recipe_label_assignment([seqs[i] for i in keep], json.load(open(labels_path)))
     return streams, known_r
 
 
 def dump_breakfast(name, cfg, out_dir, chunk_size=8):
     d_max = load_config("configs/breakfast.yaml")["duration"]["d_max_ticks"]
-    jp = joint_params.load_params(cfg["params"])
+    jp = hparams.load(cfg["params"])
     seqs = json.load(open(f"{BF}/sequences.json"))
     seqs = split_mod.filter_sequences(seqs, split_mod.load_split(f"{BF}/split.json"), "test")
-    streams, known_r = breakfast_pool(jp, seqs, d_max, chunk_size, 0, cfg["recipe_labels"],
+    streams, known_r = breakfast_pool(jp, seqs, d_max, chunk_size, cfg["recipe_labels"],
                                       f"{BF}/labels.json")
     eng = engine(cfg["params"], d_max, BF_ALPHA_GRID)
     alpha, kappa = BF_LIVE_OP
@@ -261,47 +199,31 @@ def dump_breakfast(name, cfg, out_dir, chunk_size=8):
 
 
 def et_llm_flags(trajectories, lexicon, vocab, labels, sil, trimmed):
-    """Both predictive variants, replayed from the cache. -> ({arm: [[(tick, strength, channel)]]}, stats)."""
+    """Both predictive variants, replayed from the cache through LLMPredictiveDetector's step
+    loop (reset, step, finish). -> ({arm: [[(tick, strength, channel)]]}, client stats)."""
     out, stats = {}, {}
     for variant in prompts.VARIANTS:
-        system_prompt = prompts.build_variant(
-            variant, vocab, labels=labels, protocol=predict.PROTOCOL, exemplars=[],
-            domain=ET.DOMAIN, sil_verb=sil[0], sil_noun=sil[1],
-            canonical_order=ET.CANONICAL_ORDER, interleaved=ET.INTERLEAVED)
         client = llm_client.ChatClient(
             model="gemma3:27b", base_url="http://localhost:11434/v1",
             cache_dir=f"{ET_DIR}/llm_cache", max_requests=0,
-            temperature=R.PREDICTIVE_TEMPERATURE, max_tokens=R.PREDICTIVE_MAX_TOKENS)
-        arm = f"llm-predictive-{variant}"
-        if IMPL == "new":
-            flags = et_llm_step_loop(trajectories, lexicon, vocab, labels, sil, variant, client,
-                                     system_prompt)
-        else:
-            flags, _ = ET.predictive_flags_per_trial(trajectories, lexicon, client, system_prompt,
-                                                     vocab, arm)
+            temperature=llm_pred.TEMPERATURE, max_tokens=llm_pred.MAX_TOKENS)
+        det = llm_pred.LLMPredictiveDetector(
+            client, vocab, lexicon, variant=variant, labels=labels, domain=DOMAIN,
+            sil_verb=sil[0], sil_noun=sil[1], canonical_order=CANONICAL_ORDER,
+            interleaved=INTERLEAVED)
+        det.fit([])
+        flags = []
+        for t in trajectories:
+            d = AnomalyDetector.detect_trial(det, Trial("t", np.asarray(t["verb_ids"]),
+                                                        np.asarray(t["noun_ids"])))
+            flags.append(sorted(metric_g.Flag(a.tick, a.score, a.channel) for a in d.alarms))
         if trimmed:
-            flags = [ET.drop_truncated_under_run(f, t, lexicon) for f, t in zip(flags, trajectories)]
+            flags = [metric_e.drop_truncated_under_run(f, t, lexicon)
+                     for f, t in zip(flags, trajectories)]
+        arm = f"llm-predictive-{variant}"
         out[arm] = [[(int(f.tick), float(f.strength), str(f.channel)) for f in fl] for fl in flags]
         stats[arm] = client.stats()
     return out, stats
-
-
-def et_llm_step_loop(trajectories, lexicon, vocab, labels, sil, variant, client, old_prompt):
-    """--impl new: LLMPredictiveDetector, one tick at a time (reset, step, finish), so the
-    golden also proves the causal path issues exactly the cached requests."""
-    from cook_ad.core import AnomalyDetector, Trial
-    from cook_ad.detectors.llm_predictive import LLMPredictiveDetector
-    det = LLMPredictiveDetector(client, vocab, lexicon, variant=variant, labels=labels,
-                                domain=ET.DOMAIN, sil_verb=sil[0], sil_noun=sil[1],
-                                canonical_order=ET.CANONICAL_ORDER, interleaved=ET.INTERLEAVED)
-    det.fit([])
-    assert det.system_prompt == old_prompt, "system prompt bytes changed"
-    out = []
-    for t in trajectories:
-        d = AnomalyDetector.detect_trial(det, Trial("t", np.asarray(t["verb_ids"]),
-                                                    np.asarray(t["noun_ids"])))
-        out.append(sorted(span_metrics.Flag(a.tick, a.score, a.channel) for a in d.alarms))
-    return out
 
 
 def et_rows(eng, trajectories, chunk_size, live_alpha):
@@ -327,16 +249,15 @@ def dump_epic_tent(name, cfg, out_dir, skip_llm, chunk_size=8):
     truth_by_id = {t["trial_id"]: t for t in json.load(open(f"{ET_DIR}/anomalies.json"))}
     seqs = split_mod.filter_sequences(seqs, split_mod.load_split(cfg["split"]), "test")[:29]
     truth = [truth_by_id[s["trial_id"]] for s in seqs]
-    jp = joint_params.load_params(cfg["params"])
-    lexicon = narrate.Lexicon(vocab, joint_params.collapse_to_marginal(jp), sil_verb=sil[0],
-                              sil_noun=sil[1])
-    pc = surprise.per_channel_alphas(PER_CHANNEL)
-    eng = engine(cfg["params"], d_max, sorted({surprise.DEFAULT_ALPHA, *PER_CHANNEL.values()}))
+    jp = hparams.load(cfg["params"])
+    lexicon = Lexicon(vocab, jp, sil_verb=sil[0], sil_noun=sil[1])
+    pc = per_channel_alphas(PER_CHANNEL)
+    eng = engine(cfg["params"], d_max, sorted({DEFAULT_ALPHA, *PER_CHANNEL.values()}))
 
     sets = {}
     if cfg["trim"]:
-        for gname in ET.ERROR_GROUPS:
-            trimmed = ET.trim_at_first_mistake(seqs, truth, ET.ERROR_GROUPS[gname])
+        for gname in ERROR_GROUPS:
+            trimmed = pools.trim_at_first_mistake(seqs, truth, ERROR_GROUPS[gname])
             sets[gname] = generate.trajectories_from_real_joint(
                 jp, [s for s, _ in trimmed], d_max, chunk_size=chunk_size)
     else:
@@ -363,11 +284,9 @@ def main():
     ap.add_argument("--out-dir", default="runs/golden")
     ap.add_argument("--only", default=None, help="comma-separated config names")
     ap.add_argument("--skip-llm", action="store_true")
-    ap.add_argument("--impl", choices=["old", "new"], default="old",
-                    help="old: the pre-restructure library calls; new: the detector classes")
+    ap.add_argument("--impl", choices=["new"], default="new",
+                    help="kept for old command lines; the old library is gone (tag pre-restructure)")
     args = ap.parse_args()
-    global IMPL
-    IMPL = args.impl
     os.makedirs(args.out_dir, exist_ok=True)
     only = set(args.only.split(",")) if args.only else None
     for name, cfg in {**BF_CONFIGS, **ET_CONFIGS}.items():

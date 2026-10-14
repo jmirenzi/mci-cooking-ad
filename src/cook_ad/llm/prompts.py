@@ -400,7 +400,7 @@ def _cluster_representatives(step_lists, k, n_verbs, n_nouns, seed=0):
 def select_exemplars(trajectories, lexicon, n=3, seed=0, method="random", vocab=None):
     """`n` healthy trials, as step lists, drawn deterministically for the few-shot block.
 
-    Drawn from whatever split the caller passes -- run_llm_eval passes TRAIN -- and never from the
+    Drawn from whatever split the caller passes -- the Breakfast eval passes TRAIN -- and never from the
     pool the arm is scored on, so the demonstrations cannot be of a trial the model is later asked
     to predict. Deterministic either way, so the system prompt is identical on every request of
     the sweep and the whole system block stays one shared prefix.

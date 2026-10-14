@@ -1,6 +1,6 @@
 # Restructure plan
 
-Status: **in progress — Phases A–D done** (tag `pre-restructure`; goldens in `runs/golden/`,
+Status: **in progress — Phases A–D done; Phase E code done, verification pending** (tag `pre-restructure`; goldens in `runs/golden/`,
 made by `scripts/verify/{dump_golden.py,run_tables.sh}`, checked by `compare_golden.py`; see
 "Progress notes" at the end). Written 2026-10-14 with the repo owner. The agent doing the work
 reads this file top to bottom before touching code, works on branch `restructure`, and deletes this

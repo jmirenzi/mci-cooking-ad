@@ -25,8 +25,7 @@ interfaces below.
 import re
 from typing import NamedTuple
 
-from cook_ad.eval.element_metrics import StepVerdict, duration_tolerance
-from cook_ad.eval.span_metrics import Flag
+from cook_ad.eval.metric_g import Flag
 from cook_ad.llm import detect, textify
 
 PROTOCOL = "predictive"
@@ -37,10 +36,15 @@ DUR_LONG = "p_dur_long"
 DUR_SHORT = "p_dur_short"
 CHANNELS = (SYMBOL, DUR_LONG, DUR_SHORT)
 
-# Mirrors element_metrics.CHANNEL_TO_TYPE so this arm's type_confusion is read against the HSMM's
-# on the same axes: a symbol disagreement is the transition violation s_transition reports, an
-# over-run is what s_temporal reports, and an under-run is s_dur_two's left tail.
-CHANNEL_TO_TYPE = {SYMBOL: "omission", DUR_LONG: "repetition", DUR_SHORT: "abandonment"}
+# A duration prediction counts as right within 50% of it, floored at +/-2 s so short runs are not
+# held to an impossible standard.
+DURATION_TOL_FRAC = 0.5
+DURATION_TOL_MIN = 2
+
+
+def duration_tolerance(reference):
+    """How far a duration may miss `reference` and still count as right."""
+    return max(DURATION_TOL_MIN, DURATION_TOL_FRAC * reference)
 
 # Two labelled lines, parsed INDEPENDENTLY so a malformed line degrades one channel rather than
 # both. Each is searched for anywhere in the reply (MULTILINE + search), since models prepend
@@ -180,7 +184,7 @@ def duration_disagreement(predictions, elapsed):
     """(predicted_duration, score) for an elapsed time against a prediction list.
 
     Tolerance is keyed off the PREDICTED duration -- the only reference available at flag time --
-    through the same eval.element_metrics.duration_tolerance the correction metric uses.
+    through duration_tolerance.
     """
     point = predictions[0].duration if predictions else None
     if point is None:
@@ -189,7 +193,7 @@ def duration_disagreement(predictions, elapsed):
 
 
 def run_predictive(client, system_prompt, steps, vocab):
-    """One trial -> (flags, stats). `flags` are tick-indexed span_metrics.Flags.
+    """One trial -> (flags, stats). `flags` are tick-indexed metric_g.Flags.
 
     Two channels, independent BY CONSTRUCTION: the duration channel conditions on the OBSERVED
     symbol of the step it is timing, so a substitution cannot leak into the temporal channel and
@@ -211,7 +215,7 @@ def run_predictive(client, system_prompt, steps, vocab):
     a truncated segment is the correct next symbol, so the symbol channel is silent too. An arm
     with only the upper tail would report ~0 recall on abandonment as a property of the metric
     rather than of the model, which is exactly the confusion this arm exists to remove. It mirrors
-    the HSMM's own s_dur_short / s_dur_long split, and span_metrics' deadline (rather than window)
+    the HSMM's own s_dur_short / s_dur_long split, and metric G's deadline (rather than window)
     matching rule exists to keep retrospective channels like it admissible.
     """
     replies = client.complete_many(predictive_messages(system_prompt, steps))
@@ -251,45 +255,6 @@ def run_predictive(client, system_prompt, steps, vocab):
         "next_parse_failures": n_next_fail,
     }
     return flags, stats
-
-
-# Which label survives when two channels fire on one element. Mirrors
-# element_metrics.CHANNEL_PRIORITY's reasoning: the most SPECIFIC evidence first. A symbol
-# disagreement names a transition that should not have happened; an under-run names a step that
-# stopped early; an over-run is the weakest, since a step running long is also what every other
-# structural error looks like once the stream stalls.
-CHANNEL_PRIORITY = (SYMBOL, DUR_SHORT, DUR_LONG)
-
-
-def verdicts_from_flags(flags, elements):
-    """Tick flags -> one element_metrics.StepVerdict per element, so this arm also lands in the
-    existing step/tick tables beside the other three rather than only in the span layer.
-
-    An element is anomalous if it CONTAINS a flag tick. That is the same rule
-    element_metrics.step_verdicts_from_flags applies to the HSMM's tick channels, so at
-    unit='tick' the predictive arm's verdicts are directly comparable to both other arms'.
-
-    `parse_ok` is always True here and that is deliberate, not a papered-over failure: these
-    verdicts are DERIVED arithmetically from predictions, never parsed, and there are ~6.5
-    boundaries to a trial against ~121 tick elements, so spreading a per-request parse failure
-    over the elements it happens to cover would make evaluate_steps' parse_failure_rate a function
-    of the unit. The real per-line failure rates are reported separately by run_predictive.
-    """
-    by_tick = {}
-    for f in flags:
-        prev = by_tick.get(f.tick)
-        if prev is None or CHANNEL_PRIORITY.index(f.channel) < CHANNEL_PRIORITY.index(prev):
-            by_tick[f.tick] = f.channel
-    out = []
-    for e in elements:
-        fired = [by_tick[t] for t in range(e.tick_start, e.tick_end) if t in by_tick]
-        if fired:
-            channel = min(fired, key=CHANNEL_PRIORITY.index)
-            out.append(StepVerdict(e.index, True, CHANNEL_TO_TYPE[channel], None,
-                                   parse_ok=True, raw=",".join(sorted(set(fired)))))
-        else:
-            out.append(StepVerdict(e.index, False, None, None, parse_ok=True, raw=""))
-    return out
 
 
 # ---- Auto-CoT rationale generation (offline, once per exemplar) -------------------------------

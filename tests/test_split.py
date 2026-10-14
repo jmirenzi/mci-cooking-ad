@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 from cook_ad.data import split as split_mod
@@ -31,7 +32,7 @@ def _write_fixture_sequences(path):
 
 def _run_split_dataset(sequences_path, out_path, seed=0, test_frac=0.2):
     return subprocess.run(
-        ["uv", "run", "python", "split_dataset.py",
+        [sys.executable, "scripts/data/split_dataset.py",
          "--sequences", str(sequences_path), "--out", str(out_path),
          "--test-frac", str(test_frac), "--seed", str(seed)],
         cwd=REPO_ROOT, capture_output=True, text=True, timeout=60,

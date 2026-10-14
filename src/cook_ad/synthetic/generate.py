@@ -1,18 +1,21 @@
+"""Trajectories: ancestral samples from a fitted model, and real sequences decoded into the
+segment form the error injectors need (synthetic/error_injection.py)."""
 import jax.numpy as jnp
 import numpy as np
 from scipy.stats import nbinom
 
-from cook_ad.hsmm import joint_em, joint_params, params
-from cook_ad.recipe import segmentize
+from cook_ad.hsmm import batch
+from cook_ad.hsmm.params import FLOOR, JointHSMMParams, _row_normalize, to_log_tables
 
 
-def _prob_tables(hsmm_params):
-    log_init, log_trans, log_emit_v, log_emit_n = params.normalize_categoricals(hsmm_params)
+def _prob_tables(params):
+    """One recipe's (init, trans, verb, noun) probabilities; `params` has unbatched counts
+    (e.g. hsmm.params.RecipeView)."""
     return (
-        np.asarray(jnp.exp(log_init)),
-        np.asarray(jnp.exp(log_trans)),   # diagonal is 0 (self-transitions banned)
-        np.asarray(jnp.exp(log_emit_v)),
-        np.asarray(jnp.exp(log_emit_n)),
+        np.asarray(jnp.exp(_row_normalize(params.init_counts, FLOOR))),
+        np.asarray(jnp.exp(_row_normalize(params.trans_counts, FLOOR, mask_diag=True))),
+        np.asarray(jnp.exp(_row_normalize(params.verb_counts, FLOOR))),
+        np.asarray(jnp.exp(_row_normalize(params.noun_counts, FLOOR))),
     )
 
 
@@ -64,42 +67,11 @@ def sample_trajectory(hsmm_params, rng, max_ticks, d_max):
     }
 
 
-def generate_healthy(hsmm_params, n, rng, max_ticks, d_max):
-    return [sample_trajectory(hsmm_params, rng, max_ticks, d_max) for _ in range(n)]
-
-
-def trajectory_from_real(hsmm_params, verb_ids, noun_ids, d_max):
-    """Adapter: turn a real Breakfast (verb_ids, noun_ids) trial into the same trajectory dict
-    the synthetic sampler produces, by Viterbi-segmenting it with the fitted model. Lets the
-    injectors and metrics run unchanged on both healthy sources; here the ground-truth segment
-    boundaries are the decoded ones (fuzzier than the synthetic sampler's exact boundaries).
-    """
-    verb_ids = np.asarray(verb_ids, dtype=np.int64)
-    noun_ids = np.asarray(noun_ids, dtype=np.int64)
-    mask = jnp.ones((1, verb_ids.shape[0]), dtype=bool)
-    result = segmentize.segment_all(
-        hsmm_params, jnp.asarray(verb_ids)[None, :], jnp.asarray(noun_ids)[None, :], mask, d_max
-    )[0]
-    return {
-        "verb_ids": verb_ids,
-        "noun_ids": noun_ids,
-        "segments": result["segments"],
-        "subtask_per_tick": result["subtask_per_tick"],
-    }
-
-
-def _prob_tables_joint(joint_hsmm_params, d_max):
-    """Categorical prob tables for every recipe, reusing joint_params.to_log_probs_joint
-    (its duration tables are unused here -- sampling draws from dur_r/dur_p directly via
-    scipy, the same convention _prob_tables/sample_trajectory already use)."""
-    log_probs = joint_params.to_log_probs_joint(joint_hsmm_params, d_max)
-    return (
-        np.asarray(jnp.exp(log_probs.log_pi)),
-        np.asarray(jnp.exp(log_probs.log_init)),
-        np.asarray(jnp.exp(log_probs.log_trans)),
-        np.asarray(jnp.exp(log_probs.log_emit_v)),
-        np.asarray(jnp.exp(log_probs.log_emit_n)),
-    )
+def _prob_tables_joint(params, d_max):
+    """Categorical prob tables for every recipe (durations are sampled from dur_r/dur_p)."""
+    t = to_log_tables(JointHSMMParams(*params[:7]), d_max)
+    return tuple(np.asarray(jnp.exp(x)) for x in (t.log_pi, t.log_init, t.log_A, t.log_emit_v,
+                                                  t.log_emit_n))
 
 
 def sample_trajectory_joint(joint_hsmm_params, rng, max_ticks, d_max):
@@ -144,57 +116,26 @@ def sample_trajectory_joint(joint_hsmm_params, rng, max_ticks, d_max):
     }
 
 
-def generate_healthy_joint(joint_hsmm_params, n, rng, max_ticks, d_max):
-    return [sample_trajectory_joint(joint_hsmm_params, rng, max_ticks, d_max) for _ in range(n)]
+def generate_healthy_joint(params, n, rng, max_ticks, d_max):
+    return [sample_trajectory_joint(params, rng, max_ticks, d_max) for _ in range(n)]
 
 
-def trajectory_from_real_joint(joint_hsmm_params, verb_ids, noun_ids, d_max):
-    """Adapter: joint-model analogue of trajectory_from_real. Infers the trial's MAP recipe
-    via joint_em.infer_recipe, then Viterbi-segments under that recipe's own tables
-    (segmentize.segment_all_conditioned) instead of the cascade's single shared table set.
-    """
-    verb_ids = np.asarray(verb_ids, dtype=np.int64)
-    noun_ids = np.asarray(noun_ids, dtype=np.int64)
-    verb_j = jnp.asarray(verb_ids)[None, :]
-    noun_j = jnp.asarray(noun_ids)[None, :]
-    mask = jnp.ones((1, verb_ids.shape[0]), dtype=bool)
-
-    r_hat, _, _ = joint_em.infer_recipe(joint_hsmm_params, verb_j, noun_j, mask, d_max, chunk_size=1)
-    log_probs = joint_params.to_log_probs_joint(joint_hsmm_params, d_max)
-    result = segmentize.segment_all_conditioned(log_probs, r_hat, verb_j, noun_j, mask, d_max)[0]
-    return {
-        "verb_ids": verb_ids,
-        "noun_ids": noun_ids,
-        "segments": result["segments"],
-        "subtask_per_tick": result["subtask_per_tick"],
-        "recipe_id": int(r_hat[0]),
-    }
-
-
-def trajectories_from_real_joint(joint_hsmm_params, sequences, d_max, chunk_size=8, r_hat=None):
-    """Batched `trajectory_from_real_joint`: same result, one JAX compile instead of one per
-    distinct trial length. `sequences` is sequences.json's layout. `r_hat`: decode under these
-    given recipes (e.g. dish labels) instead of inferring them.
-    """
-    from cook_ad.hsmm import em as _em
-
-    verb_ids, noun_ids, mask = _em.pad_batch(sequences)
+def trajectories_from_real_joint(params, sequences, d_max, chunk_size=8, r_hat=None):
+    """Real sequences (sequences.json layout) -> trajectory dicts carrying the MAP segmentation
+    under each trial's recipe: inferred, or the given `r_hat` (e.g. dish labels)."""
+    tables = to_log_tables(JointHSMMParams(*params[:7]), d_max)
+    verb_ids, noun_ids, mask = batch.pad([s["verb_ids"] for s in sequences],
+                                         [s["noun_ids"] for s in sequences])
     if r_hat is None:
-        r_hat, _, _ = joint_em.infer_recipe(
-            joint_hsmm_params, verb_ids, noun_ids, mask, d_max, chunk_size=chunk_size
-        )
+        r_hat = batch.infer_recipe(tables, verb_ids, noun_ids, mask, d_max, chunk_size)[0]
     else:
         r_hat = jnp.asarray(np.asarray(r_hat, dtype=np.int64))
-    log_probs = joint_params.to_log_probs_joint(joint_hsmm_params, d_max)
-    results = segmentize.segment_all_conditioned(log_probs, r_hat, verb_ids, noun_ids, mask, d_max)
-
-    out = []
-    for i, seq in enumerate(sequences):
-        out.append({
-            "verb_ids": np.asarray(seq["verb_ids"], dtype=np.int64),
-            "noun_ids": np.asarray(seq["noun_ids"], dtype=np.int64),
-            "segments": results[i]["segments"],
-            "subtask_per_tick": results[i]["subtask_per_tick"],
-            "recipe_id": int(r_hat[i]),
-        })
-    return out
+    segments = batch.viterbi(tables, r_hat, verb_ids, noun_ids, mask, d_max)
+    return [{
+        "verb_ids": np.asarray(seq["verb_ids"], dtype=np.int64),
+        "noun_ids": np.asarray(seq["noun_ids"], dtype=np.int64),
+        "segments": segs,
+        "subtask_per_tick": np.repeat(np.array([k for k, _ in segs], dtype=np.int64),
+                                      [d for _, d in segs]),
+        "recipe_id": int(r_hat[i]),
+    } for i, (seq, segs) in enumerate(zip(sequences, segments))]

@@ -137,38 +137,6 @@ def test_narrate_refuses_a_live_detection(setup):
         narrate(live, LiveHSMMDetector(hsmm, bad, OP), {"verbs": {}, "nouns": {}})
 
 
-EPIC_TENT = "dataset/processed/epic_tent"
-
-
-@pytest.mark.skipif(not os.path.exists(f"{EPIC_TENT}/joint_params_clean.npz"),
-                    reason="EPIC-Tent model not present")
-def test_narrate_matches_the_pre_restructure_narration():
-    """Same queries, word for word, as anomaly.narrate.narrate_joint on real sessions."""
-    from cook_ad.anomaly import narrate as old_narrate, surprise
-    from cook_ad.data.config import load_config
-    from cook_ad.hsmm import joint_params
-
-    d_max = load_config("configs/epic_tent.yaml")["duration"]["d_max_ticks"]
-    vocab = json.load(open(f"{EPIC_TENT}/vocab.json"))
-    seqs = json.load(open(f"{EPIC_TENT}/sequences.json"))[:3]
-    hsmm = HSMM.load(f"{EPIC_TENT}/joint_params_clean.npz", d_max)
-    alpha = 0.05
-    det = HindsightHSMMDetector(hsmm, BadSets(hsmm, [alpha]), OperatingPoint(alpha))
-    jp = joint_params.load_params(f"{EPIC_TENT}/joint_params_clean.npz")
-    n_queries = 0
-    for s in seqs:
-        v, n = np.asarray(s["verb_ids"]), np.asarray(s["noun_ids"])
-        trace, jlp, r_hat, ltm, _ = surprise.compute_trace_joint(jp, v, n, d_max)
-        flags = surprise.flag_joint(trace, jlp, r_hat, ltm, alpha=alpha)
-        pi_all = surprise.compute_pi_all_joint(jlp, r_hat, v, n, d_max)
-        old = old_narrate.narrate_joint(trace, flags, vocab, jp, r_hat, v, n, jlp, ltm, pi_all,
-                                        alpha=alpha)
-        new = narrate(det.detect_trial(Trial(s["trial_id"], v, n)), det, vocab)
-        assert [q[:7] for q in old] == [tuple(q) for q in new]
-        n_queries += len(new)
-    assert n_queries > 0
-
-
 # ---------------------------------------------------------------------------------------------
 # LLM detectors, against a deterministic fake client
 
@@ -264,15 +232,19 @@ def test_llm_verdict_step_loop_replays_from_cache():
     """The causal path, on real cached responses: zero uncached requests, golden alarms."""
     import pickle
 
-    from cook_ad.anomaly import narrate as old_narrate
-    from cook_ad.hsmm import joint_params
+    from cook_ad.detectors.narrate import Lexicon
+    from cook_ad.hsmm import params as hparams
     from cook_ad.llm import client as llm_client
 
-    golden = pickle.load(open(GOLDEN_VERDICT, "rb"))
+    class _Unpickler(pickle.Unpickler):   # the golden pickles name the pre-restructure Flag class
+        def find_class(self, module, name):
+            return super().find_class("cook_ad.eval.metric_g" if module.endswith("span_metrics")
+                                      else module, name)
+
+    golden = _Unpickler(open(GOLDEN_VERDICT, "rb")).load()
     vocab = json.load(open(f"{BREAKFAST}/vocab.json"))
     labels = json.load(open(f"{BREAKFAST}/labels.json"))
-    lexicon = old_narrate.Lexicon(vocab, joint_params.collapse_to_marginal(
-        joint_params.load_params(f"{BREAKFAST}/joint_params.npz")))
+    lexicon = Lexicon(vocab, hparams.load(f"{BREAKFAST}/joint_params.npz"))
     client = llm_client.ChatClient(model="gemma3:27b", base_url="http://localhost:11435/v1",
                                    cache_dir=f"{BREAKFAST}/llm_cache/gemma3:27b", max_requests=0,
                                    concurrency=1)

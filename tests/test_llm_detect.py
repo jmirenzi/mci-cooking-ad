@@ -275,7 +275,7 @@ def test_env_file_loads_keys(tmp_path, monkeypatch):
 
 
 def test_existing_environment_wins_over_the_env_file(tmp_path, monkeypatch):
-    """So an explicit `KEY=... python run_llm_eval.py` is never silently overridden by a stale
+    """So an explicit `KEY=... ./py scripts/eval/eval_breakfast.py` is never silently overridden by a stale
     file."""
     monkeypatch.setenv("COOK_AD_TEST_KEY", "from-environment")
     f = tmp_path / ".env"

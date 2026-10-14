@@ -139,7 +139,11 @@ class BadSets:
         return first_true(trans), first_true(recipe)
 
     def alpha_index(self, alpha):
-        return int(np.flatnonzero(np.isclose(self.alphas, alpha))[0])
+        """Position of `alpha` in the grid (it must be one of the grid's values)."""
+        hit = np.flatnonzero(np.isclose(self.alphas, alpha))
+        if not hit.size:
+            raise ValueError(f"alpha={alpha} is not on this BadSets grid {list(self.alphas)}")
+        return int(hit[0])
 
     def hindsight(self, r_hat, alpha) -> HindsightThresholds:
         """Thresholds for one trial's recipe r_hat at alpha (memoised)."""

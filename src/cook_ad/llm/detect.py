@@ -1,6 +1,6 @@
 """Protocol drivers and response parsing for the LLM baseline.
 
-Two protocols, both returning one Verdict per step so eval/element_metrics.py scores them
+Two protocols, both returning one Verdict per step so detectors/llm_verdict.py treats them
 identically:
 
   * `run_incremental` (default) -- one request per step. Request i shows the steps 0..i and asks

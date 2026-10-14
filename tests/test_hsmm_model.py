@@ -10,12 +10,10 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
-from cook_ad.anomaly import quantile
+from cook_ad.detectors import thresholds as T
 from cook_ad.detectors.thresholds import BadSets
-from cook_ad.eval import batch
-from cook_ad.hsmm import joint_em, joint_params, kernels, params
+from cook_ad.hsmm import batch, kernels, params
 from cook_ad.hsmm.model import HSMM
-from cook_ad.recipe import segmentize
 
 K_R, K, V, N, D_MAX = 3, 4, 3, 5, 6
 ALPHAS = [0.5, 0.2, 0.1, 0.05, 0.02, 0.01, 1e-3]
@@ -42,11 +40,6 @@ def _model(seed=0, k_r=K_R):
         dur_p=jnp.asarray(rng.uniform(0.3, 0.8, size=(k_r, K))),
         pi_counts=jnp.asarray(rng.gamma(2.0, 2.0, size=(k_r,)) + 1.0),
     )
-
-
-def _old(jp):
-    """The same parameters as the pre-restructure joint_params type, for the batched eval paths."""
-    return joint_params.JointHSMMParams(*jp)
 
 
 def _trials(seed=1, n=5, t_range=(8, 15)):
@@ -76,12 +69,12 @@ def test_step_loop_equals_filter(recipe):
 
 
 def test_filter_loglik_and_r_hat_match_infer_recipe():
-    """sum_t log P(o_t | o_<t) == log P(o); HSMM.infer_recipe == the batched joint_em one."""
+    """sum_t log P(o_t | o_<t) == log P(o); HSMM.infer_recipe == the batched one."""
     jp = _model()
     hsmm = HSMM(jp, D_MAX)
     trials = _trials()
-    verb, noun, mask = batch._pad(trials, max(len(s["verb_ids"]) for s in trials))
-    r_hat, rho, trial_ll = joint_em.infer_recipe(_old(jp), verb, noun, mask, D_MAX)
+    verb, noun, mask = batch.pad([s["verb_ids"] for s in trials], [s["noun_ids"] for s in trials])
+    r_hat, rho, trial_ll = batch.infer_recipe(hsmm.tables, verb, noun, mask, D_MAX)
     for i, s in enumerate(trials):
         r, log_post, log_p = hsmm.infer_recipe(s["verb_ids"], s["noun_ids"])
         assert r == int(r_hat[i])
@@ -100,12 +93,11 @@ def test_viterbi_matches_batched_segmentation():
     jp = _model()
     hsmm = HSMM(jp, D_MAX)
     trials = _trials(n=6)
-    verb, noun, mask = batch._pad(trials, max(len(s["verb_ids"]) for s in trials))
-    lp = joint_params.to_log_probs_joint(_old(jp), D_MAX)
+    verb, noun, mask = batch.pad([s["verb_ids"] for s in trials], [s["noun_ids"] for s in trials])
     r = np.arange(len(trials)) % K_R
-    batched = segmentize.segment_all_conditioned(lp, r, verb, noun, mask, D_MAX)
+    batched = batch.viterbi(hsmm.tables, jnp.asarray(r), verb, noun, mask, D_MAX)
     for i, s in enumerate(trials):
-        assert hsmm.viterbi(s["verb_ids"], s["noun_ids"], int(r[i])) == batched[i]["segments"]
+        assert hsmm.viterbi(s["verb_ids"], s["noun_ids"], int(r[i])) == batched[i]
 
 
 def test_smooth_full_equals_long_fixed_lag():
@@ -118,18 +110,18 @@ def test_smooth_full_equals_long_fixed_lag():
 
 
 @pytest.mark.parametrize("k_r", [1, K_R])
-def test_bad_sets_hindsight_match_threshold_tables(k_r):
-    jp = _model(k_r=k_r)
-    hsmm = HSMM(jp, D_MAX)
+def test_bad_sets_hindsight_are_the_tail_thresholds(k_r):
+    hsmm = HSMM(_model(k_r=k_r), D_MAX)
     bad = BadSets(hsmm, ALPHAS)
-    lp = joint_params.to_log_probs_joint(_old(jp), D_MAX)
-    ltm = joint_params.marginal_log_trans(lp)
+    t = hsmm.tables
     for a in (0.05, 1e-3):
         for r in range(k_r):
-            old = quantile.threshold_tables_joint(lp, r, ltm, a)
-            new = bad.hindsight(r, a)
-            for x, y in zip(old, new):
-                np.testing.assert_array_equal(x, y)
+            got = bad.hindsight(r, a)
+            np.testing.assert_array_equal(got.emit, T.joint_quantile_threshold(t.log_emit_v, t.log_emit_n, a))
+            np.testing.assert_array_equal(got.verb, T.categorical_quantile_threshold(t.log_emit_v, a))
+            np.testing.assert_array_equal(got.transition, T.transition_quantile_threshold(t.log_A[r], a))
+            np.testing.assert_array_equal(got.recipe, T.recipe_excess_thresholds(
+                t.log_A[r], np.asarray(t.log_A_marginal), a, k_r))
     if k_r == 1:
         assert np.all(np.asarray(bad.recipe_bin) == len(ALPHAS))
 

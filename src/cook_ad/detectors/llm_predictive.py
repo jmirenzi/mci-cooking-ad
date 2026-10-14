@@ -8,8 +8,14 @@ run comes next. Channels:
 """
 from cook_ad.core import Alarm, Detection, Trial
 from cook_ad.detectors.llm_base import LLMDetector
-from cook_ad.eval.element_metrics import duration_tolerance
 from cook_ad.llm import predict
+from cook_ad.llm.predict import duration_tolerance
+
+# Client settings for this detector's requests. They are part of the response cache key.
+TEMPERATURE = 0.6            # sampled, not greedy: the prediction is a draw from the model's belief
+MAX_TOKENS = 48              # two short labelled lines are the whole reply
+COT_MAX_TOKENS = 256         # with Auto-CoT exemplars the model reasons before answering
+RATIONALE_MAX_TOKENS = 200   # Auto-CoT rationale generation (once per exemplar, temperature 0)
 
 
 class LLMPredictiveDetector(LLMDetector):
