@@ -200,7 +200,7 @@ def lexical_to_joint(sequences, k_subtask, k_recipe, d_max, vocab_verbs, vocab_n
                      seed=0, min_ticks=MIN_PAIR_TICKS, anchor=ANCHOR_MASS,
                      background=BACKGROUND_MASS, alpha_init=0.5, alpha_trans=0.5, alpha_pi=1.0,
                      init_prior_scale=1.0, idf_recipes=False, recipe_features="pairs",
-                     noun_tilt_init=False, noun_tilt_clip=5.0):
+                     noun_tilt_init=False, noun_tilt_clip=5.0, assign=None):
     """Build a `JointHSMMParams` whose states are the observed (v,n) pairs and whose per-recipe
     dynamics come from the bag-of-pairs clustering. Drop-in replacement for
     `warm_start.cascade_to_joint` -- same return type, and it needs no cascade artifacts at all.
@@ -209,6 +209,10 @@ def lexical_to_joint(sequences, k_subtask, k_recipe, d_max, vocab_verbs, vocab_n
     prior matrices, so a caller can hand the same anchors to `joint_em.run_joint_em`.
 
     `idf_recipes` / `recipe_features` are passed through to `cluster_recipes`.
+
+    `assign`: a given per-trial recipe id (e.g. the dish label, recipe_label_assignment), used in
+    place of `cluster_recipes`. Then a recipe IS a dish: its init/transition/duration tables are
+    fitted from the trials labelled with it.
 
     `noun_tilt_init`: seed `JointHSMMParams.noun_tilt` from the SAME cluster assignment (see
     `_noun_tilt_init`), rather than leaving it `None`. Off by default -- existing callers get an
@@ -228,8 +232,11 @@ def lexical_to_joint(sequences, k_subtask, k_recipe, d_max, vocab_verbs, vocab_n
         pairs, k_subtask, vocab_verbs, vocab_nouns, anchor=anchor, background=background
     )
     segments_by_trial = hard_segments(sequences, pairs)
-    assign, _ = cluster_recipes(sequences, k_recipe, seed=seed, idf=idf_recipes,
-                                features=recipe_features)
+    if assign is None:
+        assign, _ = cluster_recipes(sequences, k_recipe, seed=seed, idf=idf_recipes,
+                                    features=recipe_features)
+    else:
+        assign = np.asarray(assign, dtype=np.int64)
 
     init_counts, trans_counts, dur_hist = _init_trans_dur_counts(
         segments_by_trial, assign, k_subtask, k_recipe, d_max
@@ -287,3 +294,28 @@ def lexical_to_joint(sequences, k_subtask, k_recipe, d_max, vocab_verbs, vocab_n
         "segments_by_trial": segments_by_trial,
     }
     return jp, info
+
+
+# A finite stand-in for log 0 in a label-pinned recipe prior. With lam = 1 it outweighs any
+# per-trial recipe log-likelihood gap by orders of magnitude, and unlike -inf it can never meet a
+# zero lam as 0 * -inf = NaN.
+PINNED_LOG_ZERO = -1e9
+
+
+def recipe_label_assignment(sequences, labels):
+    """sequences.json entries + labels.json entries -> (assign (N,) int, names list): each trial's
+    recipe id is its labelled dish, ids in sorted-name order so they are stable across runs and
+    splits. The names list is what maps a recipe id back to a dish."""
+    by_id = {e["trial_id"]: e["recipe_label"] for e in labels}
+    dishes = [by_id[s["trial_id"]] for s in sequences]
+    names = sorted(set(by_id.values()))
+    index = {n: i for i, n in enumerate(names)}
+    return np.array([index[d] for d in dishes], dtype=np.int64), names
+
+
+def pinned_recipe_log_prior(assign, k_recipe):
+    """(N,K_R) log one-hot on the given assignment, for joint_em's anchoring dial at lam = 1: the
+    E-step then gives each trial's whole responsibility to its labelled recipe."""
+    prior = np.full((len(assign), k_recipe), PINNED_LOG_ZERO)
+    prior[np.arange(len(assign)), np.asarray(assign)] = 0.0
+    return prior

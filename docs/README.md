@@ -22,6 +22,7 @@ the design constraint the rest of the architecture serves.
 | [`hsmm.md`](hsmm.md) | `src/cook_ad/hsmm/` | the core model: durations, message passing, EM, the joint recipe mixture, the similarity kernel |
 | [`recipe.md`](recipe.md) | `src/cook_ad/recipe/` | Viterbi segmentation, the cascade's stage-2 recipe HMM, the joint warm start |
 | [`anomaly.md`](anomaly.md) | `src/cook_ad/anomaly/` | the eight surprise channels, quantile calibration, narration |
+| [`live.md`](live.md) | design only, not implemented | what each surprise channel reads from the future today, and a causal (live) version of each |
 | [`lifecycle.md`](lifecycle.md) | `src/cook_ad/lifecycle/` | frozen/live dual model, bounded preference updates, drift reports |
 | [`eval.md`](eval.md) | `src/cook_ad/eval/` | batched trace computation, precision/recall/latency metrics, span-existence scoring, figures |
 | [`synthetic.md`](synthetic.md) | `src/cook_ad/synthetic/` | ancestral sampling and the five canonical injected errors |

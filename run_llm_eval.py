@@ -167,7 +167,7 @@ def empty_stream():
     return {"healthy": [], "degraded": {et: [] for et in error_injection.ERROR_TYPES}}
 
 
-def score_spans(stream, spans, merge_tol=span_metrics.MERGE_TOL):
+def score_spans(stream, spans, merge_tol=span_metrics.MERGE_TOL, onset=False):
     """One arm's tick-flag stream + the pool's spans -> the span-existence report.
 
     `merge_tol=0` disables merging (identical ticks from two channels still collapse, which is
@@ -178,7 +178,7 @@ def score_spans(stream, spans, merge_tol=span_metrics.MERGE_TOL):
     return span_metrics.evaluate_spans(
         stream["healthy"],
         {et: list(zip(stream["degraded"][et], spans[et])) for et in spans},
-        merge_tol=merge_tol,
+        merge_tol=merge_tol, onset=onset,
     )
 
 
@@ -693,6 +693,10 @@ def main():
                              "restore the single shared alpha. See DEFAULT_CHANNEL_ALPHA for the "
                              "measurement behind the default")
     parser.add_argument("--chunk-size", type=int, default=16)
+    parser.add_argument("--dump-streams", default=None, metavar="PATH",
+                        help="also pickle the pool (every trial's verb/noun ids and spans) and every "
+                             "arm's per-trial span flags, so other detectors and other metrics can "
+                             "be scored on EXACTLY these streams (tools_breakfast_g_table.py)")
     parser.add_argument("--min-run", type=int, default=10,
                         help="tick-level persistence requirement applied BEFORE collapsing HSMM "
                              "flags to steps; see element_metrics.step_verdicts_from_flags for "
@@ -889,8 +893,24 @@ def main():
         print("\ndry run: no requests made.")
         return
 
+    def _dump():
+        if not args.dump_streams:
+            return
+        import pickle
+        ids = lambda d: {"verb_ids": np.asarray(d["verb_ids"]), "noun_ids": np.asarray(d["noun_ids"])}
+        payload = {
+            "pools": {name: [(ids(t), {et: {**ids(d), "spans": d["spans"]} for et, d in deg.items()})
+                             for t, deg in pool] for name, pool in pools.items()},
+            "streams": dumped,
+            "args": vars(args),
+        }
+        with open(args.dump_streams, "wb") as fh:
+            pickle.dump(payload, fh)
+        print(f"streams dumped to {args.dump_streams}")
+
     # ---- score ----------------------------------------------------------------------------
     reports = {}
+    dumped = {}
     variants = [] if args.skip_llm else (
         list(prompts.VARIANTS) if args.variant == "both" else [args.variant]
     )
@@ -915,6 +935,7 @@ def main():
             report["channel_alpha"] = args.channel_alpha
             report["spans"] = score_spans(stream, spans, args.merge_tol)
             reports[arm] = report
+            dumped[arm] = stream
             print_report(report, arm)
             plotting.save_step_figures(report, args.figures_dir,
                                        f"{name}_hsmm_{model['kind']}{suffix}".replace("@", "_"))
@@ -974,6 +995,7 @@ def main():
             report["protocol"] = args.protocol
             report["unit"] = args.unit
             report["spans"] = score_spans(stream, spans, args.merge_tol)
+            dumped[tag] = stream
             if predictive:
                 report["n_shot"] = len(exemplars)
                 report["shot_select"] = args.shot_select
@@ -992,6 +1014,7 @@ def main():
                 f"{shot_suffix.replace('+', '_') if predictive else ''}")
 
     _write_report(args, reports)
+    _dump()
 
 
 if __name__ == "__main__":

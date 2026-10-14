@@ -302,3 +302,72 @@ def test_multi_charges_a_flag_as_fp_when_its_span_is_removed_entirely():
     trials = [(_f(10, 60), [((10, 12), "a")])]
     report = span_metrics.evaluate_spans_multi([], trials, error_types=("a",))
     assert report["pooled"]["tp"] == 1 and report["pooled"]["fp"] == 1
+
+
+
+# ---- metric G (onsets) ----------------------------------------------------------------------
+
+def test_metric_g_kills_the_saturation_exploit():
+    """flag-every-tick: D finds every span; G only the ones its single onset (tick 0) reaches."""
+    T = 200
+    spans = [(40, 50), (120, 130)]
+    every = list(range(T))
+    d = span_metrics.score_trial(every, spans)
+    g = span_metrics.score_trial(every, spans, onset=True)
+    assert all(r["hit"] for r in d["per_span"])
+    assert not any(r["hit"] for r in g["per_span"])
+    assert g["fp_merged"] == d["fp_merged"] == [0]
+
+
+def test_metric_g_equals_d_when_every_alarm_starts_inside_its_span():
+    flags = [41, 42, 43, 121]
+    spans = [(40, 50), (120, 130)]
+    d = span_metrics.score_trial(flags, spans)
+    g = span_metrics.score_trial(flags, spans, onset=True)
+    assert [r["hit"] for r in d["per_span"]] == [r["hit"] for r in g["per_span"]] == [True, True]
+    assert d["fp_merged"] == g["fp_merged"] == []
+
+
+def test_dense_onsets_match_merge_flags_per_column():
+    rng = np.random.default_rng(0)
+    f = rng.random((300, 7)) < np.array([0.01, 0.05, 0.1, 0.3, 0.6, 0.9, 1.0])
+    on = span_metrics.alarm_onsets(f)
+    for j in range(f.shape[1]):
+        assert list(np.flatnonzero(on[:, j])) == span_metrics.merge_flags(np.flatnonzero(f[:, j]).tolist())
+
+
+def test_dense_scorer_matches_score_trial_with_onsets():
+    rng = np.random.default_rng(1)
+    T = 400
+    spans = [((30, 45), "a"), ((100, 100), "b"), ((250, 290), "a")]
+    f = rng.random((T, 5)) < np.array([0.005, 0.02, 0.05, 0.2, 1.0])
+    dense = span_metrics.score_onsets_dense(f, spans)
+    for j in range(f.shape[1]):
+        r = span_metrics.score_trial(np.flatnonzero(f[:, j]).tolist(), [s for s, _ in spans], onset=True)
+        assert [row["hit"] for row in r["per_span"]] == list(dense["hits"][:, j])
+        assert len(r["fp_merged"]) == dense["fp"][j]
+
+
+
+def test_run_merge_makes_flag_every_tick_equal_flag_every_run():
+    verb = np.array([0, 0, 0, 1, 1, 2, 2, 2, 2, 0])
+    noun = np.zeros(10, dtype=int)
+    rs = span_metrics.run_starts(verb, noun)
+    assert list(rs) == [0, 3, 5, 9]
+    every_tick = list(range(10))
+    assert span_metrics.merge_flags(every_tick, run_starts=rs) == [0, 3, 5, 9]
+    assert span_metrics.merge_flags(list(rs), run_starts=rs) == [0, 3, 5, 9]
+    # a flag continuing across a run boundary is a new alarm; two flags in one run are one
+    assert span_metrics.merge_flags([1, 2, 3], run_starts=rs) == [1, 3]
+
+
+def test_dense_run_onsets_match_merge_flags():
+    rng = np.random.default_rng(3)
+    verb = rng.integers(0, 3, 300).repeat(1)
+    noun = np.zeros(300, dtype=int)
+    rs = span_metrics.run_starts(verb, noun)
+    f = rng.random((300, 6)) < np.array([0.01, 0.05, 0.2, 0.5, 0.9, 1.0])
+    on = span_metrics.alarm_onsets(f, run_starts=rs)
+    for j in range(f.shape[1]):
+        assert list(np.flatnonzero(on[:, j])) == span_metrics.merge_flags(
+            np.flatnonzero(f[:, j]).tolist(), run_starts=rs)

@@ -18,6 +18,42 @@ lists the single-question diagnostics that localise a loss once the scorecard sh
 
 ---
 
+## 0. Which metric a number was measured under — read this first
+
+Decided 2026-10-14, after numbers from different scorers were being compared as if they meant the
+same thing. **Every table states its metric letter** (and, for G, that merge = 5 and deadline =
+10 ticks). A number without a letter is not citable.
+
+| Letter | Scorer | Unit | TP / FP / FN / TN | Deadline after the anomaly | Use it for |
+|---|---|---|---|---|---|
+| **G** | `span_metrics`, `onset=True` + `run_starts` (`METRIC_G`) | one anomaly span | flags merge into **one alarm per run** of constant (verb, noun); TP: an alarm's first flag in [start, end+10]; FP: an alarm in no window; FN: none; TN: undefined | 10 ticks | **the headline, both corpora** |
+| G-gap | as G, but alarms merge by a 5-tick gap | one span | as G | 10 | reproducing 2026-10-14 G numbers only |
+| D | `span_metrics`, `onset=False` | one span | TP: **any** flag in [start, end+10]; FP: merged alarm in no window | 10 | reproducing pre-2026-10-14 reports only |
+| A | `trial_loc` (`run_detect_eval.py`, §6–7) | one trial (single injected anomaly) | TP: flag in range; FP: stray (capped at 1 per trial) or any flag on a healthy trial | **0** (`+g1`: 1) | continuity with older Breakfast numbers |
+| B | `element_metrics` (step layer, [`llm.md`](llm.md) §5) | one RLE step | per-step classification, debris excluded | 1 step | the LLM step comparison |
+| E | `run_epic_tent_eval.py --trim` (§7c) | one step of a session cut at its first mistake | PREGO's `llm_hf.py` counts | same step | **only** the comparison with published PREGO / TI-PREGO |
+| F | `counterfactual.py` (§5) | injected trial vs its healthy twin | flag new relative to the twin | none | attribution on injected data |
+
+**Why G.** D lets *any* flag find a span while counting false positives on *merged* alarms, so an
+alarm that never stops costs one FP and finds every span: flag-every-tick scores D precision 0.85
+and F1 0.92 on EPIC-Tent, above every real detector. G scores alarm onsets on both sides, and
+(revised 2026-10-15) merges **one alarm per run of constant (verb, noun)** -- a stretch of identical
+observations, directly observed by every detector and making no claim about the user's steps. An
+alarm cannot outlive its run, so flagging more ticks can never beat flagging every run:
+flag-every-tick and flag-every-run score **identically** (Breakfast F1 0.348, EPIC-Tent 0.17–0.27),
+and that one row is the null to beat. The first G (5-tick gap) let an alarm last forever and
+count once, so flag-every-tick read "0.000 F1, 4.8 alarms per 10 min" while alarming 100% of the
+time; it is kept as G-gap. A, B and E all
+assume one anomaly per trial, and A cannot see more than one false alarm per trial or credit any
+flag after the anomaly's last tick (it charges a causal "ended too early" flag as a stray — see
+`causal-flags-need-one-tick-grace`), so none of them can be the headline.
+
+**G is always reported with two false-alarm numbers:** alarms per 10 minutes of error-free
+activity (nagging), and **run FPR** — the share of runs that overlap no mistake but contain any
+flag. Operating points are picked on the train split, never on the split reported.
+
+---
+
 ## 1. `batch.py` — why batching is not just an optimisation
 
 `surprise.compute_trace` handles one trial with `mask` all-`True`. Calling it in a loop over 500

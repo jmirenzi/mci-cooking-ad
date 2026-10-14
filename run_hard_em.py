@@ -86,6 +86,9 @@ def main():
     ap.add_argument("--alpha-pi", type=float, default=None)
     ap.add_argument("--kappa", type=float, default=None)
     ap.add_argument("--chunk-size", type=int, default=32)
+    ap.add_argument("--recipe-labels", action="store_true",
+                    help="recipe = labelled dish: each training trial is decoded under its own "
+                         "dish instead of the inferred one (needs a --init-from fitted the same way)")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -111,10 +114,20 @@ def main():
         k_recipe, k_subtask = loaded.init_counts.shape
         print(f"init-from {args.init_from}: K={k_subtask} K_R={k_recipe}", flush=True)
 
+    label_assign = None
+    if args.recipe_labels:
+        label_assign, dish_names = lexical_init.recipe_label_assignment(
+            sequences, json.load(open(args.labels)))
+        if k_recipe != len(dish_names):
+            if args.init_from:
+                raise SystemExit(f"--init-from has K_R={k_recipe} but there are {len(dish_names)} dishes")
+            k_recipe = len(dish_names)
+        print(f"recipe = dish label: {dish_names}", flush=True)
     p, info = lexical_init.lexical_to_joint(
         sequences, k_subtask, k_recipe, d_max, cfg["vocab"]["verbs"], cfg["vocab"]["nouns"],
         kappa, anchor=args.anchor, background=args.background,
         alpha_init=args.alpha_init, alpha_trans=args.alpha_trans, alpha_pi=alpha_pi,
+        assign=label_assign,
     )
     if args.init_from:
         p = loaded if args.keep_init_emissions else loaded._replace(
@@ -131,6 +144,9 @@ def main():
         r_hat, _rho, trial_ll = joint_em.infer_recipe(
             p, verb_ids, noun_ids, mask, d_max, chunk_size=args.chunk_size
         )
+        inferred = np.asarray(r_hat)
+        if label_assign is not None:
+            r_hat = jnp.asarray(label_assign)
         lp = joint_params.to_log_probs_joint(p, d_max)
         seg = segmentize.segment_all_conditioned(lp, r_hat, verb_ids, noun_ids, mask, d_max)
 
@@ -155,7 +171,7 @@ def main():
 
         pred_tick = np.concatenate([r["subtask_per_tick"] for r in seg])
         print(f"iter {it}: marginal loglik={float(jnp.sum(trial_ll)):.1f} "
-              f"recipe ARI={recipe_hmm.adjusted_rand(np.asarray(r_hat), true_recipes):.4f} "
+              f"recipe ARI (inferred, unanchored)={recipe_hmm.adjusted_rand(inferred, true_recipes):.4f} "
               f"subtask ARI={recipe_hmm.adjusted_rand(pred_tick, true_tick):.4f} "
               f"({time.time() - t0:.1f}s)", flush=True)
 

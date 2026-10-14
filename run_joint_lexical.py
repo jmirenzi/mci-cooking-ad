@@ -99,6 +99,12 @@ def main():
                     help="anchoring dial strength (joint_em.run_joint_em). 0 = today; small "
                          "biases the recipe assignment toward --recipe-prior while letting the "
                          "likelihood override it; large effectively freezes the assignment to it.")
+    ap.add_argument("--recipe-labels", action="store_true",
+                    help="recipe = labelled dish: K_R is the number of dishes, the warm start "
+                         "groups trials by label instead of clustering, and every EM iteration "
+                         "keeps each trial's responsibility on its own dish (a log one-hot prior "
+                         "at lam=1). Decoding a NEW trial still infers the dish -- labels are "
+                         "only ever read for the training split.")
     ap.add_argument("--lam-schedule", default=None,
                     help="joint_em.make_lam_schedule spec (e.g. 'freeze:1e6,15', 'geom:5,0.8') "
                          "overriding --lam with a per-iteration schedule -- see its docstring "
@@ -132,7 +138,17 @@ def main():
     sequences = split_mod.filter_sequences(sequences, split, args.split_part)
     by_id = {e["trial_id"]: e for e in labels}
     joined = [by_id[s["trial_id"]] for s in sequences]
+    label_assign, dish_names = None, None
+    if args.recipe_labels:
+        if args.recipe_prior != "none" or args.lam or args.lam_schedule:
+            ap.error("--recipe-labels sets the recipe prior itself")
+        label_assign, dish_names = lexical_init.recipe_label_assignment(sequences, labels)
+        k_recipe = len(dish_names)
+        print(f"recipe = dish label: K_R={k_recipe} {dish_names}", flush=True)
 
+    if args.recipe_labels and not (cfg.get("joint_em", {}).get("chunk_size") is not None and args.chunk_size is None):
+        base_chunk = args.chunk_size if args.chunk_size is not None else cfg["em"]["chunk_size"]
+        chunk_size = max(1, base_chunk // k_recipe)
     print(f"trials: {len(sequences)}  K={k_subtask} K_R={k_recipe} chunk={chunk_size}", flush=True)
 
     t0 = time.time()
@@ -155,7 +171,7 @@ def main():
         alpha_init=args.alpha_init, alpha_trans=args.alpha_trans, alpha_pi=alpha_pi,
         init_prior_scale=args.init_prior_scale, idf_recipes=idf_recipes,
         recipe_features=recipe_features,
-        noun_tilt_init=args.noun_tilt, noun_tilt_clip=args.tilt_max,
+        noun_tilt_init=args.noun_tilt, noun_tilt_clip=args.tilt_max, assign=label_assign,
     )
     print(f"lexical warm start: {time.time() - t0:.1f}s, "
           f"{len(info['pairs'])} (verb,noun) states used of K={k_subtask}", flush=True)
@@ -174,6 +190,9 @@ def main():
         recipe_log_prior[np.arange(len(sequences)), info["assign"]] = np.log(1.0 - eps)
         recipe_log_prior = jnp.asarray(recipe_log_prior)
 
+    if args.recipe_labels:
+        recipe_log_prior = jnp.asarray(lexical_init.pinned_recipe_log_prior(label_assign, k_recipe))
+        args.lam = 1.0
     lam_schedule = joint_em.make_lam_schedule(args.lam_schedule) if args.lam_schedule else None
     if lam_schedule is not None:
         print(f"lam schedule: {args.lam_schedule}", flush=True)
@@ -197,16 +216,20 @@ def main():
     joint_params.save_params(best, args.out)
     with open(args.out + ".meta.json", "w") as f:
         json.dump({"iteration": len(history), "history": history, "converged": bool(converged),
-                   "args": vars(args), "n_pairs": len(info["pairs"]), "init_recipe_ari": init_ari}, f)
+                   "args": vars(args), "n_pairs": len(info["pairs"]), "init_recipe_ari": init_ari,
+                   "recipe_names": dish_names}, f)
     print(f"saved {args.out}", flush=True)
 
     # Decode under the SAME prior/lam the final iteration trained with, so the reported ARI
-    # reflects the model EM actually converged to, not the unanchored likelihood alone.
+    # reflects the model EM actually converged to, not the unanchored likelihood alone. With
+    # --recipe-labels that prior IS the label, so the honest number is the unanchored one: can
+    # the fitted model read the dish off a trial on its own?
     final_lam = lam_schedule(len(history) - 1) if lam_schedule is not None else args.lam
     verb_ids, noun_ids, mask = joint_em.pad_batch(sequences)
     r_hat, _, _ = joint_em.infer_recipe(
         best, verb_ids, noun_ids, mask, d_max, chunk_size=chunk_size,
-        recipe_log_prior=recipe_log_prior, lam=final_lam,
+        recipe_log_prior=None if args.recipe_labels else recipe_log_prior,
+        lam=0.0 if args.recipe_labels else final_lam,
     )
     true_recipes = [e["recipe_label"] for e in joined]
     print(f"\nrecipe ARI: {recipe_hmm.adjusted_rand(np.asarray(r_hat), true_recipes):.4f}")

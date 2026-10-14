@@ -171,16 +171,20 @@ def trajectory_from_real_joint(joint_hsmm_params, verb_ids, noun_ids, d_max):
     }
 
 
-def trajectories_from_real_joint(joint_hsmm_params, sequences, d_max, chunk_size=8):
+def trajectories_from_real_joint(joint_hsmm_params, sequences, d_max, chunk_size=8, r_hat=None):
     """Batched `trajectory_from_real_joint`: same result, one JAX compile instead of one per
-    distinct trial length. `sequences` is sequences.json's layout.
+    distinct trial length. `sequences` is sequences.json's layout. `r_hat`: decode under these
+    given recipes (e.g. dish labels) instead of inferring them.
     """
     from cook_ad.hsmm import em as _em
 
     verb_ids, noun_ids, mask = _em.pad_batch(sequences)
-    r_hat, _, _ = joint_em.infer_recipe(
-        joint_hsmm_params, verb_ids, noun_ids, mask, d_max, chunk_size=chunk_size
-    )
+    if r_hat is None:
+        r_hat, _, _ = joint_em.infer_recipe(
+            joint_hsmm_params, verb_ids, noun_ids, mask, d_max, chunk_size=chunk_size
+        )
+    else:
+        r_hat = jnp.asarray(np.asarray(r_hat, dtype=np.int64))
     log_probs = joint_params.to_log_probs_joint(joint_hsmm_params, d_max)
     results = segmentize.segment_all_conditioned(log_probs, r_hat, verb_ids, noun_ids, mask, d_max)
 

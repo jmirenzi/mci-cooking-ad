@@ -121,6 +121,13 @@ See `anomaly.md` §6 for the measurement and the two upstream defects behind it.
 > detector reasoning from real-world priors is correct to call them anomalous. **Report the real
 > arm.**
 
+> **The HSMM arm in every table here reads the whole trial.** Its flags depend on the full-trial
+> Viterbi decode and the full-trial recipe, while the LLM arm is held strictly causal (§1). Until
+> 2026-10-15 that asymmetry was neither stated nor measured. It now is: a causal HSMM
+> ([`live.md`](live.md)) matches the hindsight arm's metric-G F1 to within ±0.01 on Breakfast and
+> EPIC-Tent ([`live.md`](live.md) §8), so the causal arm is the like-for-like comparator for the
+> LLM, and conclusions drawn against the hindsight arm carry over to it.
+
 ### Reading the false-positive rate
 
 `healthy.false_positive_rate` is the fraction of healthy control trials with **any** flagged step.

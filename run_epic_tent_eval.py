@@ -236,6 +236,23 @@ def hsmm_flags_per_trial(trajectories, model, chunk_size, alpha, channel_alpha):
     return [span_metrics.flags_from_channels(f, surprise.CHANNELS) for f in flags]
 
 
+def live_flags_per_trial(trajectories, tables, lags, alpha, channel_alpha, kappa):
+    """{lag: per-trial span Flags} from the causal detector. Each channel uses the same alpha the
+    hindsight arm does (channel_alpha overrides, e.g. s_temporal=1e-5, else alpha), so the two
+    arms differ in what they condition on, not in how strict they were set."""
+    from cook_ad.anomaly import live
+    per_channel = {c: channel_alpha.get(c, alpha) for c in surprise.CHANNELS}
+    out = {lag: [] for lag in lags}
+    for traj in trajectories:
+        lt = live.compute_live_trace(tables, traj["verb_ids"], traj["noun_ids"], lags=lags)
+        for lag in lags:
+            flags = {}
+            for c, a in per_channel.items():
+                flags[c] = live.flags(lt, tables.alphas, a, kappa, lag=lag)[c]
+            out[lag].append(span_metrics.flags_from_channels(flags, surprise.CHANNELS))
+    return out
+
+
 def predictive_flags_per_trial(trajectories, lexicon, client, system_prompt, vocab, tag):
     """Arm 3 over whole trials. One request per step boundary -- ~57 per session here, against
     the ~2124 a tick-unit verdict arm would send on the longest one."""
@@ -274,26 +291,45 @@ def step_false_alarms(flags, trajectory, lexicon, sil, spans):
     return flagged, n
 
 
-def score(flags_by_trial, truth, group, merge_tol, trajectories=None, lexicon=None, sil=None):
+def score(flags_by_trial, truth, group, merge_tol, trajectories=None, lexicon=None, sil=None,
+          onset=True):
     """One arm's per-trial flags, scored against `group` with every other type removed. With
     `trajectories`, also the step-level false-alarm rate (see step_false_alarms)."""
     trials, healthy, healthy_ticks, alarmed_ticks = [], [], 0, 0
     steps_flagged = steps_correct = 0
+    runs_flagged = runs_correct = 0
+    # Metric G merges one alarm per run of constant (verb, noun); needs the observation stream.
+    use_runs = onset and trajectories is not None
+    run_starts = {"trials": [], "healthy": []} if use_runs else None
     for i, (flags, trial) in enumerate(zip(flags_by_trial, truth)):
         spans, fragments = group_truth(trial, group)
         trials.append((flags, spans))
+        rs = None
         if trajectories is not None:
             k, n = step_false_alarms(flags, trajectories[i], lexicon, sil, spans)
             steps_flagged += k
             steps_correct += n
+            rs = span_metrics.run_starts(trajectories[i]["verb_ids"], trajectories[i]["noun_ids"])
+            ends = np.r_[rs[1:] - 1, len(trajectories[i]["verb_ids"]) - 1]
+            ticks = {f if isinstance(f, (int, np.integer)) else f.tick for f in flags}
+            for a, b in zip(rs, ends):
+                if any(t0 <= b and t1 >= a for (t0, t1), _ in spans):
+                    continue
+                runs_correct += 1
+                runs_flagged += any(a <= t <= b for t in ticks)
+        if use_runs:
+            run_starts["trials"].append(rs)
         for fragment in fragments:
             inside = slice_flags(flags, fragment)
             healthy.append(inside)
+            if use_runs:
+                run_starts["healthy"].append(rs)
             alarmed_ticks += len({f if isinstance(f, (int, np.integer)) else f.tick
                                   for f in inside})
         healthy_ticks += sum(end - start + 1 for start, end in fragments)
     report = span_metrics.evaluate_spans_multi(
-        healthy, trials, merge_tol=merge_tol, error_types=group,
+        healthy, trials, merge_tol=merge_tol, error_types=group, onset=onset,
+        run_starts=run_starts,
     )
     # The per-fragment false-positive rate is binary per fragment, so it rises with fragment
     # LENGTH, and removing out-of-group types merges fragments into longer ones (48 -> 33 on the
@@ -315,6 +351,12 @@ def score(flags_by_trial, truth, group, merge_tol, trajectories=None, lexicon=No
         report["healthy"]["steps_flagged"] = steps_flagged
         report["healthy"]["step_false_alarm_rate"] = (
             steps_flagged / steps_correct if steps_correct else 0.0)
+        # Metric G's false-alarm companion: share of runs that overlap no in-group mistake but
+        # contain any flag.
+        report["healthy"]["runs_correct"] = runs_correct
+        report["healthy"]["runs_flagged"] = runs_flagged
+        report["healthy"]["run_false_alarm_rate"] = (
+            runs_flagged / runs_correct if runs_correct else 0.0)
     return report
 
 
@@ -476,24 +518,29 @@ def print_group(name, group, reports, truth):
     fragments = [f for t in truth for f in group_truth(t, group)[1]]
     labels = ", ".join(SOURCE_NAME[t] for t in group)
     print(f"\n{'=' * 96}\nGROUP: {name}  ({labels})\n{'=' * 96}")
+    metric = next(iter(reports.values())).get("metric", "D")
+    print(f"  metric {metric}" + {"G": " (one alarm per run of constant (verb, noun); its first flag "
+                                       "must land in [start, end+10])",
+                                  "G-gap": " (alarm onsets after a 5-tick gap merge; deadline 10)"}.get(
+        metric, " (ANY flag finds a span; merged alarms are FPs; deadline 10)"))
     print(f"  {n_spans} spans in {len(truth)} sessions; every other error type REMOVED "
           f"(relabelled normal, as PREGO does)")
     print(f"  healthy population: {len(fragments)} error-free fragments, "
           f"{sum(b - a + 1 for a, b in fragments)} ticks")
 
     print(f"\n  {'arm':<38}{'prec':>7}{'recall':>8}{'F1':>7}{'alarms/10min':>14}"
-          f"{'alarm time':>12}{'step FPR':>10}{'frag FPR':>10}{'lat med':>9}")
+          f"{'alarm time':>12}{'run FPR':>10}{'frag FPR':>10}{'lat med':>9}")
     for arm, r in reports.items():
         p, h, lat = r["pooled"], r["healthy"], r["latency"]
-        step_fpr = h.get("step_false_alarm_rate")
+        step_fpr = h.get("run_false_alarm_rate")
         print(f"  {arm:<38}{p['precision']:>7.3f}{p['recall']:>8.3f}{p['f1']:>7.3f}"
               f"{h['alarms_per_10min']:>14.2f}{h['alarm_time_frac']:>11.1%}"
               f"{_fmt(step_fpr):>10}{h['false_positive_rate']:>10.3f}"
               f"{_fmt(lat['median'], '.1f'):>9}")
     print("  On error-free activity only: alarms/10min = distinct (merged) alarms; alarm time =\n"
           "  share of seconds spent alarming. Read them together -- flag-everything has few\n"
-          "  alarms because it is one alarm that never stops. step FPR = share of correct steps\n"
-          "  (no in-group error) with any alarm -- the trimmed protocol's unit. frag FPR = share\n"
+          "  alarms because it is one alarm that never stops. run FPR = share of runs of constant\n"
+          "  (verb, noun) overlapping no in-group error that contain any flag. frag FPR = share\n"
           "  of healthy fragments raising anything; it grows with fragment length, so compare\n"
           "  WITHIN a group.")
 
@@ -576,7 +623,19 @@ def main():
                          "s_temporal override -- re-measure before trusting it on this corpus.")
     ap.add_argument("--chunk-size", type=int, default=8)
     ap.add_argument("--merge-tol", type=int, default=span_metrics.MERGE_TOL)
+    ap.add_argument("--metric", choices=["G", "D"], default="G",
+                    help="span scoring rule for the untrimmed tables: G (default, the headline) "
+                         "merges flags one alarm per run of constant (verb, noun) and lets only "
+                         "the alarm's first flag find a span; D is the original any-flag rule, "
+                         "kept so earlier reports reproduce. The trimmed tables are always E.")
     ap.add_argument("--skip-hsmm", action="store_true")
+    ap.add_argument("--live", action="store_true",
+                    help="add the causal detector (anomaly/live.py, docs/live.md) as arm(s) "
+                         "hsmm-live-L{lag}, at the same alpha and per-channel alphas as hsmm-joint")
+    ap.add_argument("--live-lags", default="0,5",
+                    help="comma-separated lags for --live; 'inf' is the smoother")
+    ap.add_argument("--live-kappa", type=float, default=0.5,
+                    help="posterior cutoff for the hidden-event channels (0.5 = more likely than not)")
     ap.add_argument("--skip-llm", action="store_true")
     ap.add_argument("--skip-injected", action="store_true",
                     help="skip the injected-anomaly control -- see the module docstring for why "
@@ -651,6 +710,14 @@ def main():
         joint, sequences, d_max, chunk_size=args.chunk_size
     )
 
+    live_tables, live_lags = None, []
+    if args.live:
+        from cook_ad.anomaly import live
+        live_lags = [x if x == live.INF_LAG else int(x) for x in args.live_lags.split(",")]
+        grid = sorted({args.alpha, *channel_alpha.values()})
+        live_tables = live.build_tables(joint, d_max, grid)
+        print(f"  live arm: lags={live_lags} kappa={args.live_kappa} alphas={grid}")
+
     # ---- every arm's flags -----------------------------------------------------------
     def collect(trajectories, trimmed=False):
         """Every arm's per-trial flags over `trajectories`. Flags do not depend on the error group
@@ -672,6 +739,11 @@ def main():
         if not args.skip_hsmm:
             flags_by_arm["hsmm-joint"] = hsmm_flags_per_trial(
                 trajectories, model, args.chunk_size, args.alpha, channel_alpha)
+        if args.live:
+            by_lag = live_flags_per_trial(trajectories, live_tables, live_lags, args.alpha,
+                                          channel_alpha, args.live_kappa)
+            for lag, fl in by_lag.items():
+                flags_by_arm[f"hsmm-live-L{lag}"] = fl
 
         if not args.skip_llm:
             variants = list(prompts.VARIANTS) if args.variant == "both" else [args.variant]
@@ -757,7 +829,8 @@ def main():
             trimmed = trim_at_first_mistake(sequences, truth, group)
             trimmed_traj = generate.trajectories_from_real_joint(
                 joint, [seq for seq, _ in trimmed], d_max, chunk_size=args.chunk_size)
-            print(f"\n[{name}] trimmed to {sum(len(seq['verb_ids']) for seq, _ in trimmed)} "
+            print(f"\n[{name}] metric E (PREGO trimmed, step level). Trimmed to "
+                  f"{sum(len(seq['verb_ids']) for seq, _ in trimmed)} "
                   f"ticks (from {n_ticks}); re-running every arm on the trimmed streams")
             flags_by_arm, meta = collect(trimmed_traj, trimmed=True)
             if args.dry_run:
@@ -783,7 +856,8 @@ def main():
         by_arm = {}
         for arm, flags in flags_by_arm.items():
             report = score(flags, truth, group, args.merge_tol,
-                           trajectories=trajectories, lexicon=lexicon, sil=sil)
+                           trajectories=trajectories, lexicon=lexicon, sil=sil,
+                           onset=args.metric == "G")
             if not arm.startswith("control/"):
                 report["attribution"] = attribution(flags, truth, group)
             report.update(meta.get(arm, {}))
@@ -791,7 +865,8 @@ def main():
         # The same flag-everything control with merging off. The gap between the two rows is the
         # metric's, not any detector's.
         by_arm["control/flag-everything@merge_tol=0"] = score(
-            flags_by_arm["control/flag-everything"], truth, group, 0)
+            flags_by_arm["control/flag-everything"], truth, group, 0, onset=args.metric == "G")
+        # (no trajectories passed: this row deliberately shows the GAP rule with merging off)
         print_group(name, group, by_arm, truth)
         if name == "procedural":
             print_prego_comparison(by_arm, args.split_file, args.split_part)
@@ -816,7 +891,7 @@ def main():
             stream["degraded"][etype] = [span_metrics.flags_from_channels(f, surprise.CHANNELS)
                                          for f in injected]
         reports["control/hsmm-injected"] = R.score_spans(
-            stream, R.spans_by_type(pool), merge_tol=args.merge_tol)
+            stream, R.spans_by_type(pool), merge_tol=args.merge_tol, onset=args.metric == "G")
         p = reports["control/hsmm-injected"]["pooled"]
         print(f"\nCONTROL: the same HSMM on INJECTED anomalies, same sessions: precision "
               f"{p['precision']:.3f}  recall {p['recall']:.3f}  F1 {p['f1']:.3f}")
@@ -832,6 +907,7 @@ def main():
         "groups": {name: list(ERROR_GROUPS[name]) for name in args.groups},
         "removal": "out-of-group types relabelled normal: dropped from ground truth, ticks "
                    "rejoin the healthy population (PREGO's treatment)",
+        "metric": "E" if args.trim else args.metric,
         "protocol": ("prego-trimmed: each session cut after its first in-group mistake; "
                      "step-level TP/FN/FP/TN with one positive per session") if args.trim
                     else "spans: whole sessions, every in-group mistake a positive",

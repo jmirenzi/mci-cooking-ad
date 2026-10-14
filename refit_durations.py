@@ -38,6 +38,9 @@ def main():
     ap.add_argument("--sequences", default="dataset/processed/breakfast/sequences.json")
     ap.add_argument("--split-file", default="dataset/processed/breakfast/split.json")
     ap.add_argument("--split-part", default="train")
+    ap.add_argument("--labels", default="dataset/processed/breakfast/labels.json")
+    ap.add_argument("--recipe-labels", action="store_true",
+                    help="decode each trial under its labelled dish instead of the inferred one")
     args = ap.parse_args()
 
     d_max = load_config(args.config)["duration"]["d_max_ticks"]
@@ -45,7 +48,11 @@ def main():
     seqs = split_mod.filter_sequences(seqs, split_mod.load_split(args.split_file), args.split_part)
 
     jp = joint_params.load_params(args.inp)
-    traj = generate.trajectories_from_real_joint(jp, seqs, d_max, chunk_size=32)
+    r_given = None
+    if args.recipe_labels:
+        from cook_ad.recipe import lexical_init
+        r_given, _names = lexical_init.recipe_label_assignment(seqs, json.load(open(args.labels)))
+    traj = generate.trajectories_from_real_joint(jp, seqs, d_max, chunk_size=32, r_hat=r_given)
 
     k_recipe, k_subtask = jp.init_counts.shape
     xi = np.zeros((k_recipe, k_subtask, d_max))
