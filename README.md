@@ -1,2 +1,2 @@
 # mci-cooking-ad
-Anomaly Detection during cooking for user with MCI 
+Anomaly detection during cooking for a user with MCI. Start at [docs/README.md](docs/README.md).

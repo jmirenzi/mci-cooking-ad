@@ -1,952 +1,202 @@
-# `src/cook_ad/eval/` — batched inference and detection metrics
+# Evaluation
 
-| File | Role |
-|---|---|
-| `batch.py` | many-trial analogues of `surprise.compute_trace{,_joint}` |
-| `metrics.py` | recall / precision / latency / channel attribution at tick level |
-| `element_metrics.py` | the **step**-level layer both the HSMM and the LLM are scored through |
-| `counterfactual.py` | pairs each degraded trial against its own healthy counterfactual |
-| `plotting.py` | two matplotlib figures per evaluation run |
+How detectors are scored: metric G (the headline), metric E (only for comparing with PREGO), how
+operating points are chosen, and the scripts that produce every table.
 
-`metrics.py` (ticks) is driven by `run_evaluation.py`; `element_metrics.py` (steps) by
-`run_llm_eval.py` and documented in [`llm.md`](llm.md) §5, since the step unit exists to make the
-LLM baseline comparable. The three layers measure the same detector at three granularities and are
-kept separate rather than reconciled — a tick, a step and a trial are genuinely different questions.
-`run_counterfactual.py` (§5) and `run_threshold_sweep.py` (§6) are the two analysis runners built
-on top of them; `run_detect_eval.py` (§7) is the scorecard model selection runs through, and §8
-lists the single-question diagnostics that localise a loss once the scorecard shows one.
+**Every table states its metric letter.** A number without one is not citable.
 
----
-
-## 0. Which metric a number was measured under — read this first
-
-Decided 2026-10-14, after numbers from different scorers were being compared as if they meant the
-same thing. **Every table states its metric letter** (and, for G, that merge = 5 and deadline =
-10 ticks). A number without a letter is not citable.
-
-| Letter | Scorer | Unit | TP / FP / FN / TN | Deadline after the anomaly | Use it for |
-|---|---|---|---|---|---|
-| **G** | `span_metrics`, `onset=True` + `run_starts` (`METRIC_G`) | one anomaly span | flags merge into **one alarm per run** of constant (verb, noun); TP: an alarm's first flag in [start, end+10]; FP: an alarm in no window; FN: none; TN: undefined | 10 ticks | **the headline, both corpora** |
-| G-gap | as G, but alarms merge by a 5-tick gap | one span | as G | 10 | reproducing 2026-10-14 G numbers only |
-| D | `span_metrics`, `onset=False` | one span | TP: **any** flag in [start, end+10]; FP: merged alarm in no window | 10 | reproducing pre-2026-10-14 reports only |
-| A | `trial_loc` (`run_detect_eval.py`, §6–7) | one trial (single injected anomaly) | TP: flag in range; FP: stray (capped at 1 per trial) or any flag on a healthy trial | **0** (`+g1`: 1) | continuity with older Breakfast numbers |
-| B | `element_metrics` (step layer, [`llm.md`](llm.md) §5) | one RLE step | per-step classification, debris excluded | 1 step | the LLM step comparison |
-| E | `run_epic_tent_eval.py --trim` (§7c) | one step of a session cut at its first mistake | PREGO's `llm_hf.py` counts | same step | **only** the comparison with published PREGO / TI-PREGO |
-| F | `counterfactual.py` (§5) | injected trial vs its healthy twin | flag new relative to the twin | none | attribution on injected data |
-
-**Why G.** D lets *any* flag find a span while counting false positives on *merged* alarms, so an
-alarm that never stops costs one FP and finds every span: flag-every-tick scores D precision 0.85
-and F1 0.92 on EPIC-Tent, above every real detector. G scores alarm onsets on both sides, and
-(revised 2026-10-15) merges **one alarm per run of constant (verb, noun)** -- a stretch of identical
-observations, directly observed by every detector and making no claim about the user's steps. An
-alarm cannot outlive its run, so flagging more ticks can never beat flagging every run:
-flag-every-tick and flag-every-run score **identically** (Breakfast F1 0.348, EPIC-Tent 0.17–0.27),
-and that one row is the null to beat. The first G (5-tick gap) let an alarm last forever and
-count once, so flag-every-tick read "0.000 F1, 4.8 alarms per 10 min" while alarming 100% of the
-time; it is kept as G-gap. A, B and E all
-assume one anomaly per trial, and A cannot see more than one false alarm per trial or credit any
-flag after the anomaly's last tick (it charges a causal "ended too early" flag as a stray — see
-`causal-flags-need-one-tick-grace`), so none of them can be the headline.
-
-**G is always reported with two false-alarm numbers:** alarms per 10 minutes of error-free
-activity (nagging), and **run FPR** — the share of runs that overlap no mistake but contain any
-flag. Operating points are picked on the train split, never on the split reported.
-
----
-
-## 1. `batch.py` — why batching is not just an optimisation
-
-`surprise.compute_trace` handles one trial with `mask` all-`True`. Calling it in a loop over 500
-trials **recompiles the JAX kernels for every distinct sequence length**, because $T$ is a static
-shape. That dominates runtime completely.
-
-`compute_traces` fixes this by padding the whole dataset to a single global
-$T_{\max} = \max_i T_i$, so the three expensive ops compile **once**:
-
-1. `_batched_pi` — `vmap`ped `predictive_occupancy`,
-2. `segmentize.segment_all` — `vmap`ped Viterbi,
-3. `_batched_recipe_gamma` — `vmap`ped recipe forward-backward.
-
-The cheap per-trial numpy assembly then runs through `surprise.assemble_trace`, sliced back to each
-trial's true length. Chunking (`chunk_size=16`) bounds peak memory; padding to the *global*
-$T_{\max}$ rather than a per-chunk one is what keeps the compilation count at exactly one.
-
-### The joint variant
-
-`compute_traces_joint` differs in three ways that follow from the joint model's structure:
-
-- **Recipe inference is a direct EM readout**, `joint_em.infer_recipe`, not a second
-  forward-backward over segment symbols. It runs **once for the whole dataset up front** — it is
-  cheap (forward pass only) and every trial's $\hat r_i$ is needed *before* that trial's
-  recipe-conditioned segmentation can run.
-- **Segmentation and occupancy are both recipe-conditioned**: `segment_all_conditioned` and
-  `_batched_pi_conditioned` take per-trial tables gathered at $\hat r_i$ along the $K_R$ axis
-  (`in_axes=(0,0,0,0,0,0,None)`), rather than one shared set broadcast across the batch.
-- It returns `(traces, log_probs, r_hat, log_trans_marginal)` — all four are what
-  `surprise.flag_joint` needs per trial.
-
-Both functions return the tables they built internally for exactly this reason: the flagging stage
-must score against the *same* tables the trace was built from, and handing them back removes the
-opportunity to rebuild them inconsistently.
-
----
-
-## 2. `metrics.py` — measuring a detector
-
-### The evaluation design
-
-Two populations:
-
-- **healthy** trials with no injected anomaly — any flag is a false positive;
-- **degraded** trials, one injected error each, carrying a ground-truth window $[t_0, t_1]$ from
-  `synthetic/error_injection.py`.
-
-This design, and the one-anomaly-per-trial assumption running through this whole file, describes
-the two corpora whose anomalies are injected. It does **not** describe EPIC-Tent, whose anomalies
-are annotated, arrive several per trial, and leave no trial healthy. §7c covers that path and says
-which numbers here do not transfer.
-
-A detection counts if any selected channel fires inside
-
-$$
-[\,t_0,\ t_1 + \texttt{latency\_tol}\,], \qquad \texttt{latency\_tol} = 5\ \text{ticks},
-$$
-
-and the latency is
-
-$$
-\text{lat} = \min\{\, t \in \text{flagged} : t_0 \le t \le t_1 + \texttt{latency\_tol} \,\} \;-\; t_0 .
-$$
-
-The tolerance exists because some channels are structurally retrospective — an abandonment is only
-visible once the segment *closes*, so its flag lands after $t_1$ by construction.
-
-### Every flag counts, everywhere — no persistence rule
-
-A single flagged tick is a detection inside the window and a false positive outside it. There is
-no run-length requirement anywhere in the pipeline, and adding one is the wrong instrument for
-two reasons.
-
-**It filters by error type, not by noise.** The structural channels' true signal is one tick wide
-by construction — $s_{\text{trans}}$ fires at a segment's first tick and nowhere else — so any
-run-length bar deletes their detections outright while sparing the duration channels, whose
-signal is inherently extended. That is a selective mute on three of the seven default channels,
-not a uniform noise filter.
-
-**It hides miscalibration rather than fixing it.** A channel that is not being gated by its
-threshold produces the same symptom as genuine per-tick noise — many isolated flags — and a
-persistence rule suppresses both indistinguishably. The two are separable at the threshold
-instead: a calibrated channel's false-positive rate falls as $\alpha$ tightens, an ungated one is
-flat in $\alpha$. `run_threshold_sweep.py` (§6) makes exactly that measurement per channel and is
-the tool to reach for. `surprise.EMISSION_FLAG_ATOL` ([`anomaly.md`](anomaly.md) §3.4) exists
-because three channels were ungated in precisely this sense.
-
-For scale: treating ticks as independent at $\alpha = 0.05$ over a ~150-tick trial bounds the
-any-flag trial rate at $1 - 0.95^{150} \approx 0.9994$. That bound is loose — ticks are not
-independent, since $s_{\text{temporal}}$ is monotone within a segment and the transition channels
-fire only at boundaries — and a correctly calibrated detector sits far below it. False alarms are
-controlled by moving $\alpha$, which trades against recall along a measurable curve, rather than by
-filtering the output, which trades against recall invisibly.
-
-### The reported numbers
-
-For each error type, with $\text{TP}$ = degraded trials detected in-window,
-$\text{FP}_{\text{out}}$ = degraded trials flagged outside their window,
-$\text{FP}_{\text{healthy}}$ = healthy trials flagged anywhere:
-
-$$
-\text{recall} = \frac{\text{TP}}{n}, \qquad
-\text{precision} = \frac{\text{TP}}{\text{TP} + \text{FP}_{\text{out}} + \text{FP}_{\text{healthy}}},
-$$
-
-$$
-\text{precision}_{\text{excl. healthy}} = \frac{\text{TP}}{\text{TP} + \text{FP}_{\text{out}}} .
-$$
-
-The second precision exists because $\text{FP}_{\text{healthy}}$ is the **same constant** pooled
-into every error type's denominator — it partly *guarantees* the "constant floor across error
-types" pattern by construction. Reporting both separates the type-specific false-alarm component
-from the shared one. This is a deliberate anti-self-deception measure and worth preserving in any
-rewrite.
-
-### Channel attribution
-
-$$
-\mathrm{Attr}[\text{channel } c,\ \text{error type } e] \;=\;
-\frac{\#\{\text{detected trials of type } e \text{ where } c \text{ fired in-window}\}}{\text{TP}_e}
-$$
-
-This matrix is the **isolation claim**: substitution should light up $s_{\text{noun}}$, abandonment
-should light up the retrospective duration channel, omission/transposition should light up
-$s_{\text{trans}}$. Rows are not mutually exclusive — several channels can fire on the same trial —
-so columns need not sum to 1.
-
-`detect(flags, channels)` takes a channel subset, which is the (currently unused) **ablation
-knob**: rerun `evaluate` with one channel removed to measure its marginal contribution.
-
-### `kl_sanity`
-
-Explicitly **not** a detection metric. It pools noun-token histograms across the healthy and
-degraded sets and reports their KL, answering only "did the perturbations move the distribution at
-all". A near-zero value means the injection did nothing, i.e. the harness is broken. It reuses
-`lifecycle.divergence.categorical_kl` rather than reimplementing.
-
----
-
-## 3. `plotting.py`
-
-Agg backend (headless), dpi 150, two figures per healthy source, tagged `synthetic` or `real`:
-
-- **`detection_{tag}.png`** — grouped recall/precision bars per error type, with mean latency
-  annotated above each group (`"n/a"` when nothing was detected, so `NaN` never renders as a
-  number).
-- **`attribution_{tag}.png`** — the channel × error-type matrix as a viridis heatmap with values
-  printed in-cell (colour flipped at 0.6 for contrast) and the colourbar fixed to $[0,1]$ so
-  figures from different runs are directly comparable.
-
-`save_figures` writes both and returns their paths.
-
----
-
-## 4. Two healthy sources, on purpose
-
-`run_evaluation.py` evaluates against **both**:
-
-| Source | Ground truth | Trade-off |
+| Letter | Scorer | Use it for |
 |---|---|---|
-| **synthetic** — `generate_healthy`, ancestral samples from the fitted model | exact (segments are known because they were sampled) | measures the detector under a *perfectly specified* model; flatters it |
-| **real** — held-out Breakfast trials via `trajectory_from_real` | Viterbi-decoded, hence fuzzier boundaries | includes real model misfit; harsher and more honest |
+| **G** | `eval/metric_g.py` | the headline, both corpora |
+| **E** | `eval/metric_e.py` | only the comparison with published PREGO / TI-PREGO numbers |
 
-The synthetic source isolates detector behaviour from model misfit; the real source measures the
-combination. Reporting only the first would be self-congratulatory; reporting only the second
-would confound two failure modes.
-
-For the joint model, `error_injection` is handed
-`joint_params.collapse_to_marginal(joint_params)` rather than a per-trial conditioned model —
-injecting an error doesn't need to know a trial's recipe, only what is typical for that subtask in
-general.
-
-Trials with fewer than `error_injection.MIN_SEGMENTS = 4` segments are filtered out before
-evaluation: an out-of-order step is only out-of-order *relative to context*, so there must be
-enough surrounding structure for the injection to constitute a genuine anomaly.
+Older letters (A `trial_loc`, B step verdicts, D span-any-flag, F counterfactual, G-gap) appear only
+in [`logbook.md`](logbook.md) entries; their code was deleted in the restructure.
 
 ---
 
-## 5. `counterfactual.py` — attributing flags instead of windowing them
+## 1. Metric G
 
-A ground-truth window has a crisp start and end. An injected anomaly does not. One transposition
-legitimately disturbs three boundaries — entering the wrong step, the junction, exiting into what
-follows — plus a belief-state perturbation that decays over the segments after it. Any fixed window
-covers some prefix of that and charges the rest as a false positive, even though the injection
-caused it. Widening the window only moves the cutoff; it does not remove the need for one.
+A **run** is a maximal stretch of ticks with one constant (verb, noun). Every detector observes
+runs directly, and they make no claim about the user's steps. Say "run", not "step".
 
-This layer removes the need entirely, by asking a question that has no window in it: **did the
-injection change what the detector said?**
+- An **alarm** is the first flag inside a run. Later flags in the same run belong to it, whatever
+  their channel.
+- **TP**: a ground-truth span whose window [start, end + 10] contains an alarm onset. At most one
+  per span.
+- **FN**: a span with no onset in its window.
+- **FP**: an onset in no span's window.
+- **TN**: undefined.
 
-Each degraded trial is paired with the *same* trial with no injection, scored through the *same*
-detector. `tick_map` ([`synthetic.md`](synthetic.md) §2.1) makes the two comparable by projecting
-the healthy flags into the degraded trial's tick space:
+Precision, recall and F1 are pooled over spans; recall is also reported per error type. The
+10-tick `DEADLINE` is a deadline, not a window: a span already covers every tick the error
+touched, and the deadline keeps retrospective channels admissible (an abandonment is visible only
+once the run closes).
 
-$$
-\texttt{projected}[c][i] \;=\; \texttt{healthy}[c]\bigl[\texttt{tick\_map}[i]\bigr],
-\qquad
-\texttt{attributable}[c][i] \;=\; \texttt{degraded}[c][i] \;\wedge\; \neg\,\texttt{projected}[c][i].
-$$
+**Two false-alarm numbers go with every G table**, measured on error-free activity:
 
-A flag present in **both** is that detector's baseline noise on that trial and is discarded. A flag
-present **only** in the degraded run is injection-attributable, wherever in the trial it lands.
-Downstream disturbance is then credited rather than punished, by construction rather than by
-tolerance.
+- **alarms per 10 minutes**: how often the user would be interrupted;
+- **run FPR**: the share of runs that overlap no mistake but contain any flag.
 
-Repetition's `tick_map` is many-to-one; the projection handles it by construction, since fancy
-indexing simply reads the source flag once per copy.
+Tables also print the healthy-trial FPR (share of healthy trials with any alarm). It is never
+folded into F1: it is a different claim on a different denominator.
 
-### What is reported, and why it is three numbers
+**Why G.** Only alarm onsets count, on both sides, so an alarm cannot outlive its run, and
+flagging more ticks can never beat flagging every run. **Flag-every-tick and flag-every-run score
+identically**, and that one row is the null every table prints (Breakfast F1 0.348, EPIC-Tent
+0.175–0.269). On EPIC-Tent their alarm rates differ slightly, because a healthy fragment can start
+in the middle of a run. Earlier metrics failed this test:
 
-| Metric | Question | Window-dependent? |
-|---|---|---|
-| **detection rate** | did the injection change the output at all — $\ge 1$ attributable flag anywhere? | no |
-| **localisation rate** | was the **earliest** attributable flag inside $[t_0, t_1 + \texttt{tol}]$? | yes |
-| **false-alarm rate** | healthy trials only — identical to §2 | n/a |
+- D let *any* flag find a span while counting false positives on merged alarms. An alarm that
+  never stopped found every span for one FP, so flag-every-tick scored F1 0.92 on EPIC-Tent, above
+  every real detector.
+- G-gap merged alarms by a 5-tick gap and also let one alarm last forever.
+- A, B and E assume one anomaly per trial, and A cannot see more than one false alarm per trial
+  or credit a flag after a span's last tick, so a causal "ended too early" alarm was charged as a
+  stray.
 
-Detection and localisation are separated because only the second can move with window width, and
-collapsing them into one "recall" would let a window choice silently drive a number that reads as a
-capability. False alarms are measured only on healthy trials, where there is no injection and
-therefore nothing to attribute — which is the cleanest form of the question.
-
-By construction $\text{detection} \ge \text{localisation}$, and detection is $\ge$ the in-window
-recall of §2 on the same trials, since it credits strictly more flags.
-
-### The matched null — what this is actually for
-
-Beyond crediting downstream disturbance, the pairing supplies the null that a raw recall number
-lacks: **the same detector, the same trial, the same range, with no injection present.** Ask
-whether a *projected healthy* flag lands in the injection-touched range and you have the rate the
-detector would score by being chatty in the right neighbourhood anyway. `run_counterfactual.py`
-reports the three side by side per error type:
-
-| | question |
-|---|---|
-| `observed` | did a **degraded** flag land in the range (what recall normally reports) |
-| `chance` | did a **projected healthy** flag land there (the matched null) |
-| `attributable` | was there a flag in the degraded run and *not* its counterfactual |
-
-The null is matched per trial, so it absorbs trial length, step count, range width, and the
-detector's own per-trial noise level — all things a uniform-random baseline gets wrong. Measured
-on 419 real trials it sits at **0.017–0.055**, roughly 5x below what assuming uniform flag
-placement predicts, because flags cluster at segment boundaries instead of spreading out. Any
-"is this above chance?" argument built on a uniform assumption will therefore be far too
-pessimistic; measure the matched null instead.
-
-Because the two outcomes are paired, significance is **McNemar** on the discordant trials, not an
-unpaired two-proportion test — which would both ignore the pairing and degenerate when the null
-rate is zero.
-
-### Cost
-
-None beyond what is already computed. Every evaluation runs healthy trials through the detector
-anyway (they are the false-positive pool), so pairing is post-hoc arithmetic over flags already in
-hand — no extra inference, and for the LLM arm no extra requests.
+**Implementation.** `metric_g.score_trial` and `evaluate` score lists of `Flag(tick, strength,
+channel)`. `GridScore` scores dense (T, P) flag matrices, P operating points at once, which is what
+sweeps use. `evaluate` takes every span of a trial at once: passing the same flags once per error
+type would charge a flag that hit a transposition as a false positive in the substitution entry.
 
 ---
 
-## 6. `run_threshold_sweep.py` — picking $\alpha$
+## 2. Metric E: PREGO's protocol
 
-$\alpha$ is the detector's **only** sensitivity knob: there is no persistence rule, run-length
-filter, or post-hoc smoothing anywhere downstream (§2), so this one number sets the whole
-operating point. The shipped value is `surprise.DEFAULT_ALPHA` $= 5\times10^{-3}$, chosen from
-this sweep — trial-located recall 0.453 at precision 0.728 with 14.1% of healthy trials raising
-any alarm. Loosening to 0.05 buys 16 points of recall for roughly triple the false-alarm rate;
-tightening to $10^{-3}$ returns 4 points of false alarms for 5 points of recall.
-
-Reports accuracy, precision, recall and false-positive rate across an $\alpha$ grid spanning
-$5\times10^{-1}$ to $10^{-10}$, at four granularities.
-
-The sweep is cheap because of where $\alpha$ enters. Traces — predictive occupancy and Viterbi
-segmentation, the entire JAX cost — do not depend on it, so they are computed **once** per group
-(healthy plus each of the five error types) and the whole grid is swept by re-running
-`surprise.flag_joint`, which is pure post-hoc thresholding over arrays already in memory.
-
-### The four granularities, and which one to read
-
-| Level | One test is | Positive means |
-|---|---|---|
-| `tick` | one tick | that tick is inside the injection-touched extent |
-| `step` | one `textify.Step` | that step is touched |
-| `trial` | one trial | the detector flagged **anywhere** |
-| **`trial_loc`** | one trial | the detector flagged **in the right place** |
-
-**`trial_loc` is the one to quote.** For a degraded trial the positive range is the whole
-injection-touched extent — ground-truth window $\cup$ debris:
-
-- a flag **inside** the range → TP; no in-range flag → FN;
-- a flag **outside** the range → FP, counted *independently* of whether the trial was also hit;
-- healthy trials have no range, so any flag → FP, none → TN.
-
-Scoring the stray independently is the load-bearing choice. Collapsing it into the hit would let a
-detector that finds the anomaly and *also* fires five times elsewhere score identically to one
-that fires once, correctly — which is precisely the behaviour that matters for an assistant whose
-failure mode is nagging. $\text{TP} + \text{FN}$ is exactly the degraded-trial count, so recall
-stays clean; FP pools strays on degraded trials with flags on healthy ones.
-
-`trial` is kept only as the degenerate comparison. It scores "flagged the wrong place" identically
-to "flagged the right place", so it reads far more favourably than `trial_loc` and is not a
-detection metric on its own.
-
-### Two ground-truth conventions, on purpose
-
-This sweep **counts injection debris as anomalous**; `element_metrics` ([`llm.md`](llm.md) §5)
-**excludes** it. Both are correct for their own question. Debris is genuinely something the
-injection moved, so flagging it is detecting the injection's effect — the question this sweep
-asks. It is not the anomaly the injector was specifically testing for — the question
-`element_metrics` asks. Unifying them would produce one convention that is wrong for one of the
-two, so they are stated per consumer instead.
-
-### Reading the curves
-
-A correctly calibrated channel's false-positive rate falls toward zero as $\alpha$ tightens; a
-channel whose FPR is flat across orders of magnitude of $\alpha$ is not being gated by its
-threshold at all, which localises the problem to that channel rather than to the calibration.
-Accuracy is base-rate dominated at every level here (the pool is 1 healthy : 5 degraded, and
-positives are sparse within a trial), so read precision/recall/FPR and treat accuracy as a
-sanity check against its own majority-class baseline.
-
----
-
-## 7. `run_detect_eval.py` — the scorecard model selection runs through
-
-Same `trial_loc` metric and ground-truth convention as §6, so numbers are directly comparable.
-What it adds: the per-error-type and per-channel breakdown in one pass, a healthy pool built with
-the batched `generate.trajectories_from_real_joint`, and `quantile.JointThresholdCache`. Those
-take a 402-trial sweep from most of an hour to a couple of minutes, which is what makes detection
-usable as a *selection* criterion rather than only a final report ([`hsmm.md`](hsmm.md) §7).
-
-### 7.0 The optional arms — kernel, near substitutions, pair channel
-
-Six flags extend the scorecard to the open-vocabulary track. All are **off by default**, and that
-is deliberate: every recorded result was measured without them, and each one changes either the
-scoring model or the headline `raw` number.
-
-| flag | effect |
-|---|---|
-| `--embeddings PATH` | attach a similarity kernel built from `tools_embed_vocab.py`'s `.npz` to the **scoring** model ([`hsmm.md`](hsmm.md) §8) |
-| `--kernel-lam` / `--kernel-tau` | how much mass leaks, and how semantically it is shaped (defaults 0.15 / 0.05) |
-| `--kernel-lam-verb` | the same for verbs; **0.0 by default** — the verb embedding space does not pass the neighbour gate ([`hsmm.md`](hsmm.md) §8.6) |
-| `--kernel-uniform` | ablation: spread `--kernel-lam` uniformly instead of semantically, separating "semantics helped" from "any leaked mass helped" |
-| `--near-subs` | add a `substitution_near` group, replacing the segment's noun with its nearest embedding neighbour ([`synthetic.md`](synthetic.md) §2.2). Requires `--embeddings` |
-| `--with-pair` | score $s_{\text{pair}}$ alongside the usual seven ([`anomaly.md`](anomaly.md) §2.6). Needs `pi_all`, so the run costs noticeably more |
-
-**`--traj-params` is what makes any of these comparable.** Degraded streams are built from the
-model it names and handed to every scoring arm, so a kernelled and an unkernelled model are graded
-on byte-identical injections. Without it each arm builds its own streams from its own params and
-the comparison silently becomes two different datasets — the same failure mode
-[`llm.md`](llm.md) guards against by building injections once per source. Point it at the
-unkernelled baseline and vary only `--joint-params` / the kernel flags.
-
-Note `--with-pair` moves the headline number by construction, since the scorecard ORs its channels:
-a run with it on is not comparable to one without, in either direction.
-
-### Read accuracy, not F1
-
-The pool is 1 healthy : 5 degraded and a stray is charged independently of a hit, so **flagging
-every trial** scores precision $5/11$, recall 1, $F_1 = 0.625$, accuracy $5/11 = 0.455$; flagging
-nothing scores accuracy $1/6$. An $F_1$ near 0.62 is what you get for free. Accuracy is the number
-that separates a detector, and since
-
-$$
-\text{acc} \;=\; \frac{5R + (1 - h)}{6 + 5s}
-$$
-
-($R$ recall, $h$ healthy false-alarm rate, $s$ stray rate on degraded trials), **recall is worth
-roughly five times $h$** — the opposite of the weighting a precision-focused sweep encourages.
-
-### Two ways the comparison can flatter itself
-
-**Who placed the injections.** `error_injection` perturbs whatever segmentation the *scoring
-model itself* decoded, so models that differ in how they segment are graded on different degraded
-streams. `--traj-params` points every model at one common source; report both directions.
-
-**Which segments were hit.** The injectors draw a segment per trial, worth a few points on a
-single run. Quote a mean over several `--seed` values, not the best one.
-
-`report_final.py` enforces the rest: pick $\alpha$ on **train**, report at that same $\alpha$ on
-**test**. Picking per split reports a number no deployment could reproduce.
-
-### `trial_loc` caps false positives at one per trial — cross-check at step level
-
-The stray is charged as a boolean: `fp += bool((~pos & mask).any())`. A trial that flags once
-outside the range and one that flags five times cost the same single false positive, so total FP
-is bounded by the trial count — not by anything a nagging assistant is bounded by. Charging the
-stray independently of the hit (§6) separates "found it and also fired elsewhere" from "found it
-cleanly"; it does not separate "once" from "five times".
-
-`tools_alarm_load.py` measures the gap, counting contiguous runs of the unioned flag mask. On the
-test split the ratio of alarms raised to false positives charged is ~1.1–1.4× for the HSMM arms
-and **3.2× for the LLM arm**, so the cap flatters the chattier detector.
-
-That can invert a comparison, so quote a `trial_loc` gain only alongside a step-level check
-(`run_step_sweep.py`, the step-layer analogue of `run_threshold_sweep.py`). Neither granularity
-is wrong — "did it bother the user about the right trial" versus "how often did it bother the
-user" — but for an assistant whose failure mode is nagging, select on the step layer.
-
-### Selecting regularisation out of sample
-
-`smooth_params.py`'s `--strength` and `--backoff-tau` are regularisation, so choosing them on the
-split the model was fit to chooses too little. On the train split the pooled backoff looks best
-at $\tau = 2$; on a nested held-out fold (`make_dev_split.py`, 322 fit / 80 dev out of the 402
-outer-train trials) $\tau = 2$ is the worst of the grid and $\tau = 30$ the best. The shift
-strength is unaffected — $s = 0.7$ wins on both, $s \ge 1.5$ loses on both.
-
-The symptom of getting it wrong is a train/test gap in flagged healthy steps, which is the
-cheapest thing to watch:
-
-| flagged healthy steps, at matched recall | train | test |
-|---|---|---|
-| cascade fit | 3.2% (85/2692) | 3.4% (22/649) |
-| lexical+hard-EM, $\tau = 2$ (in-sample pick) | 0.8% (22/2692) | 4.3% (28/649) |
-| lexical+hard-EM, $\tau = 30$ (dev pick) | — | 2.9% (19/649) |
-
-A 4× gap is the transition table acting as a lookup of the training bigrams: a legal transition
-that merely did not occur in those 402 trials costs ~32 nats out of sample, and backing off to
-the pooled row is what covers it. With $\tau = 30$ the fit beats the cascade at both layers on
-test — step precision 0.691 vs 0.626 at matched recall 0.511 with 19 vs 27 flagged healthy steps;
-`trial_loc` accuracy 0.509 vs 0.453 at equal recall, healthy false-alarm rate 0.196 vs 0.351.
-
-### The healthy false-alarm floor $\alpha$ cannot reach
-
-Per channel, both fits show the pathology §6 names — a false-positive rate flat across orders of
-magnitude of $\alpha$. `s_transition` and `s_recipe_transition` are unmoved from $5\times10^{-3}$
-to $10^{-4}$ in both, so no threshold choice removes them.
-`run_threshold_sweep_coordinate.py` is the instrument for spending the budget per channel rather
-than through one shared $\alpha$.
-
----
-
-## 7b. `span_metrics.py` — scoring by existence instead of by tick
-
-A **third** metric layer, added alongside the tick layer (§2) and the element layer
-(`docs/llm.md` §5). Neither of those changed, so every number published above still describes the
-detector it always did.
-
-### The defect it removes
-
-Per-tick recall measures flag **density**, not detection ability. A 12-tick substitution flagged
-once at its onset scores 1/12; the same span flagged on all 12 ticks scores 12/12, and is not
-twelve times better. Worse, span widths differ by roughly an order of magnitude across the five
-injectors, so any tick-*summing* metric penalises the narrow types structurally, before the
-detector does anything. Measured on 20 test trials, the median span width per type:
-
-| type | median span width (ticks) |
-|---|---|
-| substitution | 13.5 |
-| omission | 13.5 |
-| transposition | 14.5 |
-| repetition | 15.0 |
-| **abandonment** | **1.0** |
-
-Here a span is either found or it is not. The unit a detector happens to emit — a tick, an RLE
-step, a decoded subtask — never enters the recall denominator, so an oscillating observation
-stream cannot change recall.
-
-### Ground truth
-
-A span is a closed tick interval plus the error type that produced it, one per segment the
-injection **moved or altered**, carried on the injection record as `degraded["spans"]`
-(`synthetic/error_injection._result`). Both arms therefore score byte-identical ground truth, the
-same invariant `run_llm_eval.build_pool` already enforces for the trials themselves.
-
-| injector | span | note |
-|---|---|---|
-| substitution | the altered segment, in full | equals `window` and `anomaly_ticks` |
-| transposition | **two** spans, one per moved segment | `window` covers both as one interval; splitting them stops a single flag claiming both |
-| repetition | the inserted copy, in full | equals `window` |
-| omission | the segment immediately **following** the gap, in full | the omitted step contributes no ticks of its own; its end is not derivable from `window`, which is why the record carries spans explicitly |
-| abandonment | the onset tick alone | **not** "through the end of the trial" — `inject_abandonment` truncates one interior segment and the trial continues, so a span running to the end would cover most of it and make recall nearly free |
-
-Downstream propagation is **excluded**. After `A B D C E` the `E` onset is unexpected as a
-consequence of the swap, but labelling it would make span width grow with how far the disturbance
-travels, and widths would stop being comparable across types — the one asymmetry this layer exists
-to control for.
-
-### Flags, merging, matching
-
-Every detector output becomes a sorted list of tick indices first. HSMM channel flags use the tick
-itself; an LLM step verdict uses the **first tick of the element it judges**; the predictive arm's
-duration flags use the tick at which elapsed time crossed the predicted duration.
-
-Flags are then **merged**: any run separated by no more than `MERGE_TOL` (5 ticks) collapses to a
-single alarm, represented by its **earliest** member — earliest rather than median, so latency
-survives. This stops an oscillating region being charged four false positives where a clean region
-is charged one, the same reasoning as NAB penalising clustered false positives less than dispersed
-ones. Merging applies to **false-positive counting only**; the healthy-trial rate is binary per
-trial and therefore already immune.
-
-A flag satisfies a span when `span_start <= tick <= span_end + DEADLINE`, with `DEADLINE` = 10
-ticks (matching `element_metrics.DEFAULT_TICK_TOL`). This is a **deadline, not a window**: the span
-already covers every tick the injection touched, so it governs only lateness. It exists so
-structurally retrospective channels stay admissible — an abandonment is visible only once the step
-closes, and the predictive arm's under-run check fires exactly there.
-
-Counting:
-
-* **TP** — a span with at least one satisfying flag. At most one per span.
-* **FN** — a span with no satisfying flag.
-* **FP** — a *merged* flag satisfying no span. Counted individually.
-* **TN** — not computed and not reported. Undefined under existence matching.
-
-Extra flags inside a satisfied span are neither additional TPs nor FPs; they are recorded as a
-diagnostic and never scored. **No point adjustment, in any form.** Scoring is never on decoded
-subtask assignments: the LLM arm has no access to the latent state, so a $z^\*$ grid would be
-defined by one detector's own decoding and the cascade's residual segmentation error would
-silently become the other arm's scoring error.
-
-### What is reported
-
-* **Primary** — precision / recall / F1 pooled over spans, plus per type: recall, span count and
-  median span width. The width column is what lets a reader see the asymmetry being controlled for.
-* **Deployability** — healthy-trial false-positive rate: the fraction of control trials with any
-  flag at all, on **unmerged** flags. Never folded into F1. It is a different claim on a different
-  denominator, and pooling it in would put the same constant into every type's precision — the
-  self-deception `precision_excl_healthy` exists to avoid in §2.
-* **Latency** — span start to first satisfying flag, hits only, median and p90. The one place tick
-  resolution genuinely matters, and where the predictive arm's duration channel earns its place.
-* **Noise diagnostic** — merged and raw false-positive counts side by side. The gap measures how
-  much of the alarm load is observation oscillation rather than detector behaviour.
-
-### The precondition, measured
-
-`tools_run_lengths.py` is the check that justifies leaving `MERGE_TOL` at 5. Run it first. On the
-Breakfast test split (101 trials, 661 RLE steps):
-
-```
-run length: median 11 ticks  mean 18.5  p10 3  p90 40  max 228
-fraction of runs <= 2 ticks: 0.0938 (62/661)
-```
-
-Median 6 steps/trial at a median 11 ticks, and **no spike at 1–2 ticks** — 9.4%, spread smoothly
-rather than piled at the bottom. Oscillation is therefore not a property of this corpus, and the
-merge tolerance needs no tuning here. Revisit on EPIC-Kitchens, whose 0.5 s ticks halve every run
-length and whose annotation is far denser.
-
-### Reading it against the older layers
-
-On the same 20 test trials the joint HSMM scores `trial_located` recall 0.450 / F1 0.556 and span
-recall 0.450 / F1 0.574 — close in aggregate, and *not* for a boring reason. Transposition splits:
-0.650 at trial level against 0.475 on spans, because the trial-level rule credits finding either
-half of a swap while the span layer labels both moved segments and asks for each. The same run
-records 54 true positives against **591 extra in-span flags** — the flag-density mass that
-per-tick recall was counting and this layer does not.
-
----
-
-## 7c. `run_epic_tent_eval.py` — scoring against annotated anomalies
-
-The one place in this repo where ground truth was not manufactured. Results are reported per
-**error group**, each scored with every other type **removed**, and the HSMM is **trained only on
-error-excised data** ([`data.md`](data.md) §7b.5, §7b.8):
-
-| group | EPIC-Tent labels | spans (9 test sessions) |
-|---|---|---|
-| `procedural` | order, omit, correction, repeat — PREGO's subset | 51 |
-| `procedural+temporal` | + search, slow | 69 |
-
-`misuse` is in neither: 94% of its spans leave the `(verb, noun)` stream unchanged (below), so it
-would measure the representation rather than the detector. Also out of the ground truth: 15 errors
-committed during an action that overlap resolution deleted from the stream ([`data.md`](data.md)
-§7b.9) — nothing about them survives preprocessing, so no arm could see them. **Findings up front:**
-
-- **The HSMM is the only arm that beats its null.** Procedural F1 0.383 against 0.262 for flagging
-  every step boundary, at **2.8 alarms per 10 min** of error-free activity and 1.0% of that time
-  spent alarming — against 26–30 alarms/10 min for the null and the LLM arm. Its weakness is recall
-  (0.353), and it catches **none** of the 6 omissions or 3 corrections.
-- **The predictive LLM arm is dominated by flagging every step boundary, in both groups** — lower
-  precision, no better recall, more alarms. Its ~0.90 recall is alarm volume, not detection.
-- **Giving the LLM the printed instruction order bought nothing**: identical on `procedural`,
-  marginally worse on `procedural+temporal`.
-- **Temporal errors are caught by the transition channel, not the duration channels.** Of the 5
-  search/slow spans the HSMM catches, 4 fire first on `s_transition` and 1 on `s_temporal`.
-
-### What "removed" means, and the one part of PREGO's protocol not adopted
-
-PREGO's paper does not say how it handled the non-procedural types; its code does. The input is a
-collapsed step sequence, which has no slot for a misuse, and the scorer
-(`step_anticipation/src/models/llm_hf.py`) is
+Used only to compare with PREGO (CVPR'24) and TI-PREGO. It reproduces their scorer
+(`step_anticipation/src/models/llm_hf.py`):
 
 ```python
-correct = matches[:-1]      # every step before the last is scored as correct
-mistake = matches[-1]       # the last step of each trimmed test sequence is THE mistake
+correct = matches[:-1]      # every step before the last is a negative
+mistake = matches[-1]       # the last step of each trimmed sequence is THE mistake
 ```
 
-So the other types were **relabelled as correct**, never excised. Here the equivalent is
-`run_epic_tent_eval.group_truth`: an out-of-group span drops out of the ground truth and its ticks
-rejoin the healthy population, so a flag on one is a false positive.
+Each EPIC-Tent test session is cut after its first in-group mistake, **every detector is re-run on
+the cut stream**, and the collapsed action sequence (idle removed, repeats merged) is scored step by
+step. That gives one positive per session. "Step" is their term. Run with `eval_epic_tent.py
+--trim`. The LLM's under-run alarm is suppressed on the cut final step, which never closed.
 
-By default this run does not trim: PREGO **cuts each test video at the end of its first
-procedural mistake**, so each video contributes exactly one positive (their recall 0.867 = 13/15)
-and every earlier step is a negative, while the default here scores whole sessions with every
-in-group mistake a positive. `--trim` reproduces their protocol instead — see "On PREGO's exact
-split" below, which reports both.
+Two precisions are in circulation. PREGO reports *classical* precision (≤ 0.107 on Epic-tent-O).
+TI-PREGO reports *balanced* precision, Prec_b = TPR / (TPR + FPR), under which chance scores 0.5
+and flagging every step scores Prec_b 0.500, F1_b 0.667: above every Epic-tent-O row TI-PREGO
+reports. Their balanced figures cannot be reproduced exactly: at recall 1.0, Prec_b = 0.407 would
+need more false positives than negative steps. Both columns are printed.
 
-### Results: `procedural`
-
-| arm | precision | recall | F1 | alarms / 10 min | alarm time | lat (med) |
-|---|---|---|---|---|---|---|
-| **HSMM** (error-excised fit) | **0.419** | 0.353 | **0.383** | **2.81** | **1.0%** | 3.5 |
-| arm 3, no recipes | 0.134 | 0.922 | 0.233 | 29.89 | 9.2% | 0.0 |
-| arm 3, + instruction order | 0.135 | 0.922 | 0.236 | 29.53 | 8.9% | 1.0 |
-| *null:* flag every step boundary | 0.152 | 0.941 | 0.262 | 26.45 | 7.4% | 0.0 |
-| *null:* flag every tick | 0.850 | 1.000 | 0.919 | 2.90 | 100.0% | 0.0 |
-| PREGO + Llama 2 *(published, own protocol)* | 0.107 | 0.867 | 0.191 | — | — | — |
-
-| per-type recall | order (39) | omit (6) | correction (3) | repeat (3) |
-|---|---|---|---|---|
-| HSMM | 0.436 | **0.000** | **0.000** | 0.333 |
-| arm 3, no recipes | 0.974 | 0.667 | 0.667 | 1.000 |
-| arm 3, + instruction order | 0.974 | 0.667 | 0.667 | 1.000 |
-| *null:* every boundary | 1.000 | 0.667 | 0.667 | 1.000 |
-
-Arm 3 matches the null on every type and loses to it on order. Correction and repeat are n = 3 —
-read the counts, not the rates. HSMM attribution: order 16 × `s_transition`, 1 × `s_temporal`;
-repeat 1 × `s_transition`.
-
-Arm 3's procedural numbers land close to PREGO's published classical line (0.134 / 0.922 / 0.233
-against 0.107 / 0.867 / 0.191), on an independent implementation and a different denominator. So
-does the boundary null — and nobody in that line reports one. (TI-PREGO's higher Epic-tent-O
-figures use *balanced* precision, a different metric — see "On PREGO's exact split" below.)
-
-### Results: `procedural+temporal`
-
-| arm | precision | recall | F1 | alarms / 10 min | alarm time | lat (med) |
-|---|---|---|---|---|---|---|
-| **HSMM** (error-excised fit) | **0.511** | 0.333 | **0.404** | **2.77** | **0.8%** | 3.0 |
-| arm 3, no recipes | 0.181 | 0.928 | 0.303 | 30.13 | 9.3% | 0.0 |
-| arm 3, + instruction order | 0.179 | 0.899 | 0.299 | 29.56 | 9.0% | 1.0 |
-| *null:* flag every step boundary | 0.204 | 0.942 | 0.336 | 26.89 | 7.5% | 1.0 |
-| *null:* flag every tick | 0.885 | 1.000 | 0.939 | 3.43 | 100.0% | 0.0 |
-
-| per-type recall | order (39) | omit (6) | correction (3) | repeat (3) | search+slow (18) |
-|---|---|---|---|---|---|
-| HSMM | 0.436 | 0.000 | 0.000 | 0.333 | 0.278 |
-| arm 3, no recipes | 0.974 | 0.667 | 0.667 | 1.000 | 0.944 |
-| arm 3, + instruction order | 0.974 | 0.667 | 0.667 | 1.000 | 0.833 |
-| *null:* every boundary | 1.000 | 0.667 | 0.667 | 1.000 | 0.944 |
-
-HSMM precision *rises* (0.419 → 0.511): hits go 18 → 23 and merged false positives 25 → 22, because
-some flags the `procedural` group charged as false alarms were landing on search/slow spans — real
-anomalies, penalised there only because that group removes them.
-
-The temporal group was added for the duration channels, and they are not what catches it: of the
-5 search/slow spans the HSMM finds, 4 fire first on `s_transition`, 1 on `s_temporal`.
-
-### On PREGO's exact split, with and without their trimming
-
-PREGO's split is recoverable exactly ([`data.md`](data.md) §7b.7): 14 train / 15 test, the test ids
-matching their own prediction file. The HSMM here is refitted on the error-excised fragments of
-*their* 14 training sessions (`joint_params_clean_prego.npz`, 57 fragments, subtask ARI 1.000).
-
-**Untrimmed** (whole sessions, every in-group mistake a positive; 107 procedural spans):
-
-| `procedural` | precision | recall | F1 | alarms / 10 min | alarm time | step FPR |
-|---|---|---|---|---|---|---|
-| **HSMM** | **0.464** | 0.364 | **0.408** | **2.90** | **1.9%** | **0.142** |
-| arm 3, no recipes | 0.169 | 0.972 | 0.287 | 30.22 | 9.8% | 0.973 |
-| arm 3, + instruction order | 0.169 | 0.981 | 0.288 | 30.48 | 9.5% | 0.923 |
-| *null:* flag every step boundary | 0.189 | 0.981 | 0.317 | 26.75 | 7.7% | 1.000 |
-
-`procedural+temporal` tells the same story (HSMM 0.551 / 0.353 / 0.430, step FPR 0.138; arm 3
-0.222 / 0.978 / 0.362, step FPR 0.971; null 0.246 / 0.978 / 0.394). The conclusions from the 20/9
-split carry over unchanged.
-
-**Step FPR** is the trimmed protocol's false-alarm unit carried onto whole sessions: the share of
-*correct* steps (PREGO's collapsed steps, overlapping no in-group span; 337 procedural, 312
-procedural+temporal) with any alarm in them. It is the only false-alarm column comparable across
-the trimmed and untrimmed tables. Alarm time is not: a 1-tick boundary flag on a 30 s step is 1/30 of
-that step's time but the whole step's verdict, which is why flag-every-boundary reads 7.7% there and
-1.000 here.
-
-**Trimmed — PREGO's protocol** (`--trim`). Each session is cut after its first in-group mistake and
-every detector is **re-run on the cut stream**, then scored at step level exactly as PREGO's
-`llm_hf.py` counts: one positive per session, every earlier step a negative. Steps are the collapsed
-action sequence — idle removed, then repeats merged, since PREGO's `gt` never repeats an action. The
-LLM's under-run alarm is suppressed on the truncated final step, which never closed; the HSMM
-already censors its final segment.
-
-| `procedural`, trimmed | tp | fn | fp | tn | precision | recall | F1 | alarms / correct step | **Prec_b** | **F1_b** |
-|---|---|---|---|---|---|---|---|---|---|---|
-| **HSMM** | 3 | 12 | 10 | 114 | **0.231** | 0.200 | **0.214** | **0.081** | **0.713** | 0.312 |
-| arm 3, no recipes | 15 | 0 | 118 | 6 | 0.113 | 1.000 | 0.203 | 0.952 | 0.512 | 0.678 |
-| arm 3, + instruction order | 11 | 4 | 106 | 18 | 0.094 | 0.733 | 0.167 | 0.855 | 0.462 | 0.567 |
-| *null:* flag every step (our sequences) | 15 | 0 | 124 | 0 | 0.108 | 1.000 | 0.195 | 1.000 | 0.500 | 0.667 |
-| *null:* flag every step, **on PREGO's own `gt`** | 15 | 0 | 153 | 0 | 0.089 | 1.000 | 0.164 | 1.000 | 0.500 | 0.667 |
-| PREGO + Llama 2 *(CVPR'24, classical)* | | | | | 0.107 | 0.867 | 0.191 | ≈ 0.71 | | |
-| TI-PREGO + Llama 3.1 *(arXiv, balanced)* | | | | | | 1.000 | | | 0.407 | 0.578 |
-
-All 15 first mistakes are `order`. (`procedural+temporal`, trimmed: HSMM 0.308 / 0.267 / 0.286; arm 3
-no recipes 0.126 / 1.000 / 0.224; null 0.120 / 1.000 / 0.214.)
-
-**What this shows.** Under PREGO's own protocol, a detector that flags every step scores precision
-0.089–0.108 at recall 1.0. PREGO's published 0.107 / 0.867 is on top of that null: at 13 hits and
-precision 0.107 they raise ~108 false alarms over 153 correct steps, i.e. they flag **about 71% of
-correct steps**. Arm 3 here reproduces the same regime — it flags 95% of correct steps. The HSMM is
-the only detector that is not near the null: it flags 8% of correct steps, and pays for it with
-recall 3/15.
-
-**Two different precisions are in circulation — read the right column.** PREGO's CVPR'24 paper
-reports *classical* precision on Epic-tent-O: at most 0.107 across every configuration (their
-Table 2; Assembly101-O reaches 0.307, which is where "PREGO gets ~0.3" comes from). The
-journal-length TI-PREGO (arXiv 2411.02570, eq. 3) switches to **balanced precision**,
-$\text{Prec}_b = TP / (TP + \tfrac{N^+}{N^-} FP) = \text{TPR} / (\text{TPR} + \text{FPR})$, and
-re-reports the same PREGO rows much higher (PREGO + GPT-3.5, oracle: 9.9 → 25.6). It is a different
-metric, not a better detector, and it has a property that matters here: **chance scores 0.5**, and
-flagging every step scores **Prec_b 0.500, F1_b 0.667** — above *every* Epic-tent-O row TI-PREGO
-reports (best: 40.7 / 100 / 57.8). One further inconsistency stops their balanced figures from
-being reproduced exactly: at recall 1.0, Prec_b = 1 / (1 + FP/N⁻), so 0.407 implies FP ≈ 1.46 N⁻ —
-more false positives than negative steps — which is only possible if FP and N⁻ are counted in
-different units. Their recalls (93.5, 92.0, 90.6) are also not multiples of 1/15. The balanced
-scorer is not in their public repository (the only similar formula there is a calibrated-precision
-helper for frame-level *step recognition*), so the definition is reproduced here, not the count.
-
-**How exact the reproduction is.** PREGO publishes its trimmed `gt` step sequences, so ours can be
-checked against them session by session: **6 of 15 match exactly**, and most of the rest end on the
-same mistake step but are 1–3 steps shorter. Negative steps total 123 here against their 153. The
-difference is overlap resolution — first-come-wins drops nested segments (mostly instruction reads,
-[`data.md`](data.md) §7b.3). Rebuilding from the authors' per-frame labels instead matches only 5/15,
-so PREGO used neither construction exactly. The published-`gt` null row is the one computed on
-precisely their sequences, and is the reference their numbers should be read against.
-
-### Reading the tables: the nulls and the two alarm measures
-
-**Every F1 here needs its null.** 29% of test ticks lie inside some annotated span, an order of
-magnitude above anything else measured, and span F1 merges false positives but not hits — so
-flagging every tick scores F1 0.92–0.94, and 0.016–0.023 with merging off. That gap is the metric's,
-not any detector's. Two nulls are printed: flag-every-tick for tick-dense detectors, and
-**flag-every-boundary for boundary-sparse ones, which is what arm 3 is**. `MERGE_TOL` favours
-tick-dense detectors (a run of ticks collapses to one alarm; one flag per step boundary does not),
-so scoring arm 3 against flag-every-tick alone would flatter it.
-
-**The healthy side is reported two ways, and needs both.** *Alarms per 10 minutes* counts distinct
-(merged) alarms during error-free activity; *alarm time* is the share of those seconds spent
-alarming. Neither is enough alone: flag-every-tick scores ~3 alarms/10 min — the same as the HSMM —
-because it is one alarm that never stops (100% alarm time).
-
-The runner also prints a *fragment FPR* (share of healthy fragments raising anything). It is kept
-for continuity but **cannot be compared across groups**: it is binary per fragment, so it grows with
-fragment length, and removing a type merges fragments into longer ones (48 → 33 between six types
-and `procedural`). The per-10-minute rate is the comparable one — and the one a deployment lives
-with.
-
-### Why a separate runner
-
-1. **Several anomalies per trial, of mixed type.** `run_llm_eval.py` loops over
-   `error_injection.ERROR_TYPES` with one degraded copy of each trial per type. EPIC-Tent sessions
-   carry a median of 10 annotated errors spanning up to five types at once, so the unit of
-   iteration is the trial, not (trial, type).
-2. **No element/step layer.** `element_metrics.score_trial_steps` breaks at the first hit and
-   returns one verdict per trial, and `relabel_with_sequence`'s `scope="trial"` default is
-   documented as unsound for multi-anomaly trials ([`anomaly.md`](anomaly.md) §6). Those metrics
-   are **not reported** on this corpus rather than reported wrongly.
-3. **No healthy trial.** All 29 sessions carry something. The healthy population is the error-free
-   *fragments* — recomputed per error group, since removing a type turns its ticks healthy — with
-   flags sliced out of the full trial's decode, never re-decoded.
-4. **No counterfactual layer.** §5 needs the same trial with and without the anomaly. A real error
-   has no healthy twin, and pairing across trials would destroy the matched-null property that is
-   the layer's whole justification.
-
-Two numbers from this file explicitly **do not transfer**: §7's $\text{acc} = (5R + (1-h))/(6+5s)$
-and the "F1 ≈ 0.625 is free" calibration are both hard-wired to the injector's 1 healthy : 5
-degraded pool ratio. A real-anomaly corpus has a data-determined ratio, so neither is comparable.
-
-Two numbers from this file explicitly **do not transfer**: §7's $\text{acc} = (5R + (1-h))/(6+5s)$
-and the "F1 ≈ 0.625 is free" calibration are both hard-wired to the injector's 1 healthy : 5
-degraded pool ratio. A real-anomaly corpus has a data-determined ratio, so neither is comparable.
-
-### `evaluate_spans_multi`, and why the obvious shape is wrong
-
-`span_metrics.evaluate_spans_multi` is a sibling of `evaluate_spans`, not a generalisation of it,
-so every number ever measured through the latter keeps the code path it was measured on. It takes
-`[(flags, [(span, error_type), ...]), ...]` — one entry per trial.
-
-The tempting alternative is to reuse `evaluate_spans` with
-`{etype: [(flags, spans_of_that_type)]}`. That is wrong, and quietly so: it passes one trial's
-flag list in once per type, so its false positives are counted once per type, **and a flag that
-correctly hit a `transposition` span is also charged as a false positive in the `substitution`
-entry.** Pooled precision needs every span of the trial visible at once. Recall does not, which is
-why `evaluate_spans`' shape is fine on an injected corpus — there, each trial carries exactly one
-anomaly. Per-type recall stays exact in the sibling because `score_trial` returns `per_span` rows
-in input order.
-
-### The emission channels fire zero times, and `misuse` is the reason
-
-Raw flagged ticks per channel over the 7533-tick test split (error-excised fit):
-
-    s_emit 0   s_verb 0   s_noun 0   s_recipe_transition 0
-    s_temporal 49   s_transition 36   s_dur_two 6
-
-Not "rarely" — **never**. Two causes compound. The state space is exact — 12 action classes factor
-injectively into 12 pairs, lexical init anchors one state per pair, subtask ARI 1.000 — so emissions
-are near-deterministic. And **the errors mostly do not touch the observation stream.** Measured per
-record over the scored ground-truth window, asking whether the observed `(verb, noun)` still
-includes the annotation's own host action:
-
-| EPIC-Tent label | symbolically unchanged |
-|---|---|
-| misuse | **94%** |
-| order | 90% |
-| search / slow | 80% |
-| correction | 75% |
-| omit | 44% |
-
-(`omit`'s scored window is the collapsed onset tick rather than the annotated span; over its full
-span it is 88% unchanged like the rest.)
-
-`misuse` is annotated *within a correctly-labelled action* — the wrong guyline during a step the
-annotator still called `place guyline` — so the tick stream is identical with or without it. That is
-why it is excluded from both groups. `order` is the informative contrast: also 90% unchanged, but
-what is wrong is the *position* of an unchanged pair, which a transition model can see — hence
-`s_transition` is the earliest channel on 16 of the 17 order errors the HSMM catches.
-
-That is still not detecting *out-of-orderness*, which [`data.md`](data.md) §7b.6 measured a
-first-order model cannot represent (the transition into an out-of-order segment has median corpus
-count 23 against a 22 baseline). It is detecting that the specific pair is locally unusual — a
-weaker, differently-distributed signal that happens to correlate.
-
-### Why the HSMM is trained on error-excised data
-
-Every training session contains annotated errors, so a model fitted on whole sessions partly learns
-the errors as normal. Measured before the switch — on all six mapped types, same 9 test sessions,
-same 48 healthy fragments:
-
-| fitted on | precision | recall | F1 | fragment FPR |
-|---|---|---|---|---|
-| whole train sessions (contaminated) | **0.806** | 0.197 | 0.316 | **0.146** |
-| error-excised fragments | 0.647 | **0.260** | **0.371** | 0.354 |
-
-Contamination makes the model permissive: it alarms less on both counts. The largest single move
-was order recall, 0.300 → 0.425 — once out-of-order transitions are cut from training the model stops
-treating them as ordinary. `run_epic_tent_eval.py` and `run_tent_test.sh` now use the excised fit
-only. The caveat stands: excision needs the labels, so this is the best *normal* model the labels
-allow, not one a deployment could fit from unlabelled data.
-
-One consequence to keep in mind: the excised corpus removes *all six* mapped types, including
-search/slow. When the `procedural` group then treats search/slow as normal, a model that never saw
-them in training can flag them — and is charged a false positive for it. That is at least part of
-the precision gap between the two groups.
-
-### The injected control, and one number in it not to trust
-
-The same HSMM on the same sessions, but with *injected* anomalies: precision 0.093, recall 0.370,
-F1 0.148. Injected anomalies are found more often and far less cleanly than annotated ones — the
-price of realism, separated from the price of the corpus. Its healthy rate is **not** a
-false-alarm rate: `run_llm_eval`'s pool treats the un-injected sessions as healthy, and here those
-carry all their real errors. It is an upper bound on alarm volume.
+**What it shows.** Flagging every step scores precision 0.089–0.108 at recall 1.0. PREGO's
+published 0.107 / 0.867 implies they flag ~71% of correct steps; it sits on that null. Our sequences
+match PREGO's published `gt` exactly on 6 of 15 sessions (most others end on the same mistake 1–3
+steps shorter, from first-come-wins overlap resolution); the null is also computed on their own
+`gt`.
 
 ---
 
-## 8. Single-question diagnostics — `tools_*.py`
+## 3. The harness and operating points
 
-Each answers one question about a fitted model with no thresholds or sweeps in it, so a loss the
-scorecard shows can be localised to a stage instead of guessed at. All are read-only.
+`eval/harness.py` holds what both eval scripts share:
 
-| Script | Question |
+- `trials_from_streams` turns a pool into `(group, Trial)` pairs;
+- `hindsight_grid` and `live_grid` threshold one trace at every grid point: α ∈ `ALPHAS` (21
+  values from 0.5 to 1e-10, dense between 0.1 and 1e-3), and for Live/Lag also κ ∈ `KAPPAS`
+  (0.9 … 0.02). Traces are computed once; thresholding is cheap;
+- `sweep` scores the grid under metric G; `pick` chooses an index (best F1, or best recall within an
+  alarm budget); `at` reads one row;
+- `null_masks` builds the two nulls; `table` prints a metric-labelled markdown table;
+  `write_operating_points` merges picks into `configs/operating_points.yaml`.
+
+**Operating points are picked on train and reported on test, never picked on the split they are
+reported on.** Breakfast picks each model's α (and κ) by best train F1. Two cautions, both
+measured:
+
+- *Train alarm budgets do not hold on test*: ≤ 1 alarm per 10 min on train lands at 1.4–1.8 on test,
+  because healthy train trials are the ones the model was fitted to.
+- *Regularisation is selected on a nested dev split*, not on train ([`training.md`](training.md)
+  §3).
+
+**EPIC-Tent is not picked.** Every training session carries annotated errors, and the HSMM is
+fitted on the error-excised fragments, so there is no clean train set to pick on. It runs at the
+fixed per-channel default: α = 0.005 for every channel, α = 1e-5 for `s_temporal`, κ = 0.5. On
+Breakfast that `s_temporal` setting removed 37% of false-positive ticks for 0.006 recall (metric A,
+picked on train and confirmed on test).
+
+---
+
+## 4. The trial figure
+
+`scripts/figures/trial_figure.py` draws one Breakfast trial from the LLM pool with every detector:
+the observed runs, the injected span, one lane per detector with a marker at each alarm, and the
+Hindsight narration as numbered cards. LLM lanes are read from the cache (`--max-requests 0`
+by default), so it costs nothing to redraw.
+
+```bash
+./py scripts/figures/trial_figure.py --trial 0 --condition omission --out runs/fig_trial0.png
+```
+
+---
+
+## 5. The scripts
+
+Every table in README is produced by these commands. LLM arms replay from the cache: each needs its
+original `--base-url` and `--max-requests 0` ([`llm.md`](llm.md) §5).
+
+```bash
+# Breakfast: train picks, test grids, the headline table; writes the operating points
+./py scripts/eval/eval_breakfast.py --max-requests 0 \
+    --out runs/eval_breakfast.json --operating-points configs/operating_points.yaml
+
+# EPIC-Tent, default split, every arm (LLM replay)
+./py scripts/eval/eval_epic_tent.py --live --live-lags 0 --variant both --skip-preflight \
+    --base-url http://localhost:11434/v1 --max-requests 0 --out runs/et_G_llm.json
+
+# EPIC-Tent, PREGO's split, HSMM arms incl. lag (metric G)
+./py scripts/eval/eval_epic_tent.py --live --live-lags 0,5,inf --skip-llm \
+    --split-file dataset/processed/epic_tent/split_prego.json \
+    --joint-params dataset/processed/epic_tent/joint_params_clean_prego.npz --out runs/et_live_prego.json
+
+# EPIC-Tent, PREGO's protocol (metric E), every arm
+./py scripts/eval/eval_epic_tent.py --live --live-lags 0 --variant both --skip-preflight --trim \
+    --split-file dataset/processed/epic_tent/split_prego.json \
+    --joint-params dataset/processed/epic_tent/joint_params_clean_prego.npz \
+    --base-url http://localhost:11434/v1 --max-requests 0 --out runs/et_E_llm_prego_trimmed.json
+```
+
+`eval_breakfast.py` scores three models (`--models dish-given,dish-inferred,lexhard`) and the
+detectors `hsmm-hindsight, hsmm-live, hsmm-lag` (L = 5, ∞), `llm-predictive` (4 variants),
+`llm-verdict` (2) and the nulls. On a fresh machine, or to collect new LLM responses, use the
+wrappers `scripts/eval/llm_breakfast.sh` and `scripts/eval/llm_epic_tent.sh`, which manage the
+ollama server ([`llm.md`](llm.md) §6).
+
+`eval_epic_tent.py` also prints an **injected control**: the same HSMM on the same sessions with
+injected errors (`pools.injected_per_trial`). Its healthy rate is not a false-alarm rate: the
+"healthy" sessions still carry their real errors.
+
+---
+
+## 6. Reading a table
+
+- **Read F1 against its null.** On EPIC-Tent 29% of test ticks lie inside some annotated span, and
+  the null's F1 is 0.175–0.269. On Breakfast the null is 0.348.
+- **Read the alarm columns together.** An arm close to the null in F1 that raises ten times the
+  alarms is not a detector a person would tolerate.
+- **97 trials per group means about ±0.03 of noise** on F1. Differences below that are not
+  findings.
+- **A per-type recall with n = 3** (EPIC-Tent correction and repeat) is a count, not a rate.
+- **Metric E's single-session differences are large.** One session separates Live (2/15) from
+  Hindsight (3/15) under PREGO's protocol.
+
+---
+
+## 7. Code
+
+| Concept | Where |
 |---|---|
-| `tools_state_organisation.py` | do the fitted states correspond one-to-one with the observed $(v,n)$ inventory, and does the decode agree with the run structure? (purity, boundary F1, split pairs) |
-| `tools_transition_ceiling.py` | of the junctions an injection creates, how many does the training data already contain — in this trial's own recipe, elsewhere, or nowhere? The "nowhere" share is what the transition channel *can* flag |
-| `tools_launder.py` | of those flaggable junctions, how many survive the Viterbi decode, and how many then clear their threshold? Separates a decode loss from a calibration loss |
-| `tools_oracle_recipe.py` | how much recall is lost to the MAP recipe being re-inferred from the degraded stream, by re-scoring with $\hat r$ pinned to the healthy decode's value |
-| `tools_duration_power.py` | re-scores every healthy segment at 1 tick (abandonment) and $2\times$ (repetition) against its own fitted NB — what $s_{\text{dur two}}$ can deliver at the current duration spread. It predicts **that one channel**, not the error type: $s_{\text{temporal}}$ is not modelled here and carries most of repetition |
-| `tools_alarm_load.py` | how many alarms are actually raised behind each false positive `trial_loc` charges, and what fraction of all alarms land in range |
-| `tools_embed_vocab.py` | (setup, not diagnostic) one embedding vector per vocab token → `embeddings.npz`; prints each token's nearest neighbours as the sanity gate that decides whether a channel's embedding space is usable at all |
-| `tools_kernel_gradation.py` | per state, what does the emission charge for the modal token, its nearest neighbour, and a no-evidence token? Shows both that the baseline's near/far gap is 0.00 nats and what smoothing the gap open costs on healthy observations |
-| `tools_severity_ranking.py` | the paired test the kernel actually rests on: one segment, two degraded copies differing only in the replacement noun, scored for whether $s_{\text{noun}}(\text{far}) > s_{\text{noun}}(\text{near})$. Rank accuracy, 0.5 = chance = no gradation |
-
-`run_step_sweep.py` (the step-layer analogue of `run_threshold_sweep.py`) and `make_dev_split.py`
-(a nested fit/dev split for selecting regularisation without touching the outer test split) are
-the two runners the §7 protocol needs.
-
-Three more sit around the $\alpha$ sweep of §6, and the split between them is the useful part:
-
-| Script | Question |
-|---|---|
-| `render_threshold_sweep_by_channel.py` | each channel's own `trial_loc` metrics across the $\alpha$ grid, scored **alone** rather than unioned — do channels have different enough natural operating points to justify per-channel thresholds at all? |
-| `run_threshold_sweep_coordinate.py` (+ `render_threshold_sweep_coordinate.py`) | the complement: the **union's** metrics as one channel's $\alpha$ varies with the other six held at `DEFAULT_ALPHA` — a coordinate descent, since what ships is the union |
-| `run_threshold_test_tuned.py` | scores **one fixed** $\alpha$ configuration on the held-out test split. No sweep, no search: the tuned values are constants chosen on train by a prior run |
-
-`run_threshold_test_tuned.py` is the confirmation step the §7 protocol implies and is worth using
-by name rather than by hand — it exists so that "the gain we found on train survives on test" is a
-run with nothing in it that can look at test outcomes to pick anything. The gain it was built to
-check was loosening $s_{\text{dur two}}$ to $5\times10^{-2}$ with everything else at
-`surprise.DEFAULT_ALPHA`.
-
-`tools_launder.py` and `tools_oracle_recipe.py` are the two that most often move a decision:
-the first says whether a channel is failing to fire or never being shown the evidence, and the
-second sizes the recipe-assignment loss, which no threshold change can recover.
-
-The last three belong to the open-vocabulary track ([`hsmm.md`](hsmm.md) §8) and are the reason it
-has a measured verdict rather than an argument. `tools_severity_ranking.py` in particular exists
-because **`run_detect_eval.py`'s scorecard cannot answer the question** it was built to test: the
-scorecard asks "was the injection flagged", and the baseline flags near substitutions about as
-reliably as far ones (recall 0.98) — `water` for `milk` still lands on a cell with no training
-evidence, so it is not a quieter anomaly, merely an equally loud one. What the kernel is meant to
-fix is that the two are indistinguishable in **severity**, which only a paired, ordinal test can
-see. Reach for the right tool: a capability the headline metric cannot express will read as "no
-effect" on the scorecard forever.
+| metric G | `eval/metric_g.py:score_trial`, `evaluate`, `GridScore`, `run_starts`, `alarm_onsets`, `alarm_ticks`, `DEADLINE` |
+| metric E | `eval/metric_e.py:score`, `step_extents`, `drop_truncated_under_run` |
+| sweeps, picks, tables | `eval/harness.py:hindsight_grid`, `live_grid`, `sweep`, `pick`, `at`, `null_masks`, `table`, `write_operating_points` |
+| alarms → per-tick masks | `eval/harness.py:alarm_mask` |
+| the picked operating points | `configs/operating_points.yaml` |
+| pools | `eval/pools.py` ([`data.md`](data.md) §5) |
+| Breakfast evaluation | `scripts/eval/eval_breakfast.py` |
+| EPIC-Tent evaluation | `scripts/eval/eval_epic_tent.py` |
+| the trial figure | `scripts/figures/trial_figure.py` |
+| tests | `tests/test_metric_g.py`, `test_prego_protocol.py`, `test_pools.py` |

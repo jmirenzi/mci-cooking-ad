@@ -1,7 +1,7 @@
 """Score the HSMM and the predictive LLM arm against EPIC-Tent's REAL anomaly annotations.
 
-Separate from the Breakfast evaluation (scripts/eval/eval_breakfast.py): four things about a
-real-anomaly corpus do not fit an injected-pool evaluation's shape:
+Separate from the Breakfast evaluation (scripts/eval/eval_breakfast.py): three things about a
+real-anomaly corpus do not fit an injected-pool evaluation's shape (docs/eval.md, docs/data.md §3):
 
 1. **Several anomalies per trial, of mixed type.** the Breakfast pools loop over
    error_injection.ERROR_TYPES with one degraded copy of each trial per type. EPIC-Tent sessions
@@ -9,20 +9,14 @@ real-anomaly corpus do not fit an injected-pool evaluation's shape:
    iteration is the trial, not (trial, type). Scored through metric_g.evaluate
    -- see its docstring for why the per-type shape would double-count false positives.
 
-2. **No element/step layer.** A per-step scorer breaks at the first hit and
-   returns one verdict per trial, and relabel_with_sequence's scope="trial" default is
-   documented as unsound for multi-anomaly trials (docs/anomaly.md 6). Those metrics are not
-   reported here rather than reported wrongly.
-
-3. **No healthy trial.** Under the mapped-6 taxonomy every one of the 29 sessions carries
+2. **No healthy trial.** Under the mapped-6 taxonomy every one of the 29 sessions carries
    something; p08 is free of PROCEDURAL error but has misuse. The healthy population is
    therefore the error-free FRAGMENTS of each trial, with flags sliced out of the full trial's
    decode -- never re-decoded, because the belief state part-way through an assembly is not the
    start-of-trial prior.
 
-4. **No counterfactual layer.** eval/counterfactual.py needs the same trial with and without
-   the anomaly. A real error has no healthy twin, and pairing across trials would destroy the
-   matched-null property that is the layer's whole justification (docs/eval.md 5).
+3. **No healthy twin.** A real error has no un-injected copy of its trial, so nothing can be
+   scored against a matched counterfactual; the injected control below is a separate population.
 
 **`--n-shot` defaults to 0 here, against the Breakfast predictive arm's 3.** Two measured reasons, both
 consequences of long sessions rather than preferences:

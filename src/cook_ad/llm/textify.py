@@ -90,7 +90,7 @@ def gt_steps_for_window(steps, window):
     segment becomes a shorter step; omission's window is the new boundary tick, i.e. the first
     tick of the following step; transposition's window spans both swapped runs; repetition's
     duplicate is adjacent-identical to its original and so MERGES into one double-length step --
-    which is the same 'Viterbi merges the copy' behavior docs/synthetic.md already documents for
+    which is the same 'Viterbi merges the copy' behavior docs/data.md §6 already documents for
     the tick-level path, not a new approximation.
     """
     t0, t1 = int(window[0]), int(window[1])

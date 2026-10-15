@@ -1,4 +1,4 @@
-"""The AnomalyDetector contract (docs/restructure.md §9.4): fast paths equal the step loop,
+"""The AnomalyDetector contract (docs/detectors.md §1): fast paths equal the step loop,
 alarms are never known before they happen, batching changes nothing, and the non-causal
 detectors refuse to step."""
 import json

@@ -219,7 +219,7 @@ def lexical_to_joint(sequences, k_subtask, k_recipe, d_max, vocab_verbs, vocab_n
     # happened. Roughly half the bigrams in a 25-trial recipe cluster are singletons, so leaving
     # the prior off does not merely start EM slightly off: it declares half the model's own
     # legal transitions impossible, which shows up directly as an s_transition false-positive
-    # rate that no longer responds to alpha (docs/eval.md 6's signature of an ungated channel).
+    # rate that no longer responds to alpha (the signature of an ungated channel).
     init_counts = init_counts + init_prior_scale * alpha_init / k_subtask
     trans_counts = trans_counts + init_prior_scale * alpha_trans / k_subtask
     pi_counts = pi_counts + init_prior_scale * alpha_pi / k_recipe

@@ -64,20 +64,6 @@ def to_streams(entries):
     return streams
 
 
-def injected_per_type(params, sequences, d_max, seed=0, chunk_size=8):
-    """The pre-canonical Breakfast pool (type by type over all trials, placed by the scored
-    model). Kept only for scripts/verify (deleted with it in restructure Phase G).
-    -> ({group: [trajectory]}, kept indices into `sequences`)."""
-    traj = generate.trajectories_from_real_joint(params, sequences, d_max, chunk_size=chunk_size)
-    keep = usable(traj)
-    healthy = [traj[i] for i in keep]
-    rng = np.random.default_rng(seed)
-    streams = {"healthy": healthy}
-    for et in ERROR_TYPES:
-        streams[et] = [error_injection.inject(et, t, rng, params, select="random") for t in healthy]
-    return streams, keep
-
-
 def injected_per_trial(params, sequences, d_max, seed=0, chunk_size=16):
     """[(healthy, {type: injected})]: every type injected into each trial in turn (one rng).
     Placement uses `params`. This is the pool the cached LLM responses were collected on.
