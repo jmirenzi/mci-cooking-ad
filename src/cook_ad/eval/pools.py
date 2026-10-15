@@ -1,10 +1,18 @@
 """The trial pools every detector is scored on (docs/data.md §5).
 
-Breakfast pools are healthy test trials plus copies with one injected error each; the injectors
-place errors in the Viterbi segmentation of a placement model. EPIC-Tent pools are the real
-sessions with their annotated errors, scored per error group.
+Breakfast: the CANONICAL pools, built once by scripts/data/build_pools.py and read from
+dataset/processed/breakfast/pools/{train,test}.pkl. Each usable trial (enough segments for every
+injector) appears healthy and once per error type; the errors are placed in the Viterbi
+segmentation of ONE fixed placement model (joint_params.npz), every type injected into a trial
+before the next trial is touched (one rng). The test pool is exactly the pool the cached LLM
+responses were collected on.
+
+EPIC-Tent: the real sessions with their annotated errors, scored per error group (pools are the
+split files plus anomalies.json; nothing is sampled).
 """
 import json
+import pickle
+from pathlib import Path
 
 import numpy as np
 
@@ -21,9 +29,45 @@ def usable(trajectories):
             if len(t["segments"]) >= error_injection.MIN_SEGMENTS]
 
 
+PLACEMENT = {"breakfast": "dataset/processed/breakfast/joint_params.npz"}
+
+
+def pool_path(corpus, part):
+    return Path("dataset/processed") / corpus / "pools" / f"{part}.pkl"
+
+
+def build_pool(sequences, placement_params, d_max, seed=0, chunk_size=16):
+    """The canonical pool: [{"trial_id", "healthy", "injected": {type: trajectory}}]."""
+    pool, keep = injected_per_trial(placement_params, sequences, d_max, seed, chunk_size)
+    return [{"trial_id": sequences[i]["trial_id"], "healthy": h, "injected": inj}
+            for i, (h, inj) in zip(keep, pool)]
+
+
+def save_pool(path, entries, meta):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as fh:
+        pickle.dump({"meta": meta, "entries": entries}, fh)
+
+
+def load_pool(path):
+    """-> (entries, meta) as written by save_pool."""
+    with open(path, "rb") as fh:
+        payload = pickle.load(fh)
+    return payload["entries"], payload["meta"]
+
+
+def to_streams(entries):
+    """Canonical pool entries -> {group: [trajectory]} ("healthy", then each error type)."""
+    streams = {"healthy": [e["healthy"] for e in entries]}
+    for et in ERROR_TYPES:
+        streams[et] = [e["injected"][et] for e in entries]
+    return streams
+
+
 def injected_per_type(params, sequences, d_max, seed=0, chunk_size=8):
-    """{group: [trajectory]}: "healthy" plus one copy per error type, injected type by type over
-    all trials (one rng). Placement uses `params`. -> (streams, kept indices into `sequences`)."""
+    """The pre-canonical Breakfast pool (type by type over all trials, placed by the scored
+    model). Kept only for scripts/verify (deleted with it in restructure Phase G).
+    -> ({group: [trajectory]}, kept indices into `sequences`)."""
     traj = generate.trajectories_from_real_joint(params, sequences, d_max, chunk_size=chunk_size)
     keep = usable(traj)
     healthy = [traj[i] for i in keep]
@@ -60,6 +104,30 @@ def split_sequences(sequences_path, split_path, part, limit=None):
 
 
 # ---- EPIC-Tent: real annotations, scored per error group ------------------------------------
+
+
+def epic_tent_pool_path(split_file, part):
+    """dataset/processed/epic_tent/pools/<split stem>_<part>.pkl"""
+    return Path("dataset/processed/epic_tent/pools") / f"{Path(split_file).stem}_{part}.pkl"
+
+
+def freeze_epic_tent_pool(sequences_path, anomalies_path, split_file, part):
+    """Write one split's sessions and their annotation records to epic_tent_pool_path."""
+    seqs = split_mod.filter_sequences(json.load(open(sequences_path)),
+                                      split_mod.load_split(split_file), part)
+    truth = {t["trial_id"]: t for t in json.load(open(anomalies_path))}
+    entries = [{"sequence": s, "truth": truth[s["trial_id"]]} for s in seqs]
+    path = epic_tent_pool_path(split_file, part)
+    save_pool(path, entries, {"corpus": "epic_tent", "split_file": str(split_file), "part": part,
+                              "n_sessions": len(entries)})
+    return path, len(entries)
+
+
+def load_epic_tent_pool(path, limit=None):
+    """-> (sequences, truth records), in split order."""
+    entries, _ = load_pool(path)
+    entries = entries[:limit] if limit else entries
+    return [e["sequence"] for e in entries], [e["truth"] for e in entries]
 
 
 def group_truth(trial_truth, group):

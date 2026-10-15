@@ -541,14 +541,18 @@ def main():
 
     vocab = json.loads(open(args.vocab).read())
     labels = json.loads(open(args.labels).read())
-    sequences = json.loads(open(args.sequences).read())
-    truth_by_id = {t["trial_id"]: t for t in json.loads(open(args.anomalies).read())}
-
     split = split_mod.load_split(args.split_file) if args.split_file else None
-    if split:
-        sequences = split_mod.filter_sequences(sequences, split, args.split_part)
-    sequences = sequences[: args.max_real]
-    truth = [truth_by_id[s["trial_id"]] for s in sequences]
+    frozen = pools.epic_tent_pool_path(args.split_file, args.split_part)
+    if frozen.exists() and args.sequences == ap.get_default("sequences"):
+        sequences, truth = pools.load_epic_tent_pool(frozen, args.max_real)
+        print(f"  pool: {frozen} (frozen by scripts/data/build_pools.py)")
+    else:
+        sequences = json.loads(open(args.sequences).read())
+        truth_by_id = {t["trial_id"]: t for t in json.loads(open(args.anomalies).read())}
+        if split:
+            sequences = split_mod.filter_sequences(sequences, split, args.split_part)
+        sequences = sequences[: args.max_real]
+        truth = [truth_by_id[s["trial_id"]] for s in sequences]
 
     joint = hsmm_params.load(args.joint_params)
     hsmm = HSMM(joint, d_max)

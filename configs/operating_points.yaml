@@ -1,0 +1,50 @@
+# Operating points picked on each corpus's TRAIN split (metric G, best F1) by
+# scripts/eval/eval_*.py. Never tuned on test. alpha is the bad-set tail mass,
+# kappa the posterior cutoff of the live/lag event channels.
+breakfast:
+  dish-given:
+    hindsight:
+      alpha: 0.07
+      kappa: null
+    live_L0:
+      alpha: 0.035
+      kappa: 0.7
+    live_L5:
+      alpha: 0.035
+      kappa: 0.5
+    live_Linf:
+      alpha: 0.035
+      kappa: 0.9
+  dish-inferred:
+    hindsight:
+      alpha: 0.035
+      kappa: null
+    live_L0:
+      alpha: 0.02
+      kappa: 0.7
+    live_L5:
+      alpha: 0.02
+      kappa: 0.5
+    live_Linf:
+      alpha: 0.02
+      kappa: 0.7
+  lexhard:
+    hindsight:
+      alpha: 0.05
+      kappa: null
+    live_L0:
+      alpha: 0.015
+      kappa: 0.05
+    live_L5:
+      alpha: 0.015
+      kappa: 0.05
+    live_Linf:
+      alpha: 0.015
+      kappa: 0.02
+# EPIC-Tent: NOT picked on train (every training session carries annotated errors, and the
+# error-excised fragments are what the model is fitted on), so these are fixed: the Breakfast
+# LLM report's per-channel default, kappa 0.5 = "more likely than not".
+epic_tent:
+  joint_params_clean:
+    hindsight: {alpha: 0.005, s_temporal: 1.0e-05, kappa: null}
+    live: {alpha: 0.005, s_temporal: 1.0e-05, kappa: 0.5}

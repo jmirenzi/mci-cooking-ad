@@ -1,6 +1,6 @@
 # Restructure plan
 
-Status: **in progress — Phases A–E done** (tag `pre-restructure`; goldens in `runs/golden/`,
+Status: **in progress — Phases A–F done** (tag `pre-restructure`; goldens in `runs/golden/`,
 made by `scripts/verify/{dump_golden.py,run_tables.sh}`, checked by `compare_golden.py`; see
 "Progress notes" at the end). Written 2026-10-14 with the repo owner. The agent doing the work
 reads this file top to bottom before touching code, works on branch `restructure`, and deletes this
@@ -696,3 +696,25 @@ Results.
 - Tests: 352 passed.
 - Cost, warm, new / old: Hindsight `detect_many` 17.7 / 17.7 s (1.00x), Live `detect_trial`
   99.9 / 100.1 s (1.00x), EPIC-Tent `--skip-llm` 10.8 / 11.7 s (0.93x).
+
+**Phase F.** `eval/pools.py: build_pool` (per trial over all types, one rng, placement by
+`joint_params.npz`, seed 0) and `scripts/data/build_pools.py`, which writes
+`dataset/processed/breakfast/pools/{train,test}.pkl` (378 and 97 usable trials) and freezes
+EPIC-Tent's test splits to `dataset/processed/epic_tent/pools/{split,split_prego}_test.pkl`.
+`eval_breakfast.py` and `eval_epic_tent.py` read those files. The Breakfast test split has only
+101 trials, so the LLM pool (first 150) was already the whole split: the canonical test pool is
+**bitwise identical to the LLM pool** (checked against `streams_pred_random.pkl`; recorded in the
+pool's meta), and every table row -- HSMM, LLM, nulls -- is scored on those 97 trials per group. A
+separate "LLM pool (97)" table is therefore the same table and is not printed twice.
+
+Shift (old per-type, model-placed pools -> canonical), from `runs/golden_E` -> `runs/phase_F`:
+- EPIC-Tent: no change (real annotations; all five reports reproduce).
+- Breakfast headline table: no number changes to 3 decimals. One label changes: dish model, dish
+  given, live L=0 is now picked at kappa 0.7 (was 0.1) with identical test numbers.
+- Train picks: alpha unchanged everywhere; kappa moved for dish-given live L0 (0.1 -> 0.7) and L5
+  (0.1 -> 0.5), dish-inferred L5 (0.7 -> 0.5), lexhard L=inf (alpha 0.02 -> 0.015, kappa 0.2 -> 0.02).
+- Per-model test grids: best F1 moves by at most 0.007 (lexhard lag arms 0.667 -> 0.661;
+  dish-given hindsight 0.668 -> 0.671).
+- `configs/operating_points.yaml` written (Breakfast: train picks per model and arm; EPIC-Tent:
+  the fixed per-channel default, not picked).
+- Tests: 356 passed (new `tests/test_pools.py`).

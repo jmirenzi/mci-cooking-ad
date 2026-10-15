@@ -1,14 +1,17 @@
 """Breakfast evaluation under metric G (docs/eval.md): every detector, operating points picked on
-TRAIN, the headline table on the LLM pool.
+TRAIN, the headline table on TEST.
+
+Pools are the canonical files (scripts/data/build_pools.py): every usable trial healthy plus one
+injected copy per error type, all placed by one fixed model. The test pool IS the pool the cached
+LLM answers were collected on, so every row -- HSMM, LLM and the nulls -- is scored on the same
+97 trials per group.
 
 For each HSMM model (--models):
-  1. TRAIN pool (healthy + one copy per injected error type, placed by that model): sweep
-     hindsight over ALPHAS and live/lag over ALPHAS x KAPPAS; pick each arm's best G-F1.
-  2. TEST pool (same construction): the same sweep, reported as grids (no picking).
-  3. LLM pool (the test pool the cached LLM answers were collected on: first 150 test trials,
-     every type injected into each trial in turn, placed by joint_params.npz): each arm at its
-     train-picked operating point. This is the headline table, so every row -- HSMM, LLM and
-     the nulls -- is scored on the same trials.
+  1. TRAIN pool: sweep hindsight over ALPHAS and live/lag over ALPHAS x KAPPAS; pick each arm's
+     best G-F1.
+  2. TEST pool: the same sweep, reported as grids (no picking).
+  3. The headline table: each arm at its train-picked operating point on TEST, beside the LLM
+     arms and the nulls.
 
 LLM arms read the response cache first. Pass --max-requests 0 to replay only: a miss then means a prompt byte
 changed. The cache key includes the base URL, and Breakfast's responses were collected through
@@ -59,9 +62,6 @@ MODELS = {  # name -> (params, recipe given?)
 LABEL = {"dish-given": "HSMM dish model, true dish given",
          "dish-inferred": "HSMM dish model, dish inferred",
          "lexhard": "HSMM 16-cluster model (shipped)"}
-LLM_POOL_PARAMS = f"{B}/joint_params.npz"   # the placement model the LLM pool was built with
-LLM_POOL_SIZE = 150                          # first N test trials (97 usable)
-LLM_POOL_CHUNK = 16
 REFERENCE_OP = {"alpha": 0.005, "s_temporal": 1e-5}   # joint_params.npz's arm in the LLM report
 
 
@@ -96,16 +96,7 @@ def dish_of(seqs, labels):
     return recipe_label_assignment(seqs, labels)[0]
 
 
-# ---- the LLM pool ---------------------------------------------------------------------------
-
-
-def llm_pool(d_max, test_seqs, labels):
-    chosen = test_seqs[:LLM_POOL_SIZE]
-    placement = hparams.load(LLM_POOL_PARAMS)
-    pool, keep = pools.injected_per_trial(placement, chosen, d_max, seed=0,
-                                          chunk_size=LLM_POOL_CHUNK)
-    dishes = dish_of([chosen[i] for i in keep], labels)
-    return pools.per_trial_to_streams(pool), dishes, placement
+# ---- the headline table ----------------------------------------------------------------------
 
 
 def hsmm_rows(model, hsmm, ops, streams, recipes):
@@ -132,7 +123,7 @@ def reference_row(placement, d_max, streams):
     alphas = {c: REFERENCE_OP["alpha"] for c in harness.CHANNELS}
     alphas["s_temporal"] = REFERENCE_OP["s_temporal"]
     det = HindsightHSMMDetector(hsmm, BadSets(hsmm, sorted(set(alphas.values()))),
-                                OperatingPoint(alphas), chunk_size=LLM_POOL_CHUNK)
+                                OperatingPoint(alphas), chunk_size=16)
     trials = harness.trials_from_streams(streams)
     masks = []
     for group in streams:
@@ -207,11 +198,16 @@ def main():
     d_max = load_config("configs/breakfast.yaml")["duration"]["d_max_ticks"]
     vocab = json.load(open(f"{B}/vocab.json"))
     labels = json.load(open(f"{B}/labels.json"))
-    seqs = {part: pools.split_sequences(f"{B}/sequences.json", f"{B}/split.json", part)
-            for part in ("train", "test")}
+    pool = {part: pools.load_pool(pools.pool_path("breakfast", part)) for part in ("train", "test")}
+    streams = {part: pools.to_streams(entries) for part, (entries, _) in pool.items()}
+    dishes = {part: dish_of([{"trial_id": e["trial_id"]} for e in entries], labels)
+              for part, (entries, _) in pool.items()}
+    train_seqs = pools.split_sequences(f"{B}/sequences.json", f"{B}/split.json", "train")
+    placement = hparams.load(pool["test"][1]["placement"])
 
     out = {"metric": "G", "metric_g_definition": dict(metric_g.METRIC_G), "alphas": harness.ALPHAS,
-           "kappas": harness.KAPPAS, "lags": lags, "grids": {}, "operating_points": {}}
+           "kappas": harness.KAPPAS, "lags": lags, "grids": {}, "operating_points": {},
+           "pools": {part: meta for part, (_, meta) in pool.items()}}
     for model in args.models.split(","):
         path, given = MODELS[model]
         hsmm = HSMM.load(path, d_max)
@@ -221,14 +217,14 @@ def main():
             if part == "test" and args.skip_test_grid:
                 continue
             t0 = time.time()
-            streams, keep = pools.injected_per_type(hsmm.params, seqs[part], d_max)
-            recipes = dish_of([seqs[part][i] for i in keep], labels) if given else None
-            out["grids"][model][part] = hsmm_grids(hsmm, bad, streams, recipes, lags)
-            print(f"[{model}/{part}] {len(keep)} usable trials ({time.time() - t0:.0f}s)", flush=True)
+            out["grids"][model][part] = hsmm_grids(hsmm, bad, streams[part],
+                                                   dishes[part] if given else None, lags)
+            print(f"[{model}/{part}] {len(pool[part][0])} trials per group "
+                  f"({time.time() - t0:.0f}s)", flush=True)
         out["operating_points"][model] = {arm: picked(g, arm)
                                           for arm, g in out["grids"][model]["train"].items()}
 
-    streams, dishes, placement = llm_pool(d_max, seqs["test"], labels)
+    streams, dishes = streams["test"], dishes["test"]
     trials = harness.trials_from_streams(streams)
     rows = {}
     if "nulls" in args.detectors:
@@ -237,13 +233,14 @@ def main():
     rows["HSMM joint_params.npz (old LLM-report arm)"] = reference_row(placement, d_max, streams)
     if "llm-predictive" in args.detectors:
         lexicon = Lexicon(vocab, placement)
-        rows.update(llm_rows(args, vocab, labels, lexicon, seqs["train"], trials))
+        rows.update(llm_rows(args, vocab, labels, lexicon, train_seqs, trials))
     for model in args.models.split(","):
         hsmm = HSMM.load(MODELS[model][0], d_max)
         rows.update(hsmm_rows(model, hsmm, out["operating_points"][model], streams,
                               dishes if MODELS[model][1] else None))
     out["table"] = rows
-    harness.table(rows, f"Breakfast test, LLM pool ({len(streams['healthy'])} trials per group)")
+    harness.table(rows, f"Breakfast test pool ({len(streams['healthy'])} trials per group; "
+                        f"= the LLM pool: {pool['test'][1].get('equals_llm_pool')})")
     harness.dump(args.out, out)
     print(f"\nwritten to {args.out}")
     if args.operating_points:

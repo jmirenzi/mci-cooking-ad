@@ -4,6 +4,13 @@ Dated entries, newest first, ≤ 5 lines each: what was tried, the number, the v
 script or commit that measured it. (Older history is folded in from the previous docs during the
 restructure's Phase G.)
 
+## 2026-10-15 — canonical pools (restructure Phase F)
+
+Every detector is now scored on fixed pools (`scripts/data/build_pools.py`; placement by
+joint_params.npz). The Breakfast test pool IS the LLM pool (bitwise), so the headline metric-G table
+did not move (one live pick: kappa 0.1 -> 0.7, same numbers); per-model test-grid best F1 moved by
+<= 0.007. EPIC-Tent unchanged. Operating points: `configs/operating_points.yaml`.
+
 ## 2026-10-15 — restructure, Phase E verified
 
 New-API-only code reproduces every per-trial golden bitwise, every EPIC-Tent table, every
