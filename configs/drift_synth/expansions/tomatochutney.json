@@ -1,0 +1,214 @@
+{
+ "1": {
+  "tokens": [
+   [
+    "add",
+    "seed"
+   ]
+  ],
+  "variants": []
+ },
+ "2": {
+  "tokens": [
+   [
+    "cut",
+    "garlic"
+   ]
+  ],
+  "variants": []
+ },
+ "3": {
+  "tokens": [
+   [
+    "add",
+    "cumin"
+   ]
+  ],
+  "variants": []
+ },
+ "4": {
+  "tokens": [
+   [
+    "add",
+    "tomato"
+   ],
+   [
+    "pour",
+    "sauce"
+   ]
+  ],
+  "variants": []
+ },
+ "5": {
+  "tokens": [],
+  "variants": []
+ },
+ "6": {
+  "tokens": [
+   [
+    "mix",
+    "tomato"
+   ]
+  ],
+  "variants": []
+ },
+ "7": {
+  "tokens": [
+   [
+    "peel",
+    "garlic"
+   ]
+  ],
+  "variants": []
+ },
+ "8": {
+  "tokens": [
+   [
+    "add",
+    "salt"
+   ]
+  ],
+  "variants": []
+ },
+ "9": {
+  "tokens": [
+   [
+    "add",
+    "chilli"
+   ]
+  ],
+  "variants": []
+ },
+ "10": {
+  "tokens": [
+   [
+    "put",
+    "pan"
+   ],
+   [
+    "mix",
+    "garlic"
+   ],
+   [
+    "wait",
+    "garlic"
+   ]
+  ],
+  "variants": []
+ },
+ "11": {
+  "tokens": [],
+  "variants": []
+ },
+ "12": {
+  "tokens": [
+   [
+    "put",
+    "tomato"
+   ],
+   [
+    "mix",
+    "tomato"
+   ]
+  ],
+  "variants": []
+ },
+ "13": {
+  "tokens": [
+   [
+    "lower",
+    "heat"
+   ]
+  ],
+  "variants": []
+ },
+ "14": {
+  "tokens": [
+   [
+    "add",
+    "garlic"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sour",
+    "kind": "insert",
+    "anchor_step": "14",
+    "tokens": [
+     [
+      "add",
+      "lemon"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "15": {
+  "tokens": [
+   [
+    "wait",
+    "mixture"
+   ]
+  ],
+  "variants": []
+ },
+ "16": {
+  "tokens": [
+   [
+    "put",
+    "pan"
+   ],
+   [
+    "turn-on",
+    "hob"
+   ],
+   [
+    "pour",
+    "oil"
+   ],
+   [
+    "wait",
+    "pan"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "calorie_conscious",
+    "kind": "omit",
+    "anchor_step": "16",
+    "tokens": [],
+    "replaces": [
+     2
+    ]
+   }
+  ]
+ },
+ "17": {
+  "tokens": [
+   [
+    "cut",
+    "tomato"
+   ]
+  ],
+  "variants": []
+ },
+ "18": {
+  "tokens": [
+   [
+    "put",
+    "bowl"
+   ]
+  ],
+  "variants": []
+ },
+ "19": {
+  "tokens": [
+   [
+    "mix",
+    "tomato"
+   ]
+  ],
+  "variants": []
+ }
+}

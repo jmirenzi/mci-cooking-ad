@@ -1,0 +1,154 @@
+{
+ "1": {
+  "tokens": [
+   [
+    "add",
+    "cheese"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "calorie_conscious",
+    "kind": "omit",
+    "anchor_step": "1",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   }
+  ]
+ },
+ "2": {
+  "tokens": [
+   [
+    "add",
+    "salt"
+   ]
+  ],
+  "variants": []
+ },
+ "3": {
+  "tokens": [
+   [
+    "cut",
+    "bread"
+   ]
+  ],
+  "variants": []
+ },
+ "4": {
+  "tokens": [
+   [
+    "scoop",
+    "mixture"
+   ],
+   [
+    "put",
+    "bread"
+   ]
+  ],
+  "variants": []
+ },
+ "5": {
+  "tokens": [
+   [
+    "add",
+    "pepper"
+   ]
+  ],
+  "variants": []
+ },
+ "6": {
+  "tokens": [
+   [
+    "add",
+    "basil"
+   ]
+  ],
+  "variants": []
+ },
+ "7": {
+  "tokens": [
+   [
+    "mix",
+    "tomato"
+   ],
+   [
+    "mix",
+    "cheese"
+   ],
+   [
+    "mix",
+    "basil"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "calorie_conscious",
+    "kind": "omit",
+    "anchor_step": "7",
+    "tokens": [],
+    "replaces": [
+     1
+    ]
+   }
+  ]
+ },
+ "8": {
+  "tokens": [
+   [
+    "brush",
+    "bread"
+   ]
+  ],
+  "variants": []
+ },
+ "9": {
+  "tokens": [
+   [
+    "cut",
+    "tomato"
+   ]
+  ],
+  "variants": []
+ },
+ "10": {
+  "tokens": [
+   [
+    "add",
+    "tomato"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sour",
+    "kind": "insert",
+    "anchor_step": "10",
+    "tokens": [
+     [
+      "add",
+      "lemon"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "11": {
+  "tokens": [
+   [
+    "put",
+    "pan"
+   ],
+   [
+    "flip",
+    "bread"
+   ],
+   [
+    "wait",
+    "pan"
+   ]
+  ],
+  "variants": []
+ }
+}

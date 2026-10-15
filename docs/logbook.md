@@ -5,6 +5,13 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-15 — synthetic drift data: step expansions (M2)
+
+gemma3, one pass per step: zero variants, padded pairs ("add pan"). Two passes plus validation:
+257/257 steps, 26 calorie omits, 0 substitutes. Asked per step it put sour into almost every step;
+one call per recipe gives 21 sites. `null` generates: median session 2.9 min against CC4D's ~15,
+because EPIC waits are seconds. Waiting on Jack's spot-check.
+
 ## 2026-10-15 — synthetic drift data: phases, tags, seeded generator (M1 + M3)
 
 The 18 recipes were approved. gemma3 phases needed two prompt rules: adding to a hot pan is cook,

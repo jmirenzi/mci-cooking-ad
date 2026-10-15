@@ -1,0 +1,188 @@
+{
+ "1": {
+  "tokens": [
+   [
+    "wait",
+    "coffee"
+   ]
+  ],
+  "variants": []
+ },
+ "2": {
+  "tokens": [
+   [
+    "pour",
+    "water"
+   ]
+  ],
+  "variants": []
+ },
+ "3": {
+  "tokens": [
+   [
+    "put",
+    "coffee"
+   ]
+  ],
+  "variants": []
+ },
+ "4": {
+  "tokens": [
+   [
+    "rip",
+    "filter"
+   ],
+   [
+    "open",
+    "filter"
+   ],
+   [
+    "put",
+    "filter"
+   ]
+  ],
+  "variants": []
+ },
+ "5": {
+  "tokens": [
+   [
+    "put",
+    "filter"
+   ]
+  ],
+  "variants": []
+ },
+ "6": {
+  "tokens": [
+   [
+    "pour",
+    "water"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sour",
+    "kind": "insert",
+    "anchor_step": "6",
+    "tokens": [
+     [
+      "add",
+      "lime"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "7": {
+  "tokens": [
+   [
+    "fold",
+    "paper"
+   ],
+   [
+    "fold",
+    "paper"
+   ]
+  ],
+  "variants": []
+ },
+ "8": {
+  "tokens": [
+   [
+    "throw",
+    "coffee"
+   ]
+  ],
+  "variants": []
+ },
+ "9": {
+  "tokens": [
+   [
+    "pour",
+    "water"
+   ],
+   [
+    "wait",
+    "water"
+   ]
+  ],
+  "variants": []
+ },
+ "10": {
+  "tokens": [
+   [
+    "measure",
+    "coffee"
+   ]
+  ],
+  "variants": []
+ },
+ "11": {
+  "tokens": [
+   [
+    "wait",
+    "coffee"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sour",
+    "kind": "insert",
+    "anchor_step": "11",
+    "tokens": [
+     [
+      "add",
+      "lemon"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "12": {
+  "tokens": [
+   [
+    "grate",
+    "coffee"
+   ]
+  ],
+  "variants": []
+ },
+ "13": {
+  "tokens": [
+   [
+    "measure",
+    "water"
+   ]
+  ],
+  "variants": []
+ },
+ "14": {
+  "tokens": [
+   [
+    "put",
+    "cup"
+   ]
+  ],
+  "variants": []
+ },
+ "15": {
+  "tokens": [
+   [
+    "pour",
+    "water"
+   ]
+  ],
+  "variants": []
+ },
+ "16": {
+  "tokens": [
+   [
+    "check",
+    "water"
+   ]
+  ],
+  "variants": []
+ }
+}

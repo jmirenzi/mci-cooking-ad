@@ -9,10 +9,11 @@ It is a sanity and validity test, not a benchmark. Control matters more than rea
 exception: the output must be at the **logistics level** the HSMM is trained on (`take bowl`,
 `pour water`), not the recipe-step level (`make roux`).
 
-**Status (2026-10-15):** 18 recipes approved. Stage 1 phases are built and committed.
-Stage 2 tags are proposed and **waiting for Jack's review** (`configs/drift_synth/tags.yaml`,
-`reviewed: false`). Stage 3 (expansions) is not built. Stages 4–10 are built and tested on a toy
-world, but cannot run on the real recipes until Stages 2–3 are done.
+**Status (2026-10-15):** Stages 1–3 are built and committed: phases, tags (reviewed by Jack,
+unchanged from the proposal) and expansions for all 18 recipes (257 steps, none skipped). They are
+**waiting for Jack's spot-check** (`runs/drift_synth/reports/expansion_review.md`). Stages 4–10
+are built and tested, and `null` generates end to end. M4 (all conditions plus sanity plots) is
+next.
 
 ---
 
@@ -36,7 +37,7 @@ world, but cannot run on the real recipes until Stages 2–3 are done.
 |---|---|---|
 | 1 graphs | load and validate task graphs; LLM labels each step prep/cook/serve/cleanup | none (LLM, cached) |
 | 2 tags | LLM proposes tags per vocab item (`sour`, `fat`, `sweet`, `fine_motor`, `heat`, `cleaning`, `ingredient`, `tool`, `container`); Jack reviews | none |
-| 3 expansion | LLM expands each step into core tokens and knob variants; validated, retried 3×, cached | none |
+| 3 expansion | LLM expands each step into core tokens (pass 1), then a calorie variant for steps whose tokens use a fat noun (pass 2), then one call per recipe for ≤ 2 sour sites; validated, retried 3×, cached | none |
 | 4 kitchen state | `take` before first use, `put` after last use, `wash`/`dry` after cleaning-relevant uses (rates from `tidy`) | seeded |
 | 5 durations | log-normal per verb, (verb, noun) backoff below 20 samples, from EPIC-100; gap distribution | seeded |
 | 6 knobs | θ ∈ [0, 1] per knob drives variants, step order, logistics and duration scales | seeded |
@@ -82,6 +83,18 @@ from (seed, person, day), and each session's from (seed, person, day, session). 
 includes the condition. Conditions with the same seed therefore share every day before onset
 (common random numbers), and a drift condition differs from `null` only through θ. Every random
 choice draws a fixed number of numbers regardless of θ, so streams stay aligned as θ moves.
+
+**Stage 3 details** (`expand.py`):
+- The schemas enumerate the vocabulary, so a reply cannot be out of vocabulary.
+- Validation rejects:
+  - `take X` of a logistic noun;
+  - an add/pour/sprinkle pair whose noun is not an ingredient (the destination, "add pan");
+  - an ingredient the recipe does not name (the dish itself and generic food are allowed);
+  - repeated pairs;
+  - variants on the wrong tag or with indices out of range.
+- CC4D's "Take X" steps expand to nothing, because Stage 4 inserts the take.
+- Asked per step, the model added lemon *and* vinegar to almost every step, hot chocolate
+  included. Asked once per recipe, it picks one or two sites or none.
 
 ## 3. Sources
 
@@ -132,6 +145,12 @@ The full report is `runs/drift_synth/reports/precheck.md`, written by `scripts/d
   5.5 s, mix 7.6 s; 35% of gaps are zero. EPIC narrations do not cover long waits (microwaving,
   simmering), so sessions will be shorter than CC4D recordings (median 15 min) unless expansions
   emit `wait` tokens.
+- **Expansions** (`configs/drift_synth/expansions/`): 257 steps, 0 skipped. 26 calorie variants,
+  all `omit` (the model never proposed a lower-fat substitute). 21 sour inserts, some odd: lime in
+  hot chocolate, lemon in pancake batter. The review sample is a seeded 10%.
+- **First generation** (`null`, seed 0): 719 sessions over 8 persons and 70 days, generated in
+  under a second. The median session is 2.9 min (p10–p90 2.2–4.5) against CC4D's ~15 min. EPIC's
+  `wait` narrations are a few seconds long, so waiting is nearly free.
 - **Approved set** (18 recipes, every knob covered by ≥ 6): scrambled eggs, herb omelet, tomato
   mozzarella salad, caprese bruschetta, cucumber raita, butter corn cup, sauteed mushrooms,
   broccoli stir fry, zoodles, pan-fried tofu, tomato chutney, microwave egg sandwich, microwave
@@ -175,6 +194,7 @@ It also checks that pre-onset days are identical between `null` and a drift cond
 | step phases (LLM, cached) | `drift_synth/graphs.py:assign_phase`, `load_phased`; `configs/drift_synth/phases/` |
 | CC4D word → EPIC class table (pre-check estimate only) | `drift_synth/lexicon.py:NOUNS`, `VERBS`, `nouns_in` |
 | LLM calls with a JSON schema | `drift_synth/llm.py:client_for`, `ask_json`; `llm/client.py:ChatClient(response_format=)` |
+| step expansions (two passes, per-recipe sour sites), validation, EPIC exemplars | `drift_synth/expand.py:expand_step`, `sour_sites`, `validate_expansion`, `ExemplarIndex`, `build_expansions`; `configs/drift_synth/expansions/` |
 | tags | `drift_synth/tagging.py:propose_tags`, `write_tags`, `load_tags` (refuses unreviewed); `configs/drift_synth/tags.yaml` |
 | assets bundle, expansion I/O | `drift_synth/assets.py:Assets`, `load_assets`, `save_expansions`, `load_expansions` |
 | knobs: variants, step order, duration scales, repetition, tidy rates | `drift_synth/knobs.py:apply_variants`, `sample_topological_order`, `slow_multiplier`, `token_multiplier`, `repetition_prob`, `tidy_rates`; `configs/drift_synth/knobs.yaml` |
@@ -186,6 +206,6 @@ It also checks that pre-onset days are identical between `null` and a drift cond
 | export | `drift_synth/export.py:export`, `to_ticks` (reuses `parse_epic.to_frame_segments`, `expand_verb_noun_to_ticks`) |
 | observable ground truth | `drift_synth/ground_truth.py:observable_stats`, `drift_magnitude`, `count_z`, `affected_features` |
 | pre-check report | `scripts/drift_synth/precheck.py` |
-| offline assets (stages 1–3) | `scripts/drift_synth/build_assets.py --stage phases\|tags` |
+| offline assets (stages 1–3) | `scripts/drift_synth/build_assets.py --stage phases\|tags\|expansions` |
 | generation (stages 4–9) | `scripts/drift_synth/generate.py`; `configs/drift_synth/generator.yaml`, `conditions.yaml` |
-| tests | `tests/test_drift_synth_graphs.py`, `tests/test_drift_synth_generator.py`, `tests/_drift_fixtures.py` |
+| tests | `tests/test_drift_synth_graphs.py`, `tests/test_drift_synth_generator.py`, `tests/test_drift_synth_expand.py`, `tests/_drift_fixtures.py` |

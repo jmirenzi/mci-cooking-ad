@@ -1,0 +1,116 @@
+{
+ "1": {
+  "tokens": [
+   [
+    "cut",
+    "tomato"
+   ]
+  ],
+  "variants": []
+ },
+ "2": {
+  "tokens": [
+   [
+    "put",
+    "tomato"
+   ]
+  ],
+  "variants": []
+ },
+ "3": {
+  "tokens": [
+   [
+    "pour",
+    "oil"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "calorie_conscious",
+    "kind": "omit",
+    "anchor_step": "3",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   }
+  ]
+ },
+ "4": {
+  "tokens": [
+   [
+    "dry",
+    "tomato"
+   ]
+  ],
+  "variants": []
+ },
+ "5": {
+  "tokens": [
+   [
+    "season",
+    "tomato"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sour",
+    "kind": "insert",
+    "anchor_step": "5",
+    "tokens": [
+     [
+      "squeeze",
+      "lemon"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "6": {
+  "tokens": [
+   [
+    "sprinkle",
+    "cheese"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "calorie_conscious",
+    "kind": "omit",
+    "anchor_step": "6",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   }
+  ]
+ },
+ "7": {
+  "tokens": [
+   [
+    "wash",
+    "tomato"
+   ]
+  ],
+  "variants": []
+ },
+ "8": {
+  "tokens": [
+   [
+    "season",
+    "tomato"
+   ]
+  ],
+  "variants": []
+ },
+ "9": {
+  "tokens": [
+   [
+    "sprinkle",
+    "oregano"
+   ]
+  ],
+  "variants": []
+ }
+}

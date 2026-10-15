@@ -1,7 +1,7 @@
 # LLM-proposed tags per EPIC vocabulary item (scripts/drift_synth/build_assets.py).
 # Review by hand: add/remove tags, then set `reviewed: true`. The generator refuses
 # this file until then. Knobs act on these tags (configs/drift_synth/knobs.yaml).
-reviewed: false
+reviewed: true
 tag_set: [sour, fat, sweet, fine_motor, heat, cleaning, ingredient, tool, container]
 verbs:
   add: [fine_motor]

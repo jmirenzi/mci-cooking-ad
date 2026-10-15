@@ -1,0 +1,282 @@
+{
+ "1": {
+  "tokens": [
+   [
+    "cut",
+    "coriander"
+   ]
+  ],
+  "variants": []
+ },
+ "2": {
+  "tokens": [
+   [
+    "mix",
+    "egg"
+   ]
+  ],
+  "variants": []
+ },
+ "3": {
+  "tokens": [
+   [
+    "add",
+    "garlic"
+   ],
+   [
+    "put",
+    "pan"
+   ]
+  ],
+  "variants": []
+ },
+ "4": {
+  "tokens": [
+   [
+    "cut",
+    "chilli"
+   ]
+  ],
+  "variants": []
+ },
+ "5": {
+  "tokens": [
+   [
+    "add",
+    "chilli"
+   ]
+  ],
+  "variants": []
+ },
+ "6": {
+  "tokens": [
+   [
+    "cut",
+    "onion"
+   ]
+  ],
+  "variants": []
+ },
+ "7": {
+  "tokens": [
+   [
+    "add",
+    "salt"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sour",
+    "kind": "insert",
+    "anchor_step": "7",
+    "tokens": [
+     [
+      "add",
+      "lemon"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "8": {
+  "tokens": [
+   [
+    "mix",
+    "egg"
+   ],
+   [
+    "wait",
+    "pan"
+   ]
+  ],
+  "variants": []
+ },
+ "9": {
+  "tokens": [
+   [
+    "put",
+    "pan"
+   ],
+   [
+    "pour",
+    "oil"
+   ],
+   [
+    "add",
+    "onion"
+   ],
+   [
+    "wait",
+    "pan"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "calorie_conscious",
+    "kind": "omit",
+    "anchor_step": "9",
+    "tokens": [],
+    "replaces": [
+     1
+    ]
+   }
+  ]
+ },
+ "10": {
+  "tokens": [
+   [
+    "break",
+    "egg"
+   ],
+   [
+    "put",
+    "egg"
+   ]
+  ],
+  "variants": []
+ },
+ "11": {
+  "tokens": [
+   [
+    "add",
+    "turmeric"
+   ]
+  ],
+  "variants": []
+ },
+ "12": {
+  "tokens": [
+   [
+    "cut",
+    "tomato"
+   ]
+  ],
+  "variants": []
+ },
+ "13": {
+  "tokens": [
+   [
+    "cook",
+    "tomato"
+   ]
+  ],
+  "variants": []
+ },
+ "14": {
+  "tokens": [
+   [
+    "mix",
+    "egg"
+   ]
+  ],
+  "variants": []
+ },
+ "15": {
+  "tokens": [
+   [
+    "pour",
+    "egg"
+   ]
+  ],
+  "variants": []
+ },
+ "16": {
+  "tokens": [
+   [
+    "put",
+    "pan"
+   ],
+   [
+    "turn-on",
+    "hob"
+   ],
+   [
+    "pour",
+    "oil"
+   ],
+   [
+    "wait",
+    "pan"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "calorie_conscious",
+    "kind": "omit",
+    "anchor_step": "16",
+    "tokens": [],
+    "replaces": [
+     2
+    ]
+   }
+  ]
+ },
+ "17": {
+  "tokens": [
+   [
+    "sprinkle",
+    "coriander"
+   ],
+   [
+    "serve",
+    "egg"
+   ]
+  ],
+  "variants": []
+ },
+ "18": {
+  "tokens": [
+   [
+    "add",
+    "tomato"
+   ]
+  ],
+  "variants": []
+ },
+ "19": {
+  "tokens": [
+   [
+    "peel",
+    "garlic"
+   ]
+  ],
+  "variants": []
+ },
+ "20": {
+  "tokens": [
+   [
+    "add",
+    "milk"
+   ]
+  ],
+  "variants": []
+ },
+ "21": {
+  "tokens": [
+   [
+    "add",
+    "salt"
+   ]
+  ],
+  "variants": []
+ },
+ "22": {
+  "tokens": [
+   [
+    "add",
+    "onion"
+   ]
+  ],
+  "variants": []
+ },
+ "23": {
+  "tokens": [
+   [
+    "cut",
+    "garlic"
+   ]
+  ],
+  "variants": []
+ }
+}

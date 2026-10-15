@@ -1,0 +1,153 @@
+{
+ "1": {
+  "tokens": [
+   [
+    "wait",
+    "microwave"
+   ]
+  ],
+  "variants": []
+ },
+ "3": {
+  "tokens": [
+   [
+    "add",
+    "bread"
+   ],
+   [
+    "press",
+    "bread"
+   ]
+  ],
+  "variants": []
+ },
+ "4": {
+  "tokens": [
+   [
+    "mix",
+    "cup"
+   ]
+  ],
+  "variants": []
+ },
+ "5": {
+  "tokens": [
+   [
+    "put",
+    "cup"
+   ],
+   [
+    "pour",
+    "butter"
+   ],
+   [
+    "turn-on",
+    "microwave"
+   ],
+   [
+    "wait",
+    "microwave"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "calorie_conscious",
+    "kind": "omit",
+    "anchor_step": "5",
+    "tokens": [],
+    "replaces": [
+     1
+    ]
+   },
+   {
+    "knob": "sour",
+    "kind": "insert",
+    "anchor_step": "5",
+    "tokens": [
+     [
+      "add",
+      "vinegar"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "6": {
+  "tokens": [
+   [
+    "sprinkle",
+    "cinnamon"
+   ]
+  ],
+  "variants": []
+ },
+ "7": {
+  "tokens": [
+   [
+    "cut",
+    "bread"
+   ],
+   [
+    "serve",
+    "bread"
+   ]
+  ],
+  "variants": []
+ },
+ "8": {
+  "tokens": [
+   [
+    "put",
+    "plate"
+   ]
+  ],
+  "variants": []
+ },
+ "9": {
+  "tokens": [
+   [
+    "roll",
+    "butter"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "calorie_conscious",
+    "kind": "omit",
+    "anchor_step": "9",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   }
+  ]
+ },
+ "10": {
+  "tokens": [
+   [
+    "cut",
+    "bread"
+   ]
+  ],
+  "variants": []
+ },
+ "11": {
+  "tokens": [
+   [
+    "add",
+    "extract:vanilla"
+   ]
+  ],
+  "variants": []
+ },
+ "12": {
+  "tokens": [
+   [
+    "mix",
+    "egg"
+   ]
+  ],
+  "variants": []
+ }
+}

@@ -1,0 +1,90 @@
+{
+ "1": {
+  "tokens": [
+   [
+    "put",
+    "cup"
+   ],
+   [
+    "wait",
+    "cup"
+   ]
+  ],
+  "variants": []
+ },
+ "2": {
+  "tokens": [
+   [
+    "add",
+    "cinnamon"
+   ]
+  ],
+  "variants": []
+ },
+ "3": {
+  "tokens": [
+   [
+    "mix",
+    "chocolate"
+   ]
+  ],
+  "variants": []
+ },
+ "5": {
+  "tokens": [
+   [
+    "add",
+    "sugar"
+   ]
+  ],
+  "variants": []
+ },
+ "6": {
+  "tokens": [
+   [
+    "fill",
+    "cup"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sour",
+    "kind": "insert",
+    "anchor_step": "6",
+    "tokens": [
+     [
+      "add",
+      "lime"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "7": {
+  "tokens": [
+   [
+    "put",
+    "cup"
+   ],
+   [
+    "turn-on",
+    "microwave"
+   ],
+   [
+    "wait",
+    "microwave"
+   ]
+  ],
+  "variants": []
+ },
+ "8": {
+  "tokens": [
+   [
+    "add",
+    "chocolate"
+   ]
+  ],
+  "variants": []
+ }
+}

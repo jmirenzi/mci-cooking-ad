@@ -5,6 +5,7 @@ llm:
   base_url: http://localhost:11434/v1
   temperature: 0.0
   cache_dir: dataset/drift_synth/llm_cache   # never delete
+  concurrency: 4                             # parallel requests in Stage 3
 paths:
   cc4d: dataset/captaincook4d
   epic_annotations: dataset/epic_kitchens/annotations

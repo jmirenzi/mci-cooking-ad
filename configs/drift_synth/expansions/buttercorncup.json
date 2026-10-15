@@ -1,0 +1,149 @@
+{
+ "1": {
+  "tokens": [
+   [
+    "add",
+    "lime"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sour",
+    "kind": "insert",
+    "anchor_step": "1",
+    "tokens": [
+     [
+      "add",
+      "lime"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "2": {
+  "tokens": [
+   [
+    "measure",
+    "corn"
+   ]
+  ],
+  "variants": []
+ },
+ "3": {
+  "tokens": [
+   [
+    "add",
+    "pepper"
+   ]
+  ],
+  "variants": []
+ },
+ "4": {
+  "tokens": [
+   [
+    "squeeze",
+    "lime"
+   ]
+  ],
+  "variants": []
+ },
+ "6": {
+  "tokens": [
+   [
+    "add",
+    "corn"
+   ]
+  ],
+  "variants": []
+ },
+ "7": {
+  "tokens": [
+   [
+    "mix",
+    "corn"
+   ]
+  ],
+  "variants": []
+ },
+ "8": {
+  "tokens": [
+   [
+    "put",
+    "corn"
+   ],
+   [
+    "wait",
+    "microwave"
+   ]
+  ],
+  "variants": []
+ },
+ "9": {
+  "tokens": [
+   [
+    "put",
+    "corn"
+   ],
+   [
+    "wait",
+    "microwave"
+   ]
+  ],
+  "variants": []
+ },
+ "10": {
+  "tokens": [
+   [
+    "mix",
+    "bowl"
+   ],
+   [
+    "put",
+    "bowl"
+   ]
+  ],
+  "variants": []
+ },
+ "11": {
+  "tokens": [
+   [
+    "add",
+    "salt"
+   ]
+  ],
+  "variants": []
+ },
+ "12": {
+  "tokens": [
+   [
+    "filter",
+    "corn"
+   ],
+   [
+    "shake",
+    "water"
+   ]
+  ],
+  "variants": []
+ },
+ "13": {
+  "tokens": [
+   [
+    "add",
+    "butter"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "calorie_conscious",
+    "kind": "omit",
+    "anchor_step": "13",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   }
+  ]
+ }
+}
