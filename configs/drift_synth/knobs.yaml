@@ -1,0 +1,35 @@
+# The generator's knobs (docs/drift_synth.md §2). theta[knob] is in [0, 1]. Knobs act on TAGS
+# (configs/drift_synth/tags.yaml), never on recipe-specific items. A capability knob's high theta
+# is the impaired end (slower, clumsier).
+knobs:
+  sour:
+    family: preference
+    operator: inclusion
+    variant_kinds: [insert]           # P(apply each sour insert variant) = theta
+    target_tags: {nouns: [sour]}
+  calorie_conscious:
+    family: preference
+    operator: substitution
+    variant_kinds: [substitute, omit] # P(apply each fat substitute/omit variant) = theta
+    target_tags: {nouns: [fat]}
+    fat_duration_k: 0.7               # remaining fat-tagged tokens: duration x exp(-k * theta)
+  mise_en_place:
+    family: preference
+    operator: ordering
+    beta: 4.0                         # order weight x exp(beta * (2 theta - 1) * is_prep)
+  tidy:
+    family: preference
+    operator: logistics
+    put_back: [0.1, 0.95]             # P(put n after its last use) = lo + (hi - lo) * theta
+    wash: [0.0, 0.8]                  # P(wash a tool/container after its last use), same form
+  slow:
+    family: capability
+    operator: duration_scale
+    a: 1.0                            # every duration and gap x exp(a * (theta - 0.5))
+  fine_motor:
+    family: capability
+    operator: duration_scale+repetition
+    target_tags: {verbs: [fine_motor]}
+    a: 1.0                            # fine-motor verbs: duration x exp(a * (theta - 0.5))
+    repeat_base: 0.02                 # P(repeat a fine-motor token) = base + theta * max
+    repeat_max: 0.3

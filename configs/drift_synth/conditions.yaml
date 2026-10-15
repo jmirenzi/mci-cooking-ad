@@ -1,0 +1,23 @@
+# The initial dataset conditions (spec "Conditions to generate"). Defaults apply to every
+# condition unless it overrides them. Days are 0-indexed; week 4 onset = day 28.
+defaults:
+  n_persons: 8
+  n_days: 70            # 10 weeks
+  seeds: [0, 1, 2]
+  onset_day: 28
+  duration_days: 21     # incremental ramp and gradual p(t) ramp: 3 weeks
+  period_days: 7        # recurring blocks
+  delta: 0.4            # |theta1 - theta0| on each moving knob (theta0 ~ U(0.25, 0.75))
+
+# Expanded by scripts/drift_synth/generate.py:conditions():
+#   null; mix_shift_only; <knob>_<regime> for every knob x regime below;
+#   pref_plus_capability; <knob>_sweep_<delta> for every sweep knob x delta (sudden).
+regimes: [sudden, incremental, gradual]
+knobs: [sour, calorie_conscious, mise_en_place, tidy, slow, fine_motor]
+extra:
+  "null": {regime: none, moving: {}}
+  mix_shift_only: {regime: sudden, moving: {}, mix_shift: true}
+  pref_plus_capability: {regime: sudden, moving: {sour: 0.4, slow: 0.4}}
+sweep:
+  knobs: [sour, slow]
+  deltas: [0.05, 0.1, 0.2, 0.3, 0.45]

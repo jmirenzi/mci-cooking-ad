@@ -1,0 +1,42 @@
+# The seeded generator (Stages 4-9, docs/drift_synth.md). Values marked (open) are Jack's to
+# tune after the sanity plots.
+paths:
+  recipes: configs/drift_synth/recipes.yaml
+  cc4d: dataset/captaincook4d
+  phases: configs/drift_synth/phases
+  tags: configs/drift_synth/tags.yaml
+  knobs: configs/drift_synth/knobs.yaml
+  expansions: configs/drift_synth/expansions
+  vocab: dataset/processed/epic/vocab.json
+  epic_annotations: dataset/epic_kitchens/annotations
+  durations_cache: dataset/drift_synth/durations_epic.json   # refit if absent
+  out: dataset/processed/drift_synth
+
+export:
+  tick_seconds: 0.5          # configs/epic.yaml
+  sil: [stall, idle]         # (verb, noun) for gaps
+  fps: 20                    # parse_epic.FPS_REF: the frame grid the tick vote runs on
+
+logistics_verbs: {take: take, put: put, wash: wash}
+
+durations:
+  source: epic               # cc4d_fine is not public; cc4d_step not built
+
+person:
+  repertoire: [6, 10]        # recipes per person, inclusive
+  dirichlet_alpha: 1.0       # recipe frequency weights
+  p_two_sessions: 0.3        # else one session a day
+  theta0: [0.25, 0.75]       # each knob's baseline ~ U(lo, hi)
+
+day_noise:                   # (open) logit-space sigma per knob
+  sigma: {sour: 0.3, calorie_conscious: 0.3, mise_en_place: 0.3, tidy: 0.3, slow: 0.2, fine_motor: 0.2}
+  speed_rho: 0.7             # AR(1) on log speed
+  speed_sigma: 0.08
+
+recognizer:
+  p_sub_verb: 0.03
+  p_sub_noun: 0.05
+  p_delete: 0.04
+  p_insert: 0.03
+  jitter_s: 0.3
+  min_event_s: 0.2

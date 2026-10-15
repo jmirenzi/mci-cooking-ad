@@ -159,7 +159,11 @@ the same cache entries.
 `llm/client.ChatClient` is a plain OpenAI-compatible `/chat/completions` client with rate limiting,
 a request budget and an on-disk cache.
 
-**The cache key is sha256(base_url + model + messages + temperature [+ max_tokens]).** So:
+**The cache key is sha256(base_url + model + messages + temperature [+ max_tokens]
+[+ response_format]).** The bracketed fields are keyed only when set, so the keys of everything
+collected before they existed are unchanged (`tests/test_predict.py`). `response_format` (a JSON
+schema; Ollama enforces it) is used only by the drift generator's offline stages
+([`drift_synth.md`](drift_synth.md)). So:
 
 - **a replay must use the original `--base-url`.** Breakfast's responses were collected through
   `http://localhost:11435/v1`, EPIC-Tent's through `http://localhost:11434/v1`. The same server on

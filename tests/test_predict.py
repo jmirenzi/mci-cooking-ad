@@ -242,6 +242,8 @@ def test_the_cache_key_is_unchanged_when_max_tokens_is_unset():
     assert c._cache_key(msgs) == legacy
     assert llm_client.ChatClient(dry_run=True, max_tokens=None)._cache_key(msgs) == legacy
     assert llm_client.ChatClient(dry_run=True, max_tokens=48)._cache_key(msgs) != legacy
+    assert llm_client.ChatClient(dry_run=True, response_format=None)._cache_key(msgs) == legacy
+    assert llm_client.ChatClient(dry_run=True, response_format={"type": "json_object"})._cache_key(msgs) != legacy
 
 
 def test_the_predictive_preprompt_does_not_disturb_the_frozen_verdict_ones():

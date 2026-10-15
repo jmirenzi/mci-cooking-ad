@@ -154,3 +154,66 @@ def count_linear_extensions(graph, cap=2_000_000):
 
 def _id_key(k):
     return (0, int(k)) if k.isdigit() else (1, k)
+
+
+# ---- Stage 1b: phases (LLM, cached) ------------------------------------------------------------
+
+PHASES = ("prep", "cook", "serve", "cleanup")
+
+PHASE_SYSTEM = """You label the steps of a recipe with their kitchen phase.
+prep: getting ingredients ready before heat is applied or the dish is assembled (washing, peeling,
+cutting, measuring, mixing a sauce or batter, lining or greasing a container).
+cook: applying heat or waiting on it (stove, microwave, kettle, oven, toaster, blender run).
+serve: plating, assembling on the plate, garnishing, topping, transferring to a serving dish.
+cleanup: discarding waste, cleaning tools or surfaces.
+Adding, pouring or stirring something into a pan or pot that is on the heat (or in the microwave
+container between heating steps) is cook, not prep. Prep happens before or away from the heat.
+A recipe that never heats anything (a salad, a raita) has no cook steps: mixing and adding there
+is prep, and plating, topping or garnishing is serve.
+Label each step on its own role in this recipe. Answer only with the JSON object."""
+
+
+def phase_prompt(graph):
+    par = parents(graph)
+    lines = [f"Recipe: {graph.recipe_id}", "Steps (id: description | must come after):"]
+    for k in sorted(graph.steps, key=_id_key):
+        after = ", ".join(sorted(par[k], key=_id_key)) or "-"
+        lines.append(f"{k}: {graph.steps[k].description} | {after}")
+    return "\n".join(lines)
+
+
+def phase_schema(graph):
+    ids = sorted(graph.steps, key=_id_key)
+    return {"type": "object", "additionalProperties": False, "required": ids,
+            "properties": {k: {"type": "string", "enum": list(PHASES)} for k in ids}}
+
+
+def with_phases(graph, phases):
+    missing = set(graph.steps) - set(phases)
+    bad = {k: v for k, v in phases.items() if v not in PHASES}
+    if missing or bad:
+        raise ValueError(f"{graph.recipe_id}: phases missing {sorted(missing)}, invalid {bad}")
+    steps = {k: Step(s.step_id, s.description, phases[k]) for k, s in graph.steps.items()}
+    return RecipeGraph(graph.recipe_id, steps, graph.edges)
+
+
+def assign_phase(graph, llm_cfg, cache_dir):
+    """The graph with every step's phase, from `cache_dir/<recipe>.json` if present (the committed
+    result), else from one LLM call for the whole recipe, which is then written there."""
+    path = Path(cache_dir) / f"{graph.recipe_id}.json"
+    if path.exists():
+        return with_phases(graph, json.loads(path.read_text()))
+    from cook_ad.drift_synth.llm import ask_json, client_for
+    client = client_for(llm_cfg, phase_schema(graph), "phases")
+    phases = ask_json(client, PHASE_SYSTEM, phase_prompt(graph))
+    out = with_phases(graph, phases)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(dict(sorted(phases.items(), key=lambda kv: _id_key(kv[0]))), indent=1) + "\n")
+    return out
+
+
+def load_phased(root, recipe_ids, cache_dir):
+    """Committed phases only (no LLM): the generator's entry point."""
+    graphs = load_task_graphs(root)
+    return {r: with_phases(graphs[r], json.loads((Path(cache_dir) / f"{r}.json").read_text()))
+            for r in recipe_ids}

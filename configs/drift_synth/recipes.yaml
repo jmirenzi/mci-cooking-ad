@@ -1,0 +1,21 @@
+# The approved CaptainCook4D recipes (task_graphs/<id>.json). Approved by Jack 2026-10-15 from
+# runs/drift_synth/reports/precheck.md section 6. Every knob is covered by >= 6 of them.
+recipes:
+  - scrambledeggs
+  - herbomeletwithfriedtomatoes
+  - tomatomozzarellasalad
+  - capresebruschetta
+  - cucumberraita
+  - buttercorncup
+  - sautedmushrooms
+  - broccolistirfry
+  - zoodles
+  - panfriedtofu
+  - tomatochutney
+  - microwaveeggsandwich
+  - microwavefrenchtoast
+  - breakfastburritos
+  - spicedhotchocolate
+  - cheesepimiento
+  - blenderbananapancakes
+  - coffee

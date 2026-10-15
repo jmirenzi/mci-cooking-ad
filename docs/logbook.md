@@ -5,6 +5,14 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-15 — synthetic drift data: phases, tags, seeded generator (M1 + M3)
+
+The 18 recipes were approved. gemma3 phases needed two prompt rules: adding to a hot pan is cook,
+and a recipe with no heat has no cook steps. Its tags proposal over-tags (knife and spoon as
+ingredient, whisk as heat, 34 fine-motor verbs), so it is left as proposed for review. Stages 4–10
+pass the spec's 9 tests on a toy world (`tests/test_drift_synth_generator.py`). EPIC durations
+have no long waits, so sessions will run shorter than CC4D recordings unless expansions use `wait`.
+
 ## 2026-10-15 — synthetic drift data: pre-checks
 
 Branch `synthetic-drift`. CC4D has no public fine-grained actions, so durations and exemplars come
