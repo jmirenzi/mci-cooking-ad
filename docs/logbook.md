@@ -5,6 +5,13 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-15 — synthetic drift data: pre-checks
+
+Branch `synthetic-drift`. CC4D has no public fine-grained actions, so durations and exemplars come
+from EPIC-100. All 24 task graphs validate. 18 of 24, including every stovetop dish, leave
+`mise_en_place` nothing to reorder. Proposed 18 recipes, every knob covered by ≥ 6
+(`scripts/drift_synth/precheck.py`, `docs/drift_synth.md` §5). Waiting on Jack's approval.
+
 ## 2026-10-15 — next steps written down
 
 `docs/next_steps.md` replaces `lifecycle.md`: the open-vocabulary options with their measured

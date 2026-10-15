@@ -135,7 +135,8 @@ posterior-predictive simulation) is kept as a baseline. It may have more power o
 shift (a little slower in every state). If permutation power there is within ~10–15 points, use
 permutation alone; otherwise CUSUM alarms and permutation localises.
 
-**Evaluation.** No public dataset has real long-term within-task kitchen drift. Plan: real
+**Evaluation.** The synthetic route is being built: [`drift_synth.md`](drift_synth.md).
+No public dataset has real long-term within-task kitchen drift. Plan: real
 longitudinal data if obtainable (Oatmeal107 / CHEF-VL; the CMU older-adult meal-preparation
 study), else drift injected into real trial sequences at controlled onset, rate and size (abrupt,
 gradual, incremental, recurring). Test cases: null calibration; one state's duration +20%; one

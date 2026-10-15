@@ -20,6 +20,7 @@ parameter row. Two LLM detectors are kept as baselines and scored the same way.
 | [`data.md`](data.md) | corpora, ticks, splits, canonical pools, injected errors |
 | [`eval.md`](eval.md) | metric G, metric E, operating points, the eval scripts |
 | [`next_steps.md`](next_steps.md) | planned work: open vocabulary, drift detection |
+| [`drift_synth.md`](drift_synth.md) | the synthetic drift-data generator (CaptainCook4D graphs, EPIC vocab, knobs, regimes) |
 | [`logbook.md`](logbook.md) | what was tried, the number, the verdict, newest first |
 
 ---
@@ -103,6 +104,7 @@ src/cook_ad/
 ├── llm/               textify, prompts, client (+ cache), detect, predict: LLM plumbing
 ├── data/              corpus parsers, tick expansion, splits
 ├── synthetic/         healthy sampling, the five injected error types
+├── drift_synth/       synthetic longitudinal drift data from CaptainCook4D (no model imports)
 └── xla_env.py         process-level XLA flags
 scripts/
 ├── data/              fetch, split, build_pools
@@ -255,7 +257,8 @@ scored step by step as PREGO's code does.
   embeddings, without costing detection.
 - **Drift detection** ([`next_steps.md`](next_steps.md) §2): frozen weekly references, and a
   recipe-stratified permutation test that says whether and where a person's normal behaviour has
-  changed (weekly, monthly, yearly).
+  changed (weekly, monthly, yearly). Its test data comes from the generator in
+  [`drift_synth.md`](drift_synth.md) (pre-checks done; recipe selection awaiting approval).
 - **Live narration.** `narrate` needs a Viterbi segmentation, so today only Hindsight detections
   can be narrated. A live version would phrase a question from the filter's current belief at the
   moment an alarm is raised.
