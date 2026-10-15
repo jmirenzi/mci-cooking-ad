@@ -5,6 +5,13 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-15 — next steps written down
+
+`docs/next_steps.md` replaces `lifecycle.md`: the open-vocabulary options with their measured
+costs, and the drift-detection plan (frozen references, recipe-stratified permutation G-test under
+one common model, max-T localisation). The uncommitted log-bilinear worktree was discarded; its
+results are in the 2026-09-03 entries and next_steps.md §1.
+
 ## 2026-10-15 — post-restructure cleanup
 
 Deleted 3.0 GB of untracked outputs that nothing reads (restructure goldens, outputs of deleted

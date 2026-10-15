@@ -19,7 +19,7 @@ parameter row. Two LLM detectors are kept as baselines and scored the same way.
 | [`training.md`](training.md) | the four training stages and their presets |
 | [`data.md`](data.md) | corpora, ticks, splits, canonical pools, injected errors |
 | [`eval.md`](eval.md) | metric G, metric E, operating points, the eval scripts |
-| [`lifecycle.md`](lifecycle.md) | next: drift detection |
+| [`next_steps.md`](next_steps.md) | planned work: open vocabulary, drift detection |
 | [`logbook.md`](logbook.md) | what was tried, the number, the verdict, newest first |
 
 ---
@@ -250,8 +250,12 @@ scored step by step as PREGO's code does.
 
 ## Next
 
-- **Drift detection** ([`lifecycle.md`](lifecycle.md)): a frozen and a live model, bounded
-  preference updates from answered questions, and a duration-drift report, built on `HSMM`.
+- **Open vocabulary** ([`next_steps.md`](next_steps.md) §1): grade a substitution's severity
+  ("wrong object, but nearly right") and handle nouns never seen in training, via fixed text
+  embeddings, without costing detection.
+- **Drift detection** ([`next_steps.md`](next_steps.md) §2): frozen weekly references, and a
+  recipe-stratified permutation test that says whether and where a person's normal behaviour has
+  changed (weekly, monthly, yearly).
 - **Live narration.** `narrate` needs a Viterbi segmentation, so today only Hindsight detections
   can be narrated. A live version would phrase a question from the filter's current belief at the
   moment an alarm is raised.
