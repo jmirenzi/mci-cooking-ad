@@ -261,7 +261,7 @@ def test_detect_many_end_to_end_on_sampled_trials():
         assert all(a.known_at == len(d.trace.z_star) - 1 for a in d.alarms)
 
 
-@pytest.mark.parametrize("fit", ["joint_params.npz", "joint_params_clean.npz"])
+@pytest.mark.parametrize("fit", ["joint_params_clean.npz", "joint_params_clean_prego.npz"])
 def test_the_recipe_channel_is_silent_at_one_recipe(fit):
     """At k_recipe = 1 the recipe excess is undefined: the statistic must be exactly zero AND
     its thresholds +inf (marginal_log_trans floors rare transitions, so thresholds built from

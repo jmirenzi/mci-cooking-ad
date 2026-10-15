@@ -132,7 +132,7 @@ def test_objective_approximately_non_decreasing():
 def test_recipe_recovery_from_well_separated_dynamics():
     """Two recipes sharing emissions but with near-deterministic, opposite-direction subtask
     cycles should be recovered by joint EM (started from the true generative params, a
-    warm-ish start standing in for the cascade warm start) with high recipe ARI."""
+    warm-ish start standing in for the lexical warm start) with high recipe ARI."""
     k = 4
     key = jax.random.PRNGKey(5)
     shared = weak_limit_params(key, k, V, N, D_MAX, alpha_emit_v=float(V), alpha_emit_n=float(N))

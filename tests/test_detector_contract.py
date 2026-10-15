@@ -223,25 +223,20 @@ def test_llm_prompt_bytes_are_prompts_build_variant():
 
 
 BREAKFAST = "dataset/processed/breakfast"
-GOLDEN_VERDICT = "runs/golden/streams_verdict.pkl"
+TEST_POOL = f"{BREAKFAST}/pools/test.pkl"
 
 
-@pytest.mark.skipif(not (os.path.exists(GOLDEN_VERDICT) and os.path.exists(f"{BREAKFAST}/llm_cache")),
-                    reason="golden verdict streams or the Breakfast LLM cache not present")
+@pytest.mark.skipif(not (os.path.exists(TEST_POOL) and os.path.exists(f"{BREAKFAST}/llm_cache")),
+                    reason="the Breakfast test pool or LLM cache is not present")
 def test_llm_verdict_step_loop_replays_from_cache():
-    """The causal path, on real cached responses: zero uncached requests, golden alarms."""
-    import pickle
-
+    """The causal path, on real cached responses: zero uncached requests, and the same alarms as
+    the fast path. The test pool is the pool the cache was filled on (docs/data.md §5)."""
     from cook_ad.detectors.narrate import Lexicon
+    from cook_ad.eval import pools
     from cook_ad.hsmm import params as hparams
     from cook_ad.llm import client as llm_client
 
-    class _Unpickler(pickle.Unpickler):   # the golden pickles name the pre-restructure Flag class
-        def find_class(self, module, name):
-            return super().find_class("cook_ad.eval.metric_g" if module.endswith("span_metrics")
-                                      else module, name)
-
-    golden = _Unpickler(open(GOLDEN_VERDICT, "rb")).load()
+    entries, _ = pools.load_pool(TEST_POOL)
     vocab = json.load(open(f"{BREAKFAST}/vocab.json"))
     labels = json.load(open(f"{BREAKFAST}/labels.json"))
     lexicon = Lexicon(vocab, hparams.load(f"{BREAKFAST}/joint_params.npz"))
@@ -251,9 +246,11 @@ def test_llm_verdict_step_loop_replays_from_cache():
     det = LLMVerdictDetector(client, vocab, lexicon, protocol="incremental", unit="tick",
                              variant="no-recipes", labels=labels)
     det.fit([])
-    for i in range(2):
-        traj = golden["pools"]["real"][i][0]
-        d = AnomalyDetector.detect_trial(det, Trial("t", traj["verb_ids"], traj["noun_ids"]))
-        expected = golden["streams"]["real/llm-no-recipes"]["healthy"][i]
-        assert sorted((a.tick, a.channel) for a in d.alarms) == [(f.tick, f.channel) for f in expected]
+    for e in entries[:2]:
+        traj = e["healthy"]
+        trial = Trial(e["trial_id"], np.asarray(traj["verb_ids"]), np.asarray(traj["noun_ids"]))
+        loop = AnomalyDetector.detect_trial(det, trial)
+        fast = det.detect_trial(trial)
+        key = lambda d: sorted((a.tick, a.channel, a.known_at) for a in d.alarms)  # noqa: E731
+        assert key(loop) == key(fast)
     assert client.n_would_request == 0

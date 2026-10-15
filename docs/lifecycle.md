@@ -1,7 +1,7 @@
 # Next: drift detection
 
 **Not implemented.** This doc says what the lifecycle layer will do. The previous implementation
-(`lifecycle/`, built on the deleted cascade model) is recoverable at the git tag
+(`lifecycle/`, deleted in the restructure) is recoverable at the git tag
 `pre-restructure`. The new one will be built on `class HSMM` ([`model.md`](model.md)).
 
 **The problem.** A detector that adapts to everything it sees stops detecting: if the user swaps

@@ -163,8 +163,7 @@ censored mass against the wrong (ρ, p).
 ## 6. Selecting a model
 
 **Not by likelihood.** On Breakfast the training objective disagrees with detection every time it
-was checked: the lexical warm start begins above where a cascade-started EM converges; soft EM
-lowers subtask ARI from 0.999 to 0.94; the highest-likelihood fit available was beaten on
+was checked: soft EM from the lexical warm start lowers subtask ARI from 0.999 to 0.94; the highest-likelihood fit available was beaten on
 detection by fits a thousand nats below it; and a random recipe partition beats the true one by
 175 nats (~65k per-recipe transition parameters against ~10⁴ observed segment transitions).
 

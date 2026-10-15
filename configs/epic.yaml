@@ -28,22 +28,14 @@ duration:
   shrinkage_kappa: 5.0
 
 em:
-  restarts: 10
-  annealing: false
   chunk_size: 2
 
 joint_em:
-  warm_start: false       # no cascade artifacts exist for EPIC; use run_joint_lexical.py
-  chunk_size: 2           # set explicitly: run_joint_lexical otherwise derives
-                          # max(1, em.chunk_size // k_recipe) = 1, and compile cost at these
-                          # shapes is not monotone in chunk size, so it has to be measured.
+  chunk_size: 2           # set explicitly: compile cost at these shapes is not monotone in
+                          # chunk size, so it was measured rather than derived.
   recipe_features: nouns  # not the default (v,n)-pair histogram, which is far too sparse here.
   idf_recipes: true       # equipment nouns dominate and barely vary with the dish.
-                          # Both must move together -- see recipe/lexical_init.cluster_recipes.
-  n_restarts: 1
-  max_iters: 100
-  tol: 1.0e-4
-  checkpoint_every: 5
+                          # Both must move together -- see hsmm/train/lexical_init.cluster_recipes.
   global_damping: 0.7
 
 ambient_gaps:

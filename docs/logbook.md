@@ -5,6 +5,13 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-15 — post-restructure cleanup
+
+Deleted 3.0 GB of untracked outputs that nothing reads (restructure goldens, outputs of deleted
+scripts, cascade and superseded checkpoints, old figures and reports) and two stale worktrees. The
+config keys left over from the cascade warm start (`warm_start`, `cascade_*`, `restarts`, ...) are
+gone; `configs/*.yaml` now hold only keys the code reads.
+
 ## 2026-10-15 — the restructure (branch `restructure`, Phases A–G)
 
 The repo was rebuilt around one `AnomalyDetector` contract under one rule: behaviour does not

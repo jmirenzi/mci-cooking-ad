@@ -21,7 +21,6 @@ parameter row. Two LLM detectors are kept as baselines and scored the same way.
 | [`eval.md`](eval.md) | metric G, metric E, operating points, the eval scripts |
 | [`lifecycle.md`](lifecycle.md) | next: drift detection |
 | [`logbook.md`](logbook.md) | what was tried, the number, the verdict, newest first |
-| [`cleanup_candidates.md`](cleanup_candidates.md) | untracked files proposed for deletion, awaiting approval |
 
 ---
 
