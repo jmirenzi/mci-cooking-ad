@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from cook_ad.hsmm import durations
+from cook_ad.hsmm.train import durations_fit
 
 jax.config.update("jax_enable_x64", True)
 
@@ -75,10 +76,10 @@ def test_newton_recovers_known_r_p_from_bad_start(r_true, p_true, bad_start):
     d = jnp.arange(1, D_MAX + 1, dtype=jnp.float64)
     pmf = jnp.exp(durations.nb_log_pmf(d, r_true, p_true))
     n_hat = (pmf * 1000.0)[None, :]
-    n_hat_total, s_hat = durations.duration_stats_from_histogram(n_hat, D_MAX)
+    n_hat_total, s_hat = durations_fit.duration_stats_from_histogram(n_hat, D_MAX)
 
-    r_fit = durations.newton_update_r(n_hat, n_hat_total, s_hat, jnp.array([bad_start]), n_iters=5)
-    p_fit = durations.update_p_given_r(n_hat_total, s_hat, r_fit)
+    r_fit = durations_fit.newton_update_r(n_hat, n_hat_total, s_hat, jnp.array([bad_start]), n_iters=5)
+    p_fit = durations_fit.update_p_given_r(n_hat_total, s_hat, r_fit)
 
     assert jnp.isclose(r_fit[0], r_true, rtol=1e-3)
     assert jnp.isclose(p_fit[0], p_true, rtol=1e-3)
@@ -86,9 +87,9 @@ def test_newton_recovers_known_r_p_from_bad_start(r_true, p_true, bad_start):
 
 def test_starved_state_duration_unmoved():
     n_hat = jnp.zeros((1, D_MAX))
-    n_hat_total, s_hat = durations.duration_stats_from_histogram(n_hat, D_MAX)
+    n_hat_total, s_hat = durations_fit.duration_stats_from_histogram(n_hat, D_MAX)
     r_old = jnp.array([7.0])
-    r_new = durations.newton_update_r(n_hat, n_hat_total, s_hat, r_old, n_iters=5)
+    r_new = durations_fit.newton_update_r(n_hat, n_hat_total, s_hat, r_old, n_iters=5)
     assert jnp.array_equal(r_new, r_old)
 
 
@@ -98,7 +99,7 @@ def test_impute_censored_histogram_conserves_mass():
     xi_dur = jnp.zeros((2, D_MAX))
     cens = jnp.zeros((2, D_MAX)).at[:, 10].set(5.0).at[:, 30].set(3.0)
 
-    n_hat = durations.impute_censored_histogram(xi_dur, cens, r, p, D_MAX)
+    n_hat = durations_fit.impute_censored_histogram(xi_dur, cens, r, p, D_MAX)
     assert jnp.allclose(n_hat.sum(axis=-1), cens.sum(axis=-1), atol=1e-6)
 
 

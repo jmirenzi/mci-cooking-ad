@@ -3,8 +3,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from cook_ad.anomaly import narrate
-from cook_ad.hsmm import params
+from _fixtures import weak_limit_params
+from cook_ad.detectors import narrate
 from cook_ad.llm import textify
 from cook_ad.synthetic import error_injection, generate
 
@@ -22,7 +22,7 @@ VOCAB = {
 def _peaked_params():
     """Same construction as tests/test_evaluation.py: sharp emissions and moderate durations, so
     sampled trajectories are well-structured and injections are genuinely anomalous."""
-    p = params.init_weak_limit_params(jax.random.PRNGKey(0), K, V, N, D_MAX)
+    p = weak_limit_params(jax.random.PRNGKey(0), K, V, N, D_MAX)
     verb = jnp.full((K, V), 0.2).at[jnp.arange(K), jnp.arange(K) % V].set(200.0)
     noun = jnp.full((K, N), 0.2).at[jnp.arange(K), jnp.arange(K) % N].set(200.0)
     return p._replace(verb_counts=verb, noun_counts=noun,

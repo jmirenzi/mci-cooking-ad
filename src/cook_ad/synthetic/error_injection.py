@@ -68,7 +68,7 @@ def _result(verb_ids, noun_ids, t0, t1, error_type, tick_map, edited_ticks=(), p
     substitution.
 
     `spans` -- closed, inclusive (t0, t1) tick intervals in DEGRADED tick space, one per segment
-    the injection moved or altered. A THIRD shape of ground truth, for eval/span_metrics.py, which
+    the injection moved or altered. A THIRD shape of ground truth, for eval/metric_g.py, which
     matches by existence rather than by tick: there, a 12-tick substitution flagged once at onset
     and one flagged on all 12 ticks are the same detection, so the unit a detector emits never
     enters the recall denominator. Points and window are untouched by this and the two older

@@ -1,423 +1,281 @@
-# `cook_ad` — repo layout and system overview
+# `cook_ad`: anomaly detection while cooking, for a user with MCI
 
-Anomaly detection during cooking for a user with MCI (mild cognitive impairment). The system
-watches a stream of coarse `(verb, noun)` action labels, maintains a probabilistic belief about
-*which subtask the user is in* and *which recipe they are making*, and raises a small number of
-**auditable, templated confirmation questions** when the observed behaviour departs from what the
-model expects.
+The system watches a stream of coarse (verb, noun) action labels, one per tick, keeps a belief
+about which **subtask** the person is in, how long they have been in it, and which **recipe** they
+are making, and raises a few auditable alarms when what it sees departs from what the model
+expects. After the session it can turn the alarms into templated questions ("did you skip take
+bowl?").
 
-The whole thing is a classical latent-variable pipeline — an explicit-duration HSMM fit with
-EM — deliberately *not* a neural model. Every question the system asks ("did you skip
-toasting?") traces back to a single argmax over a fitted parameter row. That auditability is
-the design constraint the rest of the architecture serves.
+The model is an explicit-duration hidden semi-Markov model with a recipe layer, fitted by EM. It
+is deliberately not a neural model: every question traces back to an argmax over a fitted
+parameter row. Two LLM detectors are kept as baselines and scored the same way.
+
+| Doc | Covers |
+|---|---|
+| this file | the system, the classes, the repo map, how to run it, current results, next steps |
+| [`model.md`](model.md) | the HSMM: generative story, belief table b_t(r, i, j), filter, smoother, r̂, Viterbi |
+| [`detectors.md`](detectors.md) | the detector contract, bad sets, Live / Lag / Hindsight channels, narration |
+| [`llm.md`](llm.md) | the two LLM detectors, prompts, the response cache, serving locally |
+| [`training.md`](training.md) | the four training stages and their presets |
+| [`data.md`](data.md) | corpora, ticks, splits, canonical pools, injected errors |
+| [`eval.md`](eval.md) | metric G, metric E, operating points, the eval scripts |
+| [`next_steps.md`](next_steps.md) | planned work: open vocabulary, drift detection |
+| [`logbook.md`](logbook.md) | what was tried, the number, the verdict, newest first |
 
 ---
 
-## Reading order
+## The classes
 
-| Doc | Covers | Read it when you want to know… |
+```mermaid
+classDiagram
+    class HSMM {
+        params: JointHSMMParams
+        tables: LogTables
+        reset(recipe)
+        predict() Forecast
+        update(verb, noun) float
+        filter(verbs, nouns, recipe) FilterResult
+        smooth(fr, L)
+        infer_recipe(verbs, nouns)
+        viterbi(verbs, nouns, recipe)
+    }
+    class BadSets {
+        alphas
+        stall_bin, early_bin, trans_bin, recipe_bin
+        hindsight(r_hat, alpha) HindsightThresholds
+    }
+    class AnomalyDetector {
+        <<abstract>>
+        fit(train)
+        reset(recipe)
+        step(verb, noun) list~Alarm~
+        finish() list~Alarm~
+        detect_trial(trial) Detection
+        detect_many(trials)
+    }
+    AnomalyDetector <|-- LiveHSMMDetector
+    LiveHSMMDetector <|-- LagHSMMDetector
+    AnomalyDetector <|-- HindsightHSMMDetector
+    AnomalyDetector <|-- LLMDetector
+    LLMDetector <|-- LLMVerdictDetector
+    LLMDetector <|-- LLMPredictiveDetector
+    LiveHSMMDetector o-- HSMM
+    LiveHSMMDetector o-- BadSets
+    HindsightHSMMDetector o-- HSMM
+    HindsightHSMMDetector o-- BadSets
+    LLMDetector o-- ChatClient
+```
+
+A `Trial` goes in, a `Detection(alarms, trace)` comes out; each `Alarm(tick, channel, score,
+known_at)` says which tick it is about and when the detector could have raised it. An
+`OperatingPoint(alpha, kappa)` sets a detector's sensitivity. `narrate(detection, detector,
+vocab)` turns a Hindsight detection into questions. `HSMM` is the only stateful model object; the
+detectors hold it, and `BadSets` holds the α-tail sets of one model.
+
+| Detector | Causal | Reads |
 |---|---|---|
-| this file | repo layout, end-to-end pipeline, notation | where anything lives, what runs in what order |
-| [`data.md`](data.md) | `src/cook_ad/data/` | how raw Breakfast **and EPIC** annotations become integer tick sequences; train/test splits |
-| [`hsmm.md`](hsmm.md) | `src/cook_ad/hsmm/` | the core model: durations, message passing, EM, the joint recipe mixture, the similarity kernel |
-| [`recipe.md`](recipe.md) | `src/cook_ad/recipe/` | Viterbi segmentation, the cascade's stage-2 recipe HMM, the joint warm start |
-| [`anomaly.md`](anomaly.md) | `src/cook_ad/anomaly/` | the eight surprise channels, quantile calibration, narration |
-| [`live.md`](live.md) | design only, not implemented | what each surprise channel reads from the future today, and a causal (live) version of each |
-| [`lifecycle.md`](lifecycle.md) | `src/cook_ad/lifecycle/` | frozen/live dual model, bounded preference updates, drift reports |
-| [`eval.md`](eval.md) | `src/cook_ad/eval/` | batched trace computation, precision/recall/latency metrics, span-existence scoring, figures |
-| [`synthetic.md`](synthetic.md) | `src/cook_ad/synthetic/` | ancestral sampling and the five canonical injected errors |
-| [`llm.md`](llm.md) | `src/cook_ad/llm/`, `eval/element_metrics.py` | the LLM comparison baseline and the step-level metrics that make it comparable |
+| `LiveHSMMDetector` | yes | the filter belief b_t; emission p-values and event posteriors at t |
+| `LagHSMMDetector(L)` | yes (finite L) | the same, event channels conditioned on L more ticks |
+| `HindsightHSMMDetector` | no | r̂ and the Viterbi path of the whole trial |
+| `LLMVerdictDetector` | yes (not `batch`) | an LLM's per-run or per-tick verdict |
+| `LLMPredictiveDetector` | yes | an LLM's predicted duration and next run, compared by code |
 
 ---
 
-## The problem, stated as math
+## Repository map
 
-An observation stream for one trial is
-$$
-o_{0:T-1}, \qquad o_t = (v_t, n_t) \in \{1..V\}\times\{1..N\},
-$$
-one observation per **tick**. The tick length and vocabulary are corpus-specific — 1 s with
-$V = 15$, $N = 36$ on full Breakfast; 0.5 s with $V = 98$, $N = 306$ on EPIC-KITCHENS-100 — each
-vocabulary including a `SIL` "nothing happening" token ([`data.md`](data.md)). Unqualified numbers
-in these docs are Breakfast.
+```
+src/cook_ad/
+├── core.py            Trial, Span, Alarm, Detection, OperatingPoint, AnomalyDetector
+├── hsmm/
+│   ├── params.py      JointHSMMParams, LogTables, load/save, select_recipe
+│   ├── durations.py   negative-binomial pmf / survival / cdf tables
+│   ├── kernels.py     pure-JAX predict, update, filter, backward, forward pass, Viterbi
+│   ├── model.py       class HSMM
+│   ├── batch.py       r̂, occupancy and Viterbi over many trials at once
+│   └── train/         lexical init, joint EM, hard EM, smoothing, duration refit, metrics
+├── detectors/
+│   ├── thresholds.py  class BadSets
+│   ├── hsmm_live.py   hsmm_lag.py   hsmm_hindsight.py
+│   ├── narrate.py     templated questions from a Hindsight detection
+│   └── llm_base.py    llm_verdict.py   llm_predictive.py
+├── eval/              metric_g.py, metric_e.py, pools.py, harness.py
+├── llm/               textify, prompts, client (+ cache), detect, predict: LLM plumbing
+├── data/              corpus parsers, tick expansion, splits
+├── synthetic/         healthy sampling, the five injected error types
+└── xla_env.py         process-level XLA flags
+scripts/
+├── data/              fetch, split, build_pools
+├── train/             fit_lexical, fit_hard_em, smooth_params, refit_durations, train_hsmm.sh
+├── eval/              eval_breakfast.py, eval_epic_tent.py, llm_breakfast.sh, llm_epic_tent.sh
+├── figures/           trial_figure.py
+├── analysis/          participant_variability.py
+└── demo_trial.py      one trial through every HSMM detector, tick by tick
+configs/               corpus configs; operating_points.yaml (train-picked α, κ)
+dataset/processed/     sequences, labels, vocab, splits, pools, fitted .npz, llm_cache/
+tests/                 pytest
+```
 
-Behind that stream sit two latent variables:
-
-- a **subtask** $Z \in \{1,\dots,K\}$ that persists for a *segment* of ticks
-  ($K = 64$ nominal on full Breakfast — a *weak-limit* over-parameterisation, not a claim that
-  there are 64 subtasks),
-- a **recipe** $R \in \{1,\dots,K_R\}$ ($K_R = 16$ nominal, covering 10 real recipes plus
-  headroom).
-
-The generative story is an **explicit-duration HSMM** (a.k.a. hidden semi-Markov model /
-segment model). Segments $j = 1,2,\dots$ carry a state $z_j$ and a duration $d_j$:
-
-$$
-\begin{aligned}
-R &\sim \operatorname{Cat}(\boldsymbol\pi) \\
-z_1 &\sim \operatorname{Cat}(\boldsymbol\pi^{\text{init}, R}) \\
-d_j \mid z_j &\sim \operatorname{NB}_{\ge 1}\!\left(r^{R}_{z_j},\, p^{R}_{z_j}\right) \\
-v_t \mid z_j &\sim \operatorname{Cat}(B^v_{z_j,\cdot}), \quad
-n_t \mid z_j \sim \operatorname{Cat}(B^n_{z_j,\cdot}) \quad \text{i.i.d. for all } t \text{ in segment } j \\
-z_{j+1} \mid z_j &\sim \operatorname{Cat}(A^{R}_{z_j,\cdot}), \qquad A^{R}_{kk} = 0 .
-\end{aligned}
-$$
-
-Three modelling commitments are load-bearing everywhere downstream:
-
-1. **Explicit durations.** A plain HMM forces $D \sim \text{Geometric}$, whose mode is always
-   $d = 1$ — useless for "you've been stirring for 90 seconds, are you stuck?". The negative
-   binomial gives a two-parameter, over-dispersible duration with a usable *hazard*.
-2. **Banned self-transitions**, $A_{kk} = 0$. This makes the segmentation identifiable: a run of
-   constant $z$ is *exactly one* segment, never an ambiguous concatenation. Run-length encoding a
-   Viterbi path is therefore lossless (`anomaly/narrate.py:segments_from_z`).
-3. **Product emissions**, $P(v,n \mid Z) = P(v\mid Z)\,P(n \mid Z)$. This is what lets the
-   detector *attribute* an anomaly to the object ("you grabbed mustard") versus the action
-   ("you're pouring, not spreading") — see [`anomaly.md`](anomaly.md).
-
-### Two models, not one
-
-The repo contains **two** fits of the above, and most modules have a plain and a `_joint`
-variant:
-
-| | **Cascade** (2-stage) | **Joint** (mixture) |
-|---|---|---|
-| Fit by | `hsmm/em.py` then `recipe/recipe_hmm.py` | `hsmm/joint_em.py` |
-| Subtask dynamics | one shared $A, \pi^{\text{init}}, (r,p)$ | per-recipe $A^{(r)}, \pi^{\text{init},(r)}, (r,p)^{(r)}$ |
-| Emissions | $B^v, B^n$ | $B^v, B^n$ — **shared across recipes** |
-| Recipe inferred by | a second, flat HMM over *segment symbols* | $\hat r_i = \arg\max_r \log\pi_r + \log Z_{ir}$ |
-| Artifact | `hsmm_params.npz` + `recipe_params.npz` | `joint_params.npz` |
-
-The cascade is fit first and then used as the **warm start** for the joint model
-(`recipe/warm_start.py`), because a symmetric random init plus a symmetric likelihood can never
-break the recipe-permutation symmetry on its own.
+Dependencies point one way: `hsmm` depends on nothing else in `cook_ad`; `detectors` on `hsmm` and
+`core`; `eval` on everything; nothing on `eval`.
 
 ---
 
-## Repository layout
+## Running it
 
-```
-mci-cooking-ad/
-├── configs/
-│   ├── breakfast.yaml          full corpus: 503 trials, K=64, K_R=16, D_max=200
-│   ├── breakfast_mini.yaml     cereals+coffee+tea: 152 trials, K=20, K_R=6, D_max=50
-│   └── epic.yaml               EPIC-KITCHENS-100: 357 sessions, 0.5s ticks, K=64, K_R=16
-├── dataset/
-│   ├── breakfast_actions/      raw Breakfast `segmentation_coarse` .txt annotations
-│   ├── epic_kitchens/          EPIC-100 annotation CSVs (cloned; no video)
-│   └── processed/{breakfast{,_mini},epic}/
-│       ├── sequences.json      per-trial verb_ids / noun_ids  (TRAINING input)
-│       ├── labels.json         per-tick ground-truth action labels (VALIDATION ONLY)
-│       ├── vocab.json          verb/noun/recipe → id maps
-│       ├── split.json          train/test trial ids (split_dataset.py)
-│       ├── embeddings.npz      one vector per vocab token (tools_embed_vocab.py, optional)
-│       ├── hsmm_params.npz     cascade stage 1
-│       ├── recipe_params.npz   cascade stage 2
-│       ├── joint_params.npz    joint model (+ .meta.json checkpoint sidecar)
-│       ├── flow/               exported JSON for rendering
-│       └── figures/            rendered PNGs
-├── runs/           checkpoints + logs from the lexical→hard-EM route (gitignored)
-├── src/cook_ad/
-│   ├── data/       parsing (2 corpora), tick binning, label extraction, splits
-│   ├── hsmm/       the model: durations, emissions, messages, EM, joint EM, kernel
-│   ├── recipe/     Viterbi segmentation, recipe HMM, cascade→joint warm start
-│   ├── anomaly/    surprise channels, quantile thresholds, narration, sequence detector
-│   ├── lifecycle/  frozen/live dual model, online updates, drift detection
-│   ├── eval/       batched traces, tick/step/counterfactual metrics, plots
-│   ├── synthetic/  ancestral sampling + the five injected error types
-│   ├── llm/        trial-as-text rendering + the LLM comparison baseline
-│   └── xla_env.py  process-level XLA flags, applied before the backend comes up
-├── tests/          one pytest module per src module of substance
-└── *.py            top-level runner / export / render scripts (see below)
+Python always goes through `./py` (it pins `PYTHONPATH` to this checkout and stops JAX taking the
+whole GPU). Install with the extras, or JAX silently falls back to CPU:
+
+```bash
+uv sync --extra dev --extra gpu
 ```
 
-### `src/` at a glance
+**The demo.** One test trial through Live and Lag(5) tick by tick, then Hindsight and narration:
 
-```
-                     data/  ──── sequences.json ─────┐
-                                                      │
-                                                      ▼
-    hsmm/  ── em.run_em ──────────────────► hsmm_params.npz ──┐
-      │                                            │           │
-      │                          recipe/segmentize │           │
-      │                                            ▼           │
-      │        recipe/  ── recipe_hmm.run_em ─► recipe_params.npz
-      │                                            │           │
-      │        recipe/warm_start.cascade_to_joint ◄┴───────────┘
-      │                     │
-      └── joint_em.run_joint_em ──────────► joint_params.npz
-                                 │
-                                 ▼
-        anomaly/  ── compute_trace → flag → narrate ──► Query cards
-             ▲                │
-             │                ▼
-        lifecycle/       eval/  ── metrics on synthetic/ injected errors
-                              ▲
-                         synthetic/
+```bash
+./py scripts/demo_trial.py --trial 3 --inject omission
 ```
 
-Dependency direction is strictly downward: `hsmm` depends on nothing else in `cook_ad`;
-`recipe`, `anomaly`, `synthetic`, `lifecycle`, `eval` all depend on `hsmm`; `eval` and `anomaly`
-depend on `recipe`; nothing depends on `eval`.
+**Train** ([`training.md`](training.md)):
+
+```bash
+PRESET=lexhard scripts/train/train_hsmm.sh
+```
+
+**Build the pools once, then evaluate** ([`data.md`](data.md) §5, [`eval.md`](eval.md) §5):
+
+```bash
+./py scripts/data/build_pools.py
+```
+
+```bash
+./py scripts/eval/eval_breakfast.py --max-requests 0 --out runs/eval_breakfast.json --operating-points configs/operating_points.yaml
+```
+
+LLM arms replay from `dataset/processed/<corpus>/llm_cache/`. A replay needs the original
+`--base-url` (Breakfast `http://localhost:11435/v1`, EPIC-Tent `http://localhost:11434/v1`) and
+`--max-requests 0`.
+
+**Tests:**
+
+```bash
+./py -m pytest -q
+```
 
 ---
 
-## End-to-end pipeline
+## Results
 
-Each step writes an artifact the next step reads, so you can stop and restart anywhere.
+### Breakfast, injected errors — metric G
 
-**1 — Build the dataset** (`data/parse_breakfast.py`, run as a module main)
+Test pool: 97 trials per group (healthy + one copy per error type), the same trials for every row.
+HSMM operating points picked on the train pool (378 trials per group) by best F1
+(`configs/operating_points.yaml`). Produced by `scripts/eval/eval_breakfast.py`.
 
-```bash
-python -m cook_ad.data.parse_breakfast --config configs/breakfast.yaml --out-dir dataset/processed/breakfast
-```
+| arm | precision | recall | F1 | alarms / 10 min | run FPR | healthy-trial FPR |
+|---|---|---|---|---|---|---|
+| null: flag every run (= flag every tick) | 0.211 | 0.997 | 0.348 | 32.17 | 1.000 | 1.000 |
+| LLM predictive, no recipes | 0.235 | 0.928 | 0.375 | 25.73 | 0.800 | 1.000 |
+| LLM predictive, + recipes | 0.267 | 0.885 | 0.410 | 20.13 | 0.639 | 1.000 |
+| LLM predictive, no recipes, Auto-CoT | 0.231 | 0.928 | 0.370 | 26.12 | 0.818 | 1.000 |
+| LLM predictive, + recipes, Auto-CoT | 0.276 | 0.893 | 0.422 | 19.63 | 0.618 | 1.000 |
+| LLM verdict, no recipes (tick) | 0.300 | 0.754 | 0.429 | 15.57 | 0.485 | 0.918 |
+| LLM verdict, + recipes (tick) | 0.282 | 0.816 | 0.420 | 17.30 | 0.567 | 0.918 |
+| HSMM dish model, dish given: hindsight (α 0.07) | 0.638 | 0.682 | 0.659 | 3.27 | 0.109 | 0.474 |
+| HSMM dish model, dish given: live L=0 (α 0.035, κ 0.7) | 0.711 | 0.620 | **0.662** | 2.13 | 0.097 | 0.320 |
+| HSMM dish model, dish inferred: hindsight (α 0.035) | 0.709 | 0.607 | 0.654 | 2.03 | **0.075** | 0.309 |
+| HSMM dish model, dish inferred: live L=0 (α 0.02, κ 0.7) | 0.725 | 0.601 | 0.657 | **1.93** | 0.087 | **0.278** |
+| HSMM 16-cluster model: hindsight (α 0.05) | 0.676 | 0.639 | 0.657 | 2.43 | 0.092 | 0.361 |
+| HSMM 16-cluster model: live L=0 (α 0.015, κ 0.05) | 0.697 | 0.620 | 0.656 | 2.23 | 0.107 | 0.330 |
+| HSMM `joint_params.npz` at α 0.005 (the older arm) | **0.804** | 0.393 | 0.528 | 0.50 | 0.022 | 0.103 |
 
-Deduplicates camera views → one sequence per `(participant, recipe)` trial, bins 15 fps frames
-into 1 s ticks by majority vote, writes `sequences.json` / `labels.json` / `vocab.json`. Optionally
-carve a 3-recipe subset:
+Recall per type, metric G:
 
-```bash
-python build_mini_dataset.py --recipes cereals coffee tea
-```
+| arm | substitution | abandonment | omission | transposition | repetition |
+|---|---|---|---|---|---|
+| LLM verdict, + recipes (tick) | 0.98 | 0.75 | 0.68 | 0.88 | 0.72 |
+| HSMM dish model, dish given: hindsight | 0.99 | 0.84 | 0.44 | 0.71 | 0.41 |
+| HSMM dish model, dish given: live L=0 | 0.99 | 0.70 | 0.34 | 0.64 | 0.40 |
+| HSMM 16-cluster model: live L=0 | 0.98 | 0.66 | 0.37 | 0.67 | 0.37 |
 
-**1b — Or build the EPIC dataset instead** (`data/parse_epic.py`)
+### EPIC-Tent, annotated errors — metric G
 
-The same three files, in the same shapes, from EPIC-KITCHENS-100 annotations (no video). Clone
-[the annotations repo](https://github.com/epic-kitchens/epic-kitchens-100-annotations) first.
+`procedural` group (order, omit, correction, repeat; other types relabelled normal). HSMM fitted on
+error-excised train fragments, fixed operating point α 0.005, `s_temporal` 1e-5, κ 0.5 (not picked).
+Produced by `scripts/eval/eval_epic_tent.py`. Flag-every-tick has the same precision, recall and
+F1 as flag-every-run.
 
-```bash
-./py -m cook_ad.data.parse_epic --root dataset/epic_kitchens/annotations \
-    --config configs/epic.yaml --out-dir dataset/processed/epic
-```
+| arm | split | precision | recall | F1 | alarms / 10 min | run FPR |
+|---|---|---|---|---|---|---|
+| null: flag every run | default (9 test sessions) | 0.097 | 0.941 | 0.175 | 44.4 | 1.000 |
+| LLM predictive, no recipes | default | 0.104 | 0.922 | 0.187 | 40.1 | 0.899 |
+| LLM predictive, + instruction order | default | 0.104 | 0.922 | 0.186 | 40.6 | 0.905 |
+| HSMM hindsight | default | 0.419 | 0.353 | 0.383 | 2.81 | 0.062 |
+| HSMM live L=0 | default | 0.450 | 0.353 | **0.396** | **2.63** | **0.058** |
+| null: flag every run | PREGO (15 test sessions) | 0.117 | 0.981 | 0.209 | 46.2 | 1.000 |
+| HSMM hindsight | PREGO | 0.448 | 0.364 | 0.402 | 3.06 | 0.065 |
+| HSMM live L=0 (= L=5 = L=∞) | PREGO | 0.513 | 0.364 | **0.426** | **2.54** | **0.056** |
 
-Because the output contract is identical, every step below works on either corpus by pointing
-`--config` / `--sequences` / `--vocab` at the other one. What differs — 0.5 s ticks, a 98 × 306
-vocabulary, no recipe annotation, and the two changes that make an EPIC-scale fit finish at all —
-is in [`data.md`](data.md) §7.
+`procedural+temporal` (adds search and slow) tells the same story: on PREGO's split, hindsight F1
+0.426, live 0.429, null 0.269.
 
-**1b′ — Or build the EPIC-Tent dataset** (`data/parse_epic_tent.py`)
+### EPIC-Tent under PREGO's protocol — metric E
 
-The same three files plus three more only this corpus can supply: `anomalies.json` (real,
-observer-annotated errors) and `sequences_clean.json` / `labels_clean.json` (the same sessions with
-those errors excised, for the contamination ablation). Annotations only, ~16 MB — the 166 GB video
-release is not needed.
+PREGO's split, each session cut at its first procedural mistake, one positive per session (15),
+scored step by step as PREGO's code does.
 
-```bash
-./py tools_fetch_epic_tent.py --out dataset/epic_tent --uncertainty
-./py -m cook_ad.data.parse_epic_tent --config configs/epic_tent.yaml
-./py tools_epic_tent_split.py          # split_prego.json + split_clean.json
-```
+| arm | tp | fp | precision | recall | F1 | correct steps flagged |
+|---|---|---|---|---|---|---|
+| null: flag every step (on PREGO's own `gt`) | 15 | 153 | 0.089 | 1.000 | 0.164 | 100% |
+| null: flag every step (our sequences) | 15 | 124 | 0.108 | 1.000 | 0.195 | 100% |
+| PREGO + Llama 2 (published) | | | 0.107 | 0.867 | 0.191 | ~71% |
+| LLM predictive, no recipes | 15 | 118 | 0.113 | 1.000 | 0.203 | 95% |
+| HSMM hindsight | 3 | 10 | **0.231** | 0.200 | **0.214** | **8%** |
+| HSMM live L=0 | 2 | 12 | 0.143 | 0.133 | 0.138 | 10% |
 
-One task, 29 sessions, 12 action classes that factor injectively into `(verb, noun)`, and every
-session contains real errors. What that changes — `k_recipe: 1`, a subtask ARI of 1.000, joint EM
-that actually converges, a degenerate `s_recipe_transition` channel that needed fixing, and why the
-healthy population is error-free *fragments* rather than trials — is in [`data.md`](data.md) §7b.
-Scoring against those annotations is step 5b below.
+### What the tables say
 
-**1c — Split it**
-
-```bash
-python split_dataset.py --sequences dataset/processed/breakfast/sequences.json \
-    --labels dataset/processed/breakfast/labels.json \
-    --out dataset/processed/breakfast/split.json --test-frac 0.2 --seed 0
-```
-
-Every runner below takes `--split-file` / `--split-part`. The split is over trial ids, not grouped
-by participant — see [`data.md`](data.md) §9 for what that does and does not measure.
-
-**2 — Fit the subtask HSMM** (cascade stage 1)
-
-```bash
-python run_experiment.py --config configs/breakfast.yaml
-```
-
-10 random restarts of MAP-EM; keeps the best final log-likelihood. → `hsmm_params.npz`.
-
-**3 — Fit the recipe HMM** (cascade stage 2)
-
-```bash
-python run_recipe.py --config configs/breakfast.yaml
-```
-
-Viterbi-segments every trial with the stage-1 model, then fits a flat discrete HMM over the
-resulting *segment-symbol* sequences. Scores clusters against `labels.json` with ARI and
-Hungarian-matched accuracy. → `recipe_params.npz`.
-
-**4 — Fit the joint model**
-
-```bash
-python run_joint.py --config configs/breakfast.yaml   # add --resume to continue a checkpoint
-```
-
-Warm-starts from the two cascade artifacts, then runs a single deterministic joint EM with
-resumable checkpoints every 5 iterations. → `joint_params.npz` + `.meta.json`.
-
-**4b — Or fit the joint model without the cascade**
-
-The same artifact, from a warm start built out of the observation stream instead of steps 2–3,
-then a Viterbi-EM polish and two post-fit re-parameterisations. This is the route that fits the
-better detector; steps 2–3 are still the reference implementation of the cascade.
-
-```bash
-python run_joint_lexical.py --split-part train --out runs/joint_lex.npz \
-    --anchor 50 --max-iters 60 --init-prior-scale 0.0
-python run_hard_em.py --split-part train --out runs/joint_sh.npz \
-    --init-from runs/joint_lex.npz --keep-init-emissions --iters 5
-python smooth_params.py    --in runs/joint_sh.npz  --out runs/joint_sh_s.npz --strength 0.7 --backoff-tau 30
-python refit_durations.py  --in runs/joint_sh_s.npz --out runs/joint_final.npz --kappa 0.001
-```
-
-| Step | What it does | Documented in |
-|---|---|---|
-| `run_joint_lexical.py` | one subtask state per observed (verb,noun) pair; recipes seeded by bag-of-pairs k-means; emissions held by a per-state anchor prior | [`recipe.md`](recipe.md) §4 |
-| `run_hard_em.py` | Viterbi EM — fits the model to the MAP segmentation the detector actually reads | [`hsmm.md`](hsmm.md) §7 |
-| `smooth_params.py` | restores the singleton transitions the Dirichlet-MAP mode erases | [`hsmm.md`](hsmm.md) §3 |
-| `refit_durations.py` | hard-assignment duration M-step, sweepable in `kappa` without a full EM run | [`hsmm.md`](hsmm.md) §2.5 |
-
-`--init-prior-scale 0.0` is deliberate and is *not* the default — see [`recipe.md`](recipe.md) §4
-before changing it. `--strength` and `--backoff-tau` are regularisation and are selected on a
-**nested dev fold** (`make_dev_split.py`), not on the training split — [`eval.md`](eval.md) §7
-has the measurement showing what in-sample selection of those two costs.
-
-**5 — Analyse / evaluate / demo**
-
-```bash
-python run_anomaly.py    --inject-noun --plot   # single-trial channel trace
-python run_evaluation.py                        # full 5-error precision/recall/latency sweep
-python run_lifecycle.py                         # frozen/live dual-model demo
-python run_rollout_demo.py --scenario all       # per-user calibrated rollout
-python run_llm_eval.py --dry-run                # LLM baseline: cost the sweep before sending
-python run_llm_eval.py --skip-llm               # ...or score just the HSMM at step level
-python render_llm_compare_png.py                # HSMM vs LLM figures from the report JSON
-python run_threshold_sweep.py                   # accuracy vs alpha, per granularity
-python run_counterfactual.py                    # is detection attributable to the injection?
-python run_sequence_eval.py                     # segment-sequence detector vs the tick channels
-python run_detect_eval.py --split-part train    # one trial_loc scorecard: alpha curve x error type x channel
-VARIANT=no-recipes ./run_tick_test.sh           # the full tick-unit LLM sweep, resumable
-```
-
-The open-vocabulary arms are opt-in and off by default ([`hsmm.md`](hsmm.md) §8):
-
-```bash
-python tools_embed_vocab.py --out dataset/processed/breakfast/embeddings.npz   # needs the `embeddings` extra
-python run_detect_eval.py --split-part test --traj-params runs/joint_final.npz \
-    --embeddings dataset/processed/breakfast/embeddings.npz --kernel-lam 0.15 --near-subs
-python tools_severity_ranking.py    # the paired near-vs-far test the kernel actually rests on
-```
-
-`run_detect_eval.py` reports the same `trial_loc` metric `run_threshold_sweep.py` defines, on the
-same ground-truth convention, plus the per-error-type and per-channel breakdown — and fast enough
-to be used as a *selection* criterion between fits rather than only as a final report
-([`eval.md`](eval.md) §7). **Read accuracy, not F1**: with a 1-healthy : 5-degraded pool the
-trivial always-flag detector already scores F1 0.625, and `report_final.py` is what fixes
-$\alpha$ on train before quoting test. **And never quote a `trial_loc` gain on its own** — it
-charges at most one false positive per trial, so a detector can improve on it while raising more
-alarms; [`eval.md`](eval.md) §7 has the cross-check and the measured case where that happens. The `tools_*.py` scripts ([`eval.md`](eval.md) §8) answer
-one question each about a fitted model, for localising a loss the scorecard surfaces.
-
-`run_counterfactual.py` scores each degraded trial against its own healthy counterfactual, which
-supplies the matched null a raw recall number lacks ([`eval.md`](eval.md) §5) — reach for it before
-concluding anything about whether a detection rate is meaningful.
-
-`run_threshold_sweep.py` is the calibration diagnostic: it computes traces once and re-flags them
-across an $\alpha$ grid, reporting precision/recall/FPR at tick, step and trial granularity.
-Reach for it before adding any filtering rule — a channel whose false-positive rate is flat in
-$\alpha$ is not being gated by its threshold, and no amount of downstream filtering fixes that
-(see [`eval.md`](eval.md) §6).
-
-`run_llm_eval.py` is the odd one out: it scores an **LLM reading each trial as text** against the
-HSMM on a shared unit (one run-length-encoded step), on byte-identical injected errors. It is a
-comparison baseline, not part of the detector -- see [`llm.md`](llm.md), and note the request-budget
-arithmetic there before running it against a metered API.
-
-**5b — Or score against EPIC-Tent's real annotations** (`run_epic_tent_eval.py`)
-
-```bash
-./py run_epic_tent_eval.py --skip-llm                 # HSMM + nulls, no server needed
-./py run_epic_tent_eval.py --variant both             # + the predictive LLM arm (arm 3)
-./run_tent_test.sh                                    # the whole pipeline, end to end
-./py run_epic_tent_eval.py --trim \
-    --split-file dataset/processed/epic_tent/split_prego.json \
-    --joint-params dataset/processed/epic_tent/joint_params_clean_prego.npz
-                                                      # PREGO's exact split AND protocol
-```
-
-The only path in the repo where ground truth was not manufactured. Every arm is scored per **error
-group** — `procedural` (order, omit, correction, repeat: PREGO's subset) and
-`procedural+temporal` (+ search, slow) — with every other type **removed**, i.e. relabelled normal,
-which is exactly how PREGO's scorer treats the non-procedural types. The HSMM is fitted on the
-error-excised fragments only. Two nulls print beside every arm (flag every tick; flag every step
-boundary), and the healthy side is reported as alarms per 10 minutes plus the share of time spent
-alarming — each alone is gameable. See [`eval.md`](eval.md) §7c for the results and
-[`data.md`](data.md) §7b.8 for what "removed" means.
-
-Only the predictive arm is ported: at T up to 2124 a tick-unit verdict arm would send one request
-per second with a prefix growing to the whole session, and the verdict preprompts still open with
-the cooking sentence (`prompts.build_system_prompt` raises rather than mislabelling the task).
-
-**6 — Export and render**
-
-```bash
-python export_flow.py        && python render_flow_html.py --out flow.html
-python export_flow.py        && python render_flow_png.py
-python export_flow_joint.py  && python render_flow_compare_png.py   # cascade vs joint
-python export_anomaly.py     && python render_anomaly_png.py
-```
-
-`export_*.py` runs inference and dumps JSON; `render_*.py` does layout only and performs no
-inference. That split exists so figures can be re-styled without re-running EM.
-
-`main.py` is an unused scaffolding stub from `uv init`.
+- **Every HSMM arm beats its null by a wide margin**, at about a tenth of the null's alarm rate.
+  The LLM arms sit 0.01–0.08 F1 above the null and flag about half to nine tenths of error-free
+  runs.
+- **Going live costs nothing.** Live matches Hindsight within ±0.01 F1 on every Breakfast model
+  and on EPIC-Tent, and lag (L = 5, ∞) buys nothing.
+- **Knowing the dish moves F1 by ≤ 0.01**; the dish model is no better than 16 latent clusters.
+- **The HSMM's weakness is recall** on omission and repetition (Breakfast) and on everything but
+  order (EPIC-Tent, where most annotated errors leave the (verb, noun) stream unchanged).
+- **Under PREGO's own protocol, flagging every step reproduces PREGO's published result.** The
+  HSMM is the only detector not at that null.
 
 ---
 
-## Notation used throughout the docs
+## Next
 
-| Symbol | Meaning | Code |
-|---|---|---|
-| $T$ | ticks in a trial | `T`, `t_max`, `mask.sum()` |
-| $K$ | nominal subtask count (weak limit) | `k_subtask` |
-| $K_R$ | nominal recipe count (weak limit) | `k_recipe` |
-| $V, N$ | verb / noun vocabulary sizes | `vocab_verbs`, `vocab_nouns` |
-| $D_{\max}$ | duration truncation | `d_max` |
-| $\boldsymbol\pi^{\text{init}}$ | initial-state distribution, $(K,)$ | `init_counts` → `log_init` |
-| $A$ | subtask transition matrix, $(K,K)$, zero diagonal | `trans_counts` → `log_trans` |
-| $B^v, B^n$ | emission matrices, $(K,V)$, $(K,N)$ | `verb_counts`, `noun_counts` |
-| $(r_k, p_k)$ | NB duration parameters per state | `dur_r`, `dur_p` |
-| $\boldsymbol\pi$ | recipe mixture weights, $(K_R,)$ | `pi_counts` → `log_pi` |
-| $\gamma_t(k)$ | smoothed occupancy $P(Z_t{=}k \mid o_{0:T-1})$ | `gamma` |
-| $\tilde\pi_t(k)$ | **predictive** occupancy $P(Z_t{=}k \mid o_{0:t-1})$ | `pi_all` |
-| $\rho_{ir}$ | recipe responsibility for trial $i$ | `rho` |
-| $z^*_t$ | Viterbi (MAP) subtask at tick $t$ | `z_star`, `subtask_per_tick` |
-| $\alpha$ | tail-probability level for flagging (0.05) | `DEFAULT_ALPHA` |
-
-**Weak limit** appears constantly: rather than doing nonparametric inference over an unknown
-number of states, the model fixes $K$ generously larger than the truth and uses a sparse
-Dirichlet prior ($\alpha/K < 1$) to push unneeded states toward zero mass. The number that
-matters is the *effective* $K$ read off the decode
-(`recipe/recipe_hmm.py:effective_k`), never the nominal one.
+- **Open vocabulary** ([`next_steps.md`](next_steps.md) §1): grade a substitution's severity
+  ("wrong object, but nearly right") and handle nouns never seen in training, via fixed text
+  embeddings, without costing detection.
+- **Drift detection** ([`next_steps.md`](next_steps.md) §2): frozen weekly references, and a
+  recipe-stratified permutation test that says whether and where a person's normal behaviour has
+  changed (weekly, monthly, yearly).
+- **Live narration.** `narrate` needs a Viterbi segmentation, so today only Hindsight detections
+  can be narrated. A live version would phrase a question from the filter's current belief at the
+  moment an alarm is raised.
+- **`Session(live_detector, hindsight_detector)`.** `step()` streams live alarms during cooking;
+  `finish()` runs Hindsight over the whole session for a reflection. Not built; the detector
+  contract already supports it.
+- **Readability review** of `scripts/demo_trial.py`, `hsmm/model.py` and
+  `detectors/hsmm_live.py` by the owner before the restructure branch merges.
 
 ---
 
-## Cross-cutting conventions worth knowing before you read any module
+## Conventions
 
-**Everything is in log space.** `logsumexp` throughout; probabilities are only exponentiated at
-the last possible moment. Two floors recur: `FLOOR = 1e-12` (before any `log`) and
-`EPS = 1e-8` (before any division).
-
-**Padding is masked, never trusted.** Batches pad to a common $T_{\max}$ with the *valid dummy
-id 0* — never `-1`, because JAX gathers wrap out-of-range indices silently instead of erroring.
-A `mask` array gates every use.
-
-**Right-censoring is structural, not an edge case.** The last segment of every trial is still in
-progress when observation stops. The forward recursion weights it by the **survival** function
-$P(D \ge d)$ rather than the pmf $P(D = d)$; the M-step imputes its unobserved remainder. Getting
-this wrong is the single easiest way to silently bias every duration in the model — see
-[`hsmm.md`](hsmm.md).
-
-**Chunking is a memory necessity, not a style choice.** At $K = 64$, $T_{\max} \approx 650$, a
-full 503-sequence `vmap` of the $(T,K,K)$ transition posterior allocates > 10 GB and OOMs. The
-E-step loops over chunks of 8 trials (and $\max(1, 8 / K_R) = 1$ for the joint model).
-
-**`labels.json` is never fed to training.** It exists solely to score recovered latents. It lives
-in a separate file from `sequences.json` for exactly that reason.
+- **Notation.** t tick, r recipe, i / k subtask, j elapsed-time column (j + 1 ticks), o_t = (v_t,
+  n_t). b_t belief after o_t, b'_t before it. π̃_t(i) = P(z_t = i | o_<t). r̂ the trial's MAP
+  recipe, z* its Viterbi path. α a bad-set tail mass, κ a posterior cutoff, L a lag.
+- **"Run", not "step"**: a run is a maximal stretch of constant (verb, noun). "Step" survives only
+  in frozen LLM prompt text and in PREGO's protocol.
+- **Every results table states its metric letter** ([`eval.md`](eval.md)).
+- **Operating points are picked on train, reported on test.**
+- **`labels.json` is validation-only** for the HSMM.
+- **Docs are updated in the same commit as the code they describe**; history goes to
+  [`logbook.md`](logbook.md).

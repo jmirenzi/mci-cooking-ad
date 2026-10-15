@@ -2,7 +2,7 @@
 
 A **step** is one maximal run of constant (verb, noun) over consecutive ticks -- exactly the
 run-length encoding of the observation stream. This is the unit the LLM baseline reads, answers
-about, and is scored on (eval/element_metrics.py), and it is deliberately NOT the model's latent
+about, and its verdicts are placed on, and it is deliberately NOT the model's latent
 segmentation: z_star comes from Viterbi, which the LLM never sees. Two detectors reading two
 different segmentations would not be comparable.
 
@@ -90,7 +90,7 @@ def gt_steps_for_window(steps, window):
     segment becomes a shorter step; omission's window is the new boundary tick, i.e. the first
     tick of the following step; transposition's window spans both swapped runs; repetition's
     duplicate is adjacent-identical to its original and so MERGES into one double-length step --
-    which is the same 'Viterbi merges the copy' behavior docs/synthetic.md already documents for
+    which is the same 'Viterbi merges the copy' behavior docs/data.md §6 already documents for
     the tick-level path, not a new approximation.
     """
     t0, t1 = int(window[0]), int(window[1])
@@ -114,7 +114,7 @@ def injection_touched_steps(steps, tick_map, edited_ticks, gt_steps, window=None
     """Degraded steps that exist, or take the tick range they have, only because of the
     injection -- but are NOT themselves the ground-truth anomaly. Neither the injected anomaly
     nor a clean normal step: debris, to be excluded from false-positive scoring rather than
-    counted either way (eval/element_metrics.py).
+    counted either way.
 
     Three ways a step can be debris:
       0. It lies inside `window` -- the injection's whole disturbed extent -- without being one
@@ -203,18 +203,18 @@ def step_covering_tick(steps, tick):
 # --------------------------------------------------------------------------------------------
 #
 # Everything above encodes a trial as run-length STEPS, and every consumer -- the prompt builder,
-# the ground-truth bridge, eval/element_metrics.py -- is written against Step's (index,
+# the ground-truth bridge -- is written against Step's (index,
 # tick_start, tick_end) triple rather than against the run-length property itself. So the second
 # unit is not a second pipeline: it is the same Step type at duration 1, one per tick, with
 # index == tick_start == the tick number.
 #
 # That is what makes the two units comparable. The HSMM emits a value at every tick and the step
-# unit collapses those to one verdict per run (element_metrics.step_verdicts_from_flags), which
+# unit collapses those to one verdict per run, which
 # is a handicap the step unit imposes on BOTH arms equally but which no longer has to be imposed
 # at all once the LLM is asked per tick. Read the resulting numbers knowing what changed with it:
 # a trial offers ~18x more chances to false-positive (12227 ticks vs 661 steps over the test
 # split), so precision is not comparable ACROSS units even though it is comparable across arms
-# WITHIN one. evaluate_steps reports chance_precision for exactly this reason -- quote it.
+# WITHIN one.
 UNITS = ("step", "tick")
 
 
@@ -227,7 +227,7 @@ def ticks_from_ids(verb_ids, noun_ids, lexicon):
     """One Step per tick, in tick order: the identity segmentation.
 
     Deliberately the same NamedTuple rather than a parallel type. gt_steps_for_window,
-    injection_touched_steps, step_covering_tick and element_metrics all read only tick_start /
+    injection_touched_steps and step_covering_tick read only tick_start /
     tick_end / index, so they work on this unchanged -- and a tick element's `index` IS its tick,
     which makes a tick-level ground-truth window map to itself.
     """

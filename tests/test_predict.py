@@ -231,30 +231,6 @@ def test_per_line_parse_failures_are_counted_separately_per_channel():
 
 # ---- the bridge back to the element layer ----------------------------------------------------
 
-def test_flags_become_verdicts_on_whichever_element_contains_them():
-    steps = _steps([(1, 1, 10), (2, 2, 10)])
-    ticks = textify.ticks_from_ids([1] * 10 + [2] * 10, [1] * 10 + [2] * 10, _Lex())
-    flags = [predict.Flag(12, 1.0, predict.SYMBOL)]
-    assert [v.is_anomaly for v in predict.verdicts_from_flags(flags, steps)] == [False, True]
-    assert [v.step_index for v in predict.verdicts_from_flags(flags, ticks) if v.is_anomaly] == [12]
-
-
-def test_the_verdict_type_labels_mirror_the_hsmm_channel_map():
-    """So this arm's type_confusion is read against the HSMM's on the same axes."""
-    assert predict.CHANNEL_TO_TYPE[predict.SYMBOL] == "omission"
-    assert predict.CHANNEL_TO_TYPE[predict.DUR_LONG] == "repetition"
-    assert predict.CHANNEL_TO_TYPE[predict.DUR_SHORT] == "abandonment"
-
-
-def test_the_most_specific_channel_wins_when_two_fire_on_one_element():
-    steps = _steps([(1, 1, 10)])
-    flags = [predict.Flag(3, 1.0, predict.DUR_LONG), predict.Flag(3, 1.0, predict.SYMBOL)]
-    v, = predict.verdicts_from_flags(flags, steps)
-    assert v.error_type == predict.CHANNEL_TO_TYPE[predict.SYMBOL]
-
-
-# ---- the response cache ----------------------------------------------------------------------
-
 def test_the_cache_key_is_unchanged_when_max_tokens_is_unset():
     """~30k responses were collected before the field existed; folding a None into the key would
     orphan every one of them."""

@@ -1,1141 +1,239 @@
-# `src/cook_ad/llm/` + `eval/element_metrics.py` — the LLM baseline
+# The LLM detectors
 
-A comparison detector: render each trial as text, hand it to a language model one step at a time,
-and score its answers against the same injected errors the HSMM is scored on.
+Two baselines that read the same tick stream as text and answer through a language model. They
+implement the `AnomalyDetector` contract ([`detectors.md`](detectors.md) §1), so they are scored by
+the same harness, on the same pools, under the same metric as the HSMM.
 
-| File | Role |
-|---|---|
-| `llm/textify.py` | trajectory → steps → `'pour cereals for 19 seconds'`; tick↔step ground-truth mapping |
-| `llm/prompts.py` | the two preprompts (with / without recipe descriptions) |
-| `llm/client.py` | OpenAI-compatible chat client: cache, rate limit, budget guard |
-| `llm/detect.py` | response grammar + parser, and the two protocol drivers |
-| `eval/element_metrics.py` | the step-level metric layer **both** detectors are scored through |
-| `render_llm_compare_png.py` | comparison figures from the report JSON (layout only, no inference) |
-| `render_llm_vs_hsmm_png.py` | one trial, all detectors, at their native resolutions |
-| `render_llm_narrate_png.py` | per-trial narration figures — the analogue of `render_anomaly_png.py` |
-| `run_tick_test.sh` | the full test-split sweep at `--unit tick`, one variant per invocation (§7) |
+| Detector | The LLM is asked | The anomaly decision is made by |
+|---|---|---|
+| `LLMVerdictDetector` | "is this element anomalous, and what should it have been?" | the LLM's verdict line |
+| `LLMPredictiveDetector` | "how long will this run last, and what comes next?" (PREGO-style) | arithmetic comparing the prediction with what happened |
 
-Driven by `run_llm_eval.py`. `eval/metrics.py` and `run_evaluation.py` keep their own tick-level
-path; `evaluate_steps` takes only optional extra arguments, so that path is unaffected by anything
-here.
-
-> `anomaly/narrate.py` opens by stating that routing the system's user-facing questions through a
-> language model would throw away their auditability. That still holds, and this module does not
-> contradict it: the LLM here is a **baseline to measure against**, not a component of the
-> detector. Nothing in `anomaly/` calls it.
+The LLM is a **baseline to measure against**, not part of the detector. Nothing in `hsmm/` or the
+HSMM detectors calls it. Plumbing (rendering, prompts, parsing, the HTTP client) lives in `llm/`;
+the detector classes live in `detectors/llm_*.py`.
 
 ---
 
-## 0. Headline result
+## 1. What the LLM sees
 
-**95 real trials** x (healthy + 5 injected errors), `gemma3:27b` served locally, conversational
-protocol, joint HSMM at $\alpha = 5\times10^{-3}$. Scored **trial-located** (§5): one verdict per
-trial, on whether the flag landed inside the injection-touched range.
+A **run** is a maximal stretch of constant (verb, noun): the run-length encoding of the stream,
+not the HSMM's latent segmentation (the LLM never sees z*). `textify.steps_from_ids` renders runs;
+the code and prompt text call them "steps", and the prompt bytes are frozen (§5), so that word
+stays there.
 
-| arm | precision | recall | F1 | stray/degraded | healthy FPR |
-|---|---|---|---|---|---|
-| **HSMM** | **0.618** | 0.423 | **0.503** | **0.219** | **0.211** |
-| gemma3 (no recipes) | 0.439 | 0.537 | 0.483 | 0.554 | 0.663 |
-| gemma3 (+ recipes) | 0.416 | **0.613** | 0.496 | 0.693 | 0.832 |
+```
+1. stall kitchen for 2 seconds
+2. take bowl for 8 seconds
+3. pour cereals for 19 seconds
+```
 
-**On F1 the three are tied.** The HSMM's advantage is entirely in alarm volume: it reaches the
-same F1 while flagging 21% of healthy trials against the LLM's 66–83%. For an assistant whose
-failure mode is nagging a user with MCI, that is the axis that decides usability — but it is a
-narrower claim than "the HSMM detects better."
+Names come from `Lexicon.verb` / `.noun`, so SIL renders literally as `stall kitchen` and the
+prompt explains it. `textify.assert_tick_seconds` enforces 1-second ticks, because the text says
+"seconds".
 
-**Recipe descriptions make the LLM flag more, not better**: recall +7.6 points, precision −2.3,
-healthy false alarms +16.9. That arm also has the `labels.json` advantage the HSMM never had (§2),
-and it runs on the conversational protocol, the LLM's stronger one (§3) — so both choices favour
-the LLM and its false-alarm disadvantage is if anything understated.
-
-### Detection is real on every error type
-
-Per-type recall is low outside substitution, which raises the obvious question of whether those
-detections are anything more than a chatty detector occasionally landing in the right place.
-`run_counterfactual.py` ([`eval.md`](eval.md) §5) answers it by scoring each degraded trial
-against **its own healthy counterfactual** — same trial, same range, no injection — which is a
-matched null that absorbs trial length, range width, and the detector's own per-trial noise:
-
-| error type | recall | matched null | lift | McNemar |
-|---|---|---|---|---|
-| substitution | 0.998 | 0.043 | **+0.955** | $\chi^2$ = 398 |
-| abandonment | 0.384 | 0.017 | **+0.368** | $\chi^2$ = 148 |
-| omission | 0.294 | 0.031 | **+0.263** | $\chi^2$ = 97 |
-| transposition | 0.377 | 0.055 | **+0.322** | $\chi^2$ = 129 |
-| repetition | 0.210 | 0.041 | **+0.169** | $\chi^2$ = 69 |
-
-(419 real trials, $\alpha = 5\times10^{-3}$; every $\chi^2$ far past 3.84 at $p = 0.05$, with
-discordance almost entirely one-directional.)
-
-So the correct reading of the low per-type numbers is **low sensitivity, not absent detection**.
-Note also how far the matched null sits below a uniform-random estimate: flags cluster at segment
-boundaries rather than spreading across a trial, so a healthy run's flags usually miss the injected
-range entirely. Any chance baseline derived by assuming uniform flag placement overstates it by
-roughly 5x.
-
-> **Every number on this page is in-sample.** `run_joint.py` fits on all of `sequences.json` and
-> the evaluation scores a prefix of the same file; there is no held-out split. Treat these as
-> upper bounds.
-
-### The older step-level numbers
-
-`evaluate_steps` also reports a pooled step-level precision/recall (§5). The last full-corpus
-measurement of it — 447 real / 90 synthetic trials, incremental protocol — predates
-`surprise.EMISSION_FLAG_ATOL`, the right-censoring fix, the removal of the persistence rule, and
-the $\alpha$ change, so **its HSMM rows no longer describe the shipping detector** and are not
-reproduced here. The LLM rows from that run remain valid: step-level precision 0.183 (real) and
-0.150 (synthetic) against chance baselines of 0.125 and 0.114, i.e. **at roughly 1.2–1.5x chance**,
-with `parse_failure_rate` 0.0025 over 19,253 requests — a capability result, not a formatting
-artefact.
-
-### Per-type: the HSMM dominates one type, the LLM leads on the rest
-
-Trial-located recall, and the confusion diagonal (given a detection, was the type named right):
-
-| | HSMM recall | LLM(+r) recall | HSMM diagonal | LLM(+r) diagonal |
-|---|---|---|---|---|
-| substitution | **0.989** | 0.979 | **1.000** | 0.935 |
-| abandonment | 0.358 | **0.842** | 0.838 | **0.901** |
-| omission | 0.316 | **0.337** | **0.879** | 0.058 |
-| transposition | 0.253 | **0.589** | **0.000** | 0.088 |
-| repetition | 0.200 | **0.316** | **0.789** | 0.281 |
-
-The HSMM clearly dominates only **substitution** — its own emission channel's error type. It is
-better at *naming* what it found on four of five types, but worse at finding it on four of five.
-
-**Transposition is the structural blind spot**: the diagonal is exactly 0.000 because
-$s_{\text{trans}}$ fires identically for omission, transposition and repetition and cannot
-separate them. Note the counterfactual table above shows transposition detection *is* real
-(lift +0.322) — the model notices, it just cannot say what it noticed.
-`anomaly/sequence.py` ([`anomaly.md`](anomaly.md) §6) closes exactly that gap by testing the swap
-hypothesis directly against the fitted transition row: measured standalone it takes transposition
-naming from **0.000 to 0.380**. It does not, however, earn a place as an independent arm — unioned
-with the tick channels it lowers F1 and raises false alarms, and the naming win dilutes to 0.149.
-See `anomaly.md` §6 for the measurement and the two upstream defects behind it.
-
-> **The synthetic arm is not neutral ground for this comparison and should not be read as a second
-> opinion.** Synthetic trials are ancestral samples from the HSMM, so they flatter it — which
-> [`eval.md`](eval.md) already says — but they also actively *penalise* the LLM: healthy
-> false-positive rate 0.767 there against 0.418 on real trials. The samples are valid under the
-> model while containing (verb, noun) pairings and orderings no real cook would produce, so a
-> detector reasoning from real-world priors is correct to call them anomalous. **Report the real
-> arm.**
-
-> **The HSMM arm in every table here reads the whole trial.** Its flags depend on the full-trial
-> Viterbi decode and the full-trial recipe, while the LLM arm is held strictly causal (§1). Until
-> 2026-10-15 that asymmetry was neither stated nor measured. It now is: a causal HSMM
-> ([`live.md`](live.md)) matches the hindsight arm's metric-G F1 to within ±0.01 on Breakfast and
-> EPIC-Tent ([`live.md`](live.md) §8), so the causal arm is the like-for-like comparator for the
-> LLM, and conclusions drawn against the hindsight arm carry over to it.
-
-### Reading the false-positive rate
-
-`healthy.false_positive_rate` is the fraction of healthy control trials with **any** flagged step.
-Both arms are held to that same bar — there is no persistence filter or run-length requirement on
-either side ([`eval.md`](eval.md) §2), so the two numbers are directly comparable and the figure
-and the table read the same mask.
-
-The arms do still differ in how many tests produce that flag: the HSMM makes ~150 per-tick tests
-per trial that collapse into ~7 step verdicts, while the LLM makes ~7 step tests directly. That
-asymmetry is real and is controlled where it belongs — at the threshold $\alpha$, which trades
-false alarms against recall along a curve `run_threshold_sweep.py` measures ([`eval.md`](eval.md)
-§6) — rather than by filtering one arm's output after the fact.
-
-## 1. The unit problem, and the step
-
-The HSMM emits a value on all seven default channels at **every tick** (the eighth,
-$s_{\text{pair}}$, is opt-in and off here — [`anomaly.md`](anomaly.md) §2.6). The LLM reads a list of steps and
-answers **once per step**. Neither can be scored in the other's unit, so both are converted to a
-common one.
-
-A **step** is one maximal run of constant $(v_t, n_t)$ — the run-length encoding of the
-observation stream. Deliberately *not* the model's latent segmentation: $z^*$ comes from Viterbi,
-which the LLM never sees, and scoring two detectors against two different segmentations would not
-be a comparison.
-
-Measured before committing to RLE (K=64, full corpus):
-
-| Source | runs/trial (median) | run length (median) | 1-tick runs |
-|---|---|---|---|
-| real Breakfast trials | 6 | 11 s | — |
-| synthetic ancestral samples | 7 | 11 s | 12% |
-
-The fitted emissions are peaked enough that per-tick i.i.d. sampling still yields clean runs, so
-both healthy sources render legibly and `synthetic/generate.py` needed no special-casing.
-
-`tick_seconds` is 1.0 in both shipped configs, so a run length in ticks *is* a duration in
-seconds. `assert_tick_seconds` makes that dependency explicit rather than letting "seconds"
-silently become a lie if the binning ever changes.
-
-### The second unit: one tick (`--unit tick`)
-
-The step unit is a **handicap the comparison imposes on the HSMM**, not a neutral choice. The
-HSMM already has an opinion at every tick; `step_verdicts_from_flags` throws ~18 of them away per
-step to meet the LLM where it can answer. `--unit tick` removes that by asking the LLM the same
-question once per second — one request per tick — so both arms answer on the stream's native
-resolution.
-
-Implementation is deliberately *not* a second pipeline. A tick element is `textify.Step` at
-duration 1, one per tick, with `index == tick_start == the tick number`
-(`textify.ticks_from_ids`). Everything downstream — `gt_steps_for_window`,
-`injection_touched_steps`, `step_covering_tick`, all of `element_metrics` — reads only
-`(index, tick_start, tick_end)` and so transfers unchanged; a tick-space ground-truth window maps
-to itself. `--unit` threads through `textify` → `detect` → `prompts` → `element_metrics` and
-nothing else.
-
-Three things change with the unit, and reports have to say which one they used:
-
-| | `--unit step` | `--unit tick` |
-|---|---|---|
-| elements per trial (test split) | 6.5 | 121 |
-| elements, whole test split | 661 | 12,227 |
-| requests, 6 conditions × 2 variants | 7,932 | 146,724 |
-| detection deadline (`DEFAULT_TOL`) | 1 step | 10 ticks |
-| chance precision | ~1 in 7 | ~1 in 100 |
-
-1. **Cost is ~18×.** See §4.
-2. **Precision is not comparable across units**, only across arms *within* one. A tick run offers
-   ~18× more chances to false-positive on the same corpus. `chance_precision` is in every report
-   for exactly this; quote it alongside.
-3. **The deadline is restated, not tightened.** `DEFAULT_TICK_TOL = 10` is the median step width,
-   so a tick run is not holding either detector to an ~11× tighter clock than the step runs the
-   existing numbers came from.
-
-Two things deliberately do *not* change. The **ground-truth correction** is still the pre-injection
-*step* — verb, noun, and how long that step should have run — because that is what the prompt asks
-for; taking it from a tick element would make every duration truth 1 second and
-`correction_accuracy` meaningless. And the **step-unit prompts are byte-identical** to what they
-were before the tick unit existed, so the ~30k-response cache collected under them stays valid
-(there is a test asserting this).
-
-#### The line format carries elapsed time
+**The tick unit** (`unit="tick"`) renders one line per tick with elapsed time, so the LLM answers
+at the stream's own resolution:
 
 ```
 41. pour milk (3s)
 42. pour milk (4s)
-43. pour milk (5s)
-44. stall kitchen (1s)   [pour milk ended after 5s]
-45. stall kitchen (2s)
+43. stall kitchen (1s)   [pour milk ended after 4s]
 ```
 
-`(Ns)` counts up within a run and resets when a new action starts; the bracket reports the
-finished run's total. The first version of this rendering printed only `pour cereals` and left the
-model to count identical lines. That was a **defect, not a design choice**: the step unit says
-`pour cereals for 19 seconds` outright and the HSMM's duration channels carry elapsed occupancy
-for free, so the bare rendering gave the LLM strictly less than either arm had, and any
-tick-vs-step difference would have partly measured "the durations were deleted." It also made
-anomaly detection depend on counting — measured on the first tick smoke run as repeated false
-`repetition` verdicts fired *inside* long, normal runs.
+Both annotations look only backward. The "ended" note lands on the **first tick of the next run**:
+at the last tick of a run the model cannot yet know it is over. A tick earlier would leak the
+future onto exactly the type ("this step ended too early") whose signal is the run's end.
 
-Both annotations look only **backward**, which is what keeps the protocol causal and the prefixes
-append-only (asserted by test). In particular the completion note lands on the **first tick of the
-next run**, not the last tick of the finished one: at second 5 the model cannot yet know the step
-is over, and it learns so at second 6. A tick earlier would leak one tick of the future onto
-exactly the type whose whole signal is *this step ended too early*, inflating abandonment recall
-for free.
+---
 
-The tick preprompt (`prompts.tick_task_block`) is a separate template rather than a
-parameterisation of the step one, for the same cache reason, and it explains the format above
-before stating the anomaly definitions.
+## 2. The system prompt
 
-### Ground truth is points, not ranges
+`LLMDetector.fit(train)` builds it once (`prompts.build_variant`); it is identical on every
+request, so it is one shared prefix for the server's prompt cache. It holds:
 
-`window` is the whole extent an injection disturbed. It is **not** the same thing as the ticks
-that are actually anomalous, and conflating them distorts scoring badly at the tick unit. A
-transposition's two swapped runs are each being executed *correctly*; what is wrong is only that
-they arrive in the wrong order. Scoring the whole span as ground truth says every second of
-correct cooking is an anomaly.
+- **the vocabulary**, verbatim, so a proposed correction is guaranteed in-vocabulary and exactly
+  scoreable;
+- **the task**: for verdicts, the five error-type definitions copied from the injector docstrings
+  ([`data.md`](data.md) §6), so the model is judged against what the injector actually does; for
+  prediction, the `DURATION:` / `NEXT:` reply grammar;
+- **the variant**:
 
-Each injector therefore emits `anomaly_ticks` from its own index arithmetic
-(`error_injection._result`):
-
-| injector | anomalous ticks | why |
+| Variant | Adds | Caveat |
 |---|---|---|
-| substitution | the whole segment | *content* error — every second of it is wrong |
-| abandonment | the truncation onset | one moment |
-| omission | the junction | one moment |
-| transposition | 3 junctions: B's onset, B→A, A's last tick | *structural* — the runs are correct, the order is not |
-| repetition | 2 junctions: the copy's first and last tick | structural — the step is correct, doing it twice is not |
+| `no-recipes` | nothing | the like-for-like comparison with the HSMM |
+| `with-recipes` (Breakfast) | each recipe's modal step order, median step durations, and how often that order actually occurs | built from `labels.json`, which the HSMM never sees; its duration priors are exactly what the predictive duration channel is tested on |
+| `with-recipes` (EPIC-Tent) | the printed instruction order with median durations (`assembly_block`) | prescriptive, and deliberately states **no** deviation frequencies: telling a predictor that reordering is common would erase the signal |
 
-Everything inside `window` that is not a point becomes **debris** — excluded from false-positive
-scoring rather than charged — because a detector firing in the middle of a correctly-executed but
-misplaced run is neither right nor wrong. This is what debris was for; before this change it fired
-for one injector and nothing else.
+- **few-shot exemplars** (`n_shot`), complete healthy trials from the **train** split, placed in
+  the system turn:
+  - `shot_select="random"`: a seeded uniform draw;
+  - `shot_select="autocot"`: Auto-CoT's clustering step, which picks diverse representatives;
+  - `shot_cot=True` adds one rationale per exemplar, generated by the LLM at temperature 0
+    (`predict.build_rationales`). It is conditioned on the exemplar's known outcome. Unconditioned
+    rationales contradicted their own answers and invented out-of-vocabulary actions.
 
-The effect, as the fraction of a trial that counts as ground truth (i.e. the chance one randomly
-placed flag "detects" the anomaly):
+**Porting to a second domain.** `build_system_prompt(domain, sil_verb, sil_noun,
+canonical_order, interleaved)` defaults to the cooking text, so the Breakfast prompts are
+byte-identical (`tests/test_prompts_domain.py` pins all 16 combinations). EPIC-Tent passes
+`domain="assembly"` and its own SIL tokens. The verdict heads have no assembly version and raise
+rather than telling a tent-builder they are cooking.
 
-| injector | step unit | tick, by window | tick, by points |
+**Few-shot breaks on long sessions.** EPIC-Tent sessions run 42–192 runs. Three exemplars render
+as 191 lines behind a 34-line grammar, and gemma3 abandoned the grammar on every request and
+continued the step list instead: zero parsed flags, against 57 at 0-shot. EPIC-Tent therefore runs
+at `n_shot=0`. It also runs only the predictive detector: sessions reach 2,124 ticks, and a
+tick-unit verdict arm sends one request per tick. Compare the rendered demonstration length with the instruction block before porting
+a few-shot prompt.
+
+---
+
+## 3. `LLMVerdictDetector`
+
+`LLMVerdictDetector(client, vocab, lexicon, protocol, unit="run" | "tick", ...)`. An anomalous
+verdict becomes an alarm at the element's first tick; its channel is the verdict's error type.
+
+| Protocol | Request i shows | Causal? | Alarm known at |
 |---|---|---|---|
-| substitution | 13.2% | 13.7% | 13.7% |
-| abandonment | 13.2% | 0.7% | 0.7% |
-| omission | 15.3% | 0.7% | 0.7% |
-| transposition | 25.9% | **29.9%** | **1.8%** |
-| repetition | 13.2% | **13.1%** | **1.0%** |
+| `incremental` | the prefix 0..i; earlier answers are not fed back | yes | run unit: the next run's first tick; tick unit: that tick |
+| `conversational` | the same, with the model's own earlier replies as assistant turns | yes | as above |
+| `batch` | the whole trial, one verdict line per element | **no** | T − 1 |
 
-At the step unit every type presents a similar-sized target, which is why this never surfaced
-there. At the tick unit the range rule spread them over **40×**, so per-type recalls were not
-comparable to one another and transposition scored nearly for free.
+`incremental` requests are independent of each other, so they run concurrently, and each prompt is
+a strict prefix of the next. `conversational` was more accurate on a 10-trial check (precision 0.32
+vs 0.19, recall 0.37 vs 0.30): the model's own "No Anomaly" answers anchor it. It cannot run in
+parallel within a trial.
 
-**The step unit does not move.** Both of repetition's junctions sit inside the copy, and
-transposition's exit junction is the misplaced run's *last* tick rather than its innocent
-successor's first — so at the step unit the points select exactly the steps the window did.
-Verified over 290 real injections: identical ground-truth *and* debris sets on every one, asserted
-by test for all five injectors. Every step-unit number on this page therefore stands unchanged.
-
-`score_trial_steps` generalises to match: detection is a flag within `tol` of any **contiguous run
-of ground truth**, with latency measured from that run's start. For contiguous ground truth that
-is exactly the old `[min(gt), max(gt) + tol]` interval rule, including latency — so substitution,
-abandonment and omission are scored bit-for-bit as before, and only the two multi-junction
-injectors change. Reaching the successor step is `tol`'s job, not the ground truth's.
-
-### Names come from `Lexicon.verb`/`.noun`, not `.phrase`
-
-`narrate.Lexicon.phrase` collapses the SIL sentinels to `"idle"` or to a bare noun. That is right
-for a rendered query card and wrong here: it breaks the fixed `VERB NOUN` template the response
-grammar and parser are built on, and an unparseable reply is scored as a parse failure rather than
-as a verdict. SIL therefore renders literally as `stall kitchen`, and the preprompt explains the
-token instead.
-
-### Window → step, with one rule for all five injectors
-
-`error_injection` gives ground truth in tick space. `gt_steps_for_window` maps
-$[t_0, t_1]$ onto the steps it overlaps. Verified against each injector's index arithmetic:
-
-| Injector | What the rendered text shows |
-|---|---|
-| substitution | the whole segment keeps its own boundaries; it becomes one step of unchanged duration, different label |
-| abandonment | the truncated segment becomes a 1-second step |
-| omission | $t_0$ is the new boundary, i.e. the first tick of the following step |
-| transposition | the window spans both swapped runs, visibly out of order |
-| repetition | the duplicate is adjacent-identical to its original and **merges** into one double-length step |
-
-Repetition's merge is not an approximation introduced here — it is the same behaviour
-[`synthetic.md`](synthetic.md) already documents for the tick-level path, where Viterbi merges the
-copy into an over-long segment.
-
-### The ground-truth correction, from one rule
-
-`step_covering_tick(source_steps, window[0])` recovers what *should* have happened, for every
-injector, with a single lookup. It works because **each injector only rewrites ticks at or after
-its window start**, leaving every earlier tick untouched:
-
-| Injector | What the source step at $t_0$ is |
-|---|---|
-| substitution | the original run at the same span, before its channel was retagged |
-| abandonment | the same step at its **full** original duration — the duration *is* the correction |
-| omission | the deleted step |
-| transposition | the step that should have come first of the swapped pair |
-| repetition | the step that should have followed instead of the duplicate |
-
----
-
-## 2. The two preprompts
-
-Both carry the vocabulary verbatim (15 verbs, 36 nouns) so a proposed correction is guaranteed
-in-vocabulary and therefore exactly scoreable — a free-text correction would need fuzzy matching,
-which would put a tunable knob in the middle of a metric.
-
-The five error-type definitions are lifted from the corresponding `error_injection.inject_*`
-docstrings. The model is scored on type accuracy against the injector's ground-truth label, so it
-has to be judged against the definition the injector actually implements; describing them any
-other way would make `type_confusion` measure prompt drift rather than model capability.
-
-**`with-recipes`** adds a description of each of the 10 recipes, derived from `labels.json`: the
-modal collapsed subtask sequence plus each step's median duration, *with* a count of how often
-that order actually occurs. That count matters — the model is told which recipes are rigidly
-ordered and which are not:
-
-```
-cereals: stall_kitchen (~3s), pour_cereals (~17s), pour_milk (~12s), stall_kitchen (~3s)
-    (most common order in 15/52 recorded trials; 7 distinct orders observed overall)
-salat:   stall_kitchen (~4s), cut_fruit (~25s), take_bowl (~6s), put_fruit2bowl (~5s), ...
-    (most common order in 2/52 recorded trials; 50 distinct orders observed overall)
-```
-
-Handing it a single canonical order with no such caveat would invite it to flag ordinary
-participant variation as `transposition`.
-
-> ### The `labels.json` asymmetry
->
-> `labels.json` is validation-only everywhere else in this repo and is never fed to training
-> ([`README.md`](README.md), cross-cutting conventions). The `with-recipes` preprompt is built
-> from it, so **that arm sees ground-truth task structure the HSMM never had.**
->
-> The gap between the two variants is the interesting measurement — how much of the LLM's
-> performance is general knowledge about cooking versus knowledge of *these* recipes. The
-> `with-recipes` number is **not** a like-for-like comparison against the HSMM, and
-> `run_llm_eval.py` prints that caveat directly above the table rather than leaving it to a
-> reader's memory.
-
----
-
-## 3. Protocols
-
-### `incremental` (default) — prefix-only
-
-One request per step. Request *i* shows steps 0…*i* as a numbered list and asks for a verdict on
-step *i*. The model sees a growing **prefix** and never the future, which is what makes its step
-latency comparable to the HSMM's online channels (predictive occupancy, live stall).
-
-```
-system: <preprompt>
-user:   1. stall kitchen for 2 seconds
-        2. take bowl for 8 seconds
-        3. pour cereals for 19 seconds      <- judge this one
-```
-
-Cost: `len(steps)` requests per trial, ~7 on this corpus.
-
-**The model's own earlier answers are not fed back**, and that is deliberate. Causality — seeing
-only the prefix — is the property the comparison depends on; conversational self-feedback is a
-*separate* property, which the `conversational` protocol below supplies and this one withholds.
-Withholding it buys two things:
-
-1. **No error cascade.** Under self-feedback a false alarm at step 2 sits in context for steps 3–7
-   and can bias them, so a miss at step 5 cannot be distinguished from contamination by an earlier
-   mistake. Here every step is an independent test, which is what `element_metrics` assumes when it
-   scores them as one test each.
-2. **Parallelism.** Every request is a pure function of `(trial, step index)` rather than depending
-   on a previous response — a precondition for issuing requests concurrently, and for submitting a
-   sweep to an async batch endpoint. Neither is possible when request *i+1* contains response *i*.
-
-**Prompt layout is chosen for prefix caching.** One system turn plus one user turn that only ever
-grows by appending a line, so request *i*'s prompt is a strict token prefix of request *i+1*'s. A
-server with prefix caching (vLLM's APC, or hosted providers' implicit caching) then reuses almost
-all of it, and the ~600-token system prompt is reused across the entire sweep. A single growing
-user turn is used rather than repeated user turns because consecutive same-role messages are not
-universally accepted.
-
-> Changing the protocol changes the prompts, hence the cache keys. Responses collected under the
-> older conversational protocol will not be reused, and results from the two are not directly
-> comparable.
-
-### `conversational`
-
-One request per step, with the model's own earlier replies fed back as assistant turns. Not the
-default, but **kept runnable, because the two protocols are not equivalent in behaviour and the
-non-default one is more accurate on this model.**
-
-Same model, same 10 real trials, same seed, same prompt; only the protocol differs:
-
-| protocol | tp | fp | fn | precision | recall |
-|---|---|---|---|---|---|
-| `incremental` (prefix-only) | 18 | 77 | 42 | 0.189 | 0.300 |
-| `conversational` | 22 | **47** | 38 | **0.319** | **0.367** |
-
-Self-feedback improves **both** precision and recall — the opposite of what the error-cascade
-argument above predicts. The assistant turns act as a conservatism anchor: a model that has just
-said "No Anomaly" five times is being shown five reasons to say it again, which suppresses the
-prompt-length drift in section 0. This holds even though the conversational arm runs with the
-prompt written for prefix-only ("a numbered list … judge only the last step"), which does not
-describe what it actually sees.
-
-So the prefix-only default buys parallelism and clean independence at a real cost in accuracy on
-this model. That trade is worth restating whenever a number from either protocol is reported, and
-the headline in section 0 was measured under `incremental`, i.e. under the weaker of the two.
-
-Cannot be parallelised within a trial: request *i+1* literally contains response *i*. Measured
-throughput was nonetheless comparable (~1.55 req/s), since ollama's prefix cache handles the
-growing message list well.
-
-### `batch`
-
-One request for the whole trial, one verdict line per step. ~7× cheaper, and **non-causal** — the
-model sees every step before judging any of them. Its latency column is not comparable to the
-incremental arm or to the HSMM, and the report labels it as such.
-
-(Named before the Gemini/OpenAI *async batch endpoints* were under consideration. This is a
-prompt-shape, not an async submission mode; if the latter is ever added it should be called
-something else — `async` — rather than overloading this name.)
-
-### The response grammar
+**The reply grammar.**
 
 ```
 No Anomaly
 <TYPE> Anomaly. Correct move would have been VERB NOUN for NUMBER seconds
 ```
 
-`parse_response` tries the strict regex, then a lenient rescue that scans for a type name anywhere
-in the reply. A lenient hit still records `parse_ok=False`.
-
-**Nothing unparseable is coerced to `No Anomaly`.** Most steps in most trials are normal, so
-silently reading garbage as the majority class would inflate a model's apparent specificity for
-free. Unparseable replies surface as `parse_failure_rate`; a model that cannot hold the format is
-a finding about that model. Same rule in `batch`: a step the model returned no line for is a parse
-failure for that step, not an implicit pass.
-
-An out-of-vocabulary correction is dropped (the type is still kept), for the reason in §2.
+`detect.parse_response` tries a strict regex, then a lenient scan for a type name. Nothing
+unparseable is coerced to "No Anomaly": most elements are normal, so reading garbage as the
+majority class would inflate specificity for free. Parse failures are reported.
 
 ---
 
-## 3b. `predictive` — arm 3, PREGO-style
+## 4. `LLMPredictiveDetector`
 
-The two arms above ask for a **verdict** and read the anomaly decision straight out of the reply.
-This one asks the model to **predict** and moves the decision into deterministic comparison code
-(`llm/predict.py`). The architecture matches PREGO; the factorization matches the HSMM's own
-$P(Z'\mid Z)$ and $P(d\mid Z)$.
+The architecture follows PREGO: the LLM predicts and deterministic code compares. Unlike PREGO it
+also predicts durations, because a duration model is what the HSMM is meant to add, and a baseline
+without one would assume that advantage instead of testing it.
 
-**Why it exists.** PREGO has no duration model, and a duration model is this project's stated
-differentiator. A baseline that cannot predict durations *assumes* that differentiator rather than
-testing it, so this arm is given both halves and the two are scored as independent channels.
-
-### The request
-
-One request per **step boundary**, issued once the current step's `(verb, noun)` is observed —
-whatever unit the run is scored in. Prefix-only, no self-feedback, one system turn and one user
-turn, so the requests stay independent and concurrently issuable.
+**One request per run boundary**, prefix only, issued when the new run's (verb, noun) is first
+observed. The run being asked about is shown without its duration (`(in progress)`); showing it
+would hand over the answer. The reply is two independently parsed lines:
 
 ```
-system: <predictive preprompt + vocab (+ recipes) + few-shot exemplars>
-user:   1. stall kitchen for 3 seconds
-        2. take cup for 10 seconds
-        3. pour coffee for 12 seconds
-        4. pour milk for 27 seconds
-        5. stall kitchen (in progress)      <- predict from here
+DURATION: <N> seconds       # the run in progress
+NEXT: <verb> <noun>         # the run after it
 ```
 
-**The step being asked about is shown without its duration.** `render_step` would print
-`stall kitchen for 4 seconds` and hand the model the answer to the very question. The consequence
-is stated rather than assumed away: request *i*'s text is **not** a strict prefix of request
-*i+1*'s, because line *i* changes from `(in progress)` to a completed step. The shared prefix is
-everything through line *i−1*, so prefix reuse is (n−1)/n rather than perfect — inherent to asking
-about a step before it ends.
+Temperature 0.6, `max_tokens` 48 (256 with Auto-CoT rationales in the prompt). Both are in the
+cache key.
 
-Two labelled lines back, parsed **independently** so a malformed line degrades one channel and not
-both, with per-line failure rates reported separately under `predictive`:
+**Three channels**, all tick-indexed:
 
-```
-DURATION: <N> seconds
-NEXT: <verb> <noun>
-```
-
-`DURATION` applies to the step in progress; `NEXT` to the step after it. Surface tolerances mirror
-§3's (`19`, `19 seconds`, `19s`, `19 secs`, `for 19 seconds`, `(19s)`), for the same reason: being
-strict about a format slip measures obedience, not prediction. Temperature **0.6**, `max_tokens`
-**48**. Both are in the response-cache key — `max_tokens` conditionally, so the ~30k responses
-collected before the field existed keep their keys — so this arm namespaces itself for free.
-
-**Few-shot.** Three complete healthy trials from the **train** split, drawn with a fixed seed and
-placed in the *system* turn, so the whole system block stays one constant shared prefix and no
-demonstration is of a trial the arm is later scored on.
-
-### The two channels
-
-Both emit tick indices and feed `eval/span_metrics.py` unchanged.
-
-**Symbol.** At boundary *i* ≥ 1, flag if the observed `(verb, noun)` differs from the `NEXT`
-returned at boundary *i−1*. Cannot fire at *i* = 0 — no prior prediction exists. Flagged at the
-first tick of step *i*.
-
-**Duration, two-sided.** No LLM call; the tick loop is arithmetic. Tolerance is
-`element_metrics.duration_tolerance(predicted)` — the same `max(2, 0.5·d)` rule
-`correction_accuracy` uses, keyed off the prediction because that is the only reference available
-at flag time.
-
-* *over-run (live)* — at each tick while the step runs, flag the **first** tick where elapsed
-  exceeds the prediction by tolerance, then suppress until the next boundary.
-* *under-run (retrospective)* — at the boundary that closes step *i*, flag if its observed length
-  fell short by the same tolerance.
-
-**The under-run side is not in the PREGO formulation and is here deliberately.** Over-run alone can
-never catch an abandonment: that injector makes a step *short*, and the step following a truncated
-segment is the *correct* next symbol, so the symbol channel is silent too. An arm with only the
-upper tail would report ~0 abandonment recall as a property of the metric rather than of the model
-— exactly the confusion this arm exists to remove. It mirrors the HSMM's own
-$s_{\text{dur short}}$ / $s_{\text{dur long}}$ split, and `span_metrics`' *deadline* (rather than
-window) matching rule exists to keep retrospective channels admissible.
-
-The two channels are independent **by construction**: the duration channel conditions on the
-*observed* symbol of the step it is timing, so a substitution cannot leak into the temporal channel
-and corrupt per-type attribution.
-
-### Structured for K-sampling, not sampling yet
-
-Written so `n=K` needs no interface change: the client call returns a **list** of parsed
-predictions (length 1 today); each channel reduces that list to `(point estimate, score)` — element
-0 and a boolean cast to 0/1 today; and flags carry a float `strength`, thresholded at 0.5. Under
-`n=K` the symbol score becomes $1 - \hat P(\text{observed})$ and the duration score an empirical
-tail probability, which makes the arm threshold-sweepable and removes the current asymmetry where
-only the HSMM has a sweep.
-
-### Cost
-
-`len(steps)` requests per trial — ~6.5 against the verdict arms' ~121 at `--unit tick`. Run it at
-`--unit tick` anyway: `--unit` is pool-defining, so a step-unit run would trip `_write_report`'s
-guard and **overwrite** the arms it is meant to be compared against. The arm key is
-`{source}/llm-predictive-{variant}`, distinct from `{source}/llm-{variant}`, so it merges
-alongside them.
-
-```bash
-PROTOCOL=predictive VARIANT=no-recipes ./run_tick_test.sh
-```
-
-### Smoke-test behaviour (4 trials — not a measurement)
-
-Mechanically sound on real `gemma3:27b` output: 170 boundaries, `DURATION` parse failure 0.000,
-`NEXT` 0.059. On the four **healthy** trials, per boundary:
-
-| | rate |
-|---|---|
-| symbol disagreement | 0.680 |
-| duration over-run | 0.621 |
-| duration under-run | 0.172 |
-
-So the arm's near-total flag rate is **genuine detector behaviour, not an indexing bug**: the model
-names the exact next `(verb, noun)` about a third of the time over 15 verbs × 36 nouns in a corpus
-where some recipes show 50 distinct orders in 52 trials, and it systematically under-predicts step
-lengths. Read against §2's note that with-recipes rigidity varies enormously by dish. **Caveat for
-the with-recipes variant of this arm specifically**: `recipe_block` prints each step's median
-duration, so that preprompt now supplies duration *priors* as well as ordering — the very quantity
-the duration channel is being tested on. Compare its duration numbers to the no-recipes arm, not
-to the HSMM.
-
----
-
-## 3c. Porting a preprompt to a second domain
-
-EPIC-Tent needed the predictive head on a corpus that is not cooking. `build_system_prompt` grew
-five parameters — `domain`, `sil_verb`, `sil_noun`, `canonical_order`, `interleaved` — all
-defaulting to what every existing caller relied on implicitly, so **the cooking path is
-byte-identical** and no collected response is invalidated.
-`tests/test_prompts_domain.py` pins that across all 16 protocol × unit × variant combinations,
-which is the load-bearing test in that file.
-
-Three things had to change, and one deliberately did not:
-
-**A fourth sibling head, not a template.** `_PREDICTIVE_TASK_ASSEMBLY` differs from
-`_PREDICTIVE_TASK` in exactly two phrases — the opener, and "working normally" for "cooking
-normally". It is still a separate constant, for the reason §2 gives for the other three: the text
-is part of the response-cache key. Arm 3 is the cheap head to port precisely because it asks for no
-verdict and names no anomaly type, so there is no mustard-and-jelly example to rewrite. The two
-verdict heads have no assembly sibling, and `build_system_prompt` **raises** rather than handing a
-tent-assembly trial a preprompt that opens "as they cook a single breakfast recipe".
-
-**The SIL tokens are now plumbed from the config, and this fixed a live bug.** `vocab_block` and
-`_label_to_step_text` defaulted to `"stall"`/`"kitchen"` and were never overridden — so on EPIC,
-whose vocabulary contains both `idle` (its sentinel) and `kitchen` (a real noun class), the block
-was telling the model that a real object was the placeholder. `anomaly/narrate.Lexicon` has the
-same two defaults and all 20 of its call sites pass two positional arguments.
-
-**`assembly_block` replaces `recipe_block`, on substance.** `recipe_block` opens "The person is
-making exactly one of the following recipes" and reports how often each modal order occurs, because
-on Breakfast the order is an empirical fact about ten recipes. EPIC-Tent has one task and a printed
-instruction sheet, and its `order` errors are annotated against that sheet — so the reference is
-*prescriptive*, and reporting empirical order frequencies would describe the errors rather than the
-procedure. `assembly_block` states the prescribed order with per-step median durations and says so.
-
-It also deliberately reports **no deviation frequencies**. Arm 3 predicts a normal continuation and
-the disagreement is the detector; telling the model that skipping and reordering are common would
-make it predict deviations and erase the signal. A test asserts the words stay out.
-
-The few-shot machinery needed no change and is the one place the prompt learns a domain by itself —
-but see §4, because on a long-horizon corpus it is what broke the arm.
-
----
-
-## 4. Request budget — the binding constraint
-
-This evaluation is **request-bound, not token-bound**. At ~7 steps/trial, a 6-condition sweep
-(healthy + 5 error types) over 20 trials costs **~880 requests per prompt variant** under
-`incremental`, or **120** under `batch`. The prompts are ~2.5–5 KB, so tokens are never the limit;
-the per-day request cap always is.
-
-| Provider | Model | Req/min | Req/day |
+| Channel | Fires | Alarm tick | Known at |
 |---|---|---|---|
-| **Gemini API** (default) | `gemini-3.5-flash-lite` | 15 | **500, per model** |
-| OpenRouter | any `:free` variant | 20 | **50** (1000 after $10 lifetime credit) |
+| `p_symbol` | the run that starts differs from the `NEXT` predicted at the previous boundary | the run's first tick | the same tick |
+| `p_dur_long` | elapsed time first exceeds the predicted duration + tolerance | that tick | the same tick |
+| `p_dur_short` | the run ended short of the prediction − tolerance | the run's last tick | the next run's first tick (T − 1 at the end) |
 
-`DEFAULT_RPM` is pinned to the low end (15) because the token bucket only ever slows requests
-down: being wrong low costs wall-clock time, being wrong high costs a 429 storm. Check your own at
-[aistudio.google.com/rate-limit](https://aistudio.google.com/rate-limit) and pass `--rpm 30` to
-halve sweep duration if your tier allows it.
+Tolerance is `predict.duration_tolerance(d) = max(2, 0.5 d)`. The short side is not in PREGO and is
+here on purpose. An abandonment makes a run short, and the run after it is the correct next
+symbol, so without it the arm would score ~0 abandonment recall by construction. The duration
+channel conditions on the *observed* symbol, so a substitution cannot leak into it.
 
-**The daily cap is the one that bites.** Two back-to-back 10-trial incremental sweeps (~470
-requests) exhausted it in practice. Gemini meters RPD *per model*, so `--model` is a genuine way
-to keep working the same day — but the model id namespaces the response cache, so switching starts
-from empty and **results collected under different models are not comparable**. Finish a variant
-before switching. The runner prints cache state at startup so an accidental switch shows up as a
-suddenly-empty cache rather than a surprise quota crash.
-
-When a per-day quota does hit, the client raises `QuotaExhausted` immediately rather than burning
-retries on something waiting cannot fix, and the runner writes a **partial report** of whatever
-arms completed instead of discarding the run.
-
-### On a long-horizon corpus the few-shot block is the binding constraint, not the budget
-
-The "~7 steps/trial" above is a Breakfast number. EPIC-Tent sessions run **42–192 steps**, and
-that breaks the few-shot prompt outright rather than just making it expensive. Three exemplars
-render as **191 lines / 6.7 KB of step list**, sitting behind a 34-line response grammar. Measured
-with `gemma3:27b`: it abandoned the `DURATION:`/`NEXT:` grammar on *every single request* and
-continued the step list instead —
-
-    Okay, here's the continuation of the provided trial data, keeping the same format:
-    42. place guyline for 16 seconds ...
-
-— so every reply was a parse failure and the arm emitted **zero flags**. The same trial at 0-shot
-(a 34-line prompt) emitted **57**. Nothing else changed.
-
-`run_epic_tent_eval.py` therefore defaults `--n-shot 0`, and when exemplars *are* requested it
-draws them from the error-free fragments rather than whole sessions — `fewshot_block` opens "Here
-are some complete, correctly-executed trials", and on that corpus 28 of 29 sessions carry a real
-procedural error, so the sentence would simply be false. The runner prints the exemplar step total
-and warns above 60.
-
-The general lesson: before porting a few-shot prompt, compare the rendered demonstration length
-against the instruction block it follows. A parse-failure cliff looks exactly like a detector that
-finds nothing.
-
-The default is therefore the Gemini API, not OpenRouter. OpenRouter's daily cap is per-account and
-platform-wide — it does **not** depend on which free model you pick, so choosing a smaller model
-there buys nothing. A 20-trial single-variant incremental sweep fits inside one Gemini free day
-and does not fit inside an uncredited OpenRouter one.
-
-Switch providers with a flag, not a code change — the client is a plain OpenAI-compatible
-`/chat/completions` POST:
-
-```bash
-python run_llm_eval.py --base-url https://openrouter.ai/api/v1 \
-    --api-key-env OPENROUTER_API_KEY --model <something>:free --rpm 20
-```
-
-Three further mitigations:
-
-1. **`--dry-run`** prints the exact request count for your actual pool before anything is sent,
-   and needs no API key.
-2. **The cache.** Keyed on `sha256(base_url + model + messages + temperature)`. Reruns are free,
-   and a sweep interrupted by a daily cap resumes where it stopped.
-3. **`--protocol batch`** — ~7× fewer requests, at the cost of causal comparability.
-
-**At `--unit tick` the arithmetic changes by ~18×** (§1). The full test split, both variants, is
-**146,724 requests** before caching and ~92k after — see §6 for what that costs in wall-clock time
-locally. Shrink it along the axes that do not compromise the comparison: one prompt variant halves
-it (and the with-recipes arm is the one that is not like-for-like against the HSMM anyway), and
-`--max-real` scales it linearly. This is far outside any hosted free tier — a tick-unit run is a
-local-server experiment.
-
-`--max-requests` raises `BudgetExceeded` rather than silently truncating: a half-finished sweep
-that reports as complete is worse than a crash, and the cache makes restarting cheap.
-
-### The API key
-
-`run_llm_eval.py` loads an untracked `.env` at startup (`--env-file` to point elsewhere). Copy the
-tracked `.env.example` and fill it in:
-
-```bash
-cp .env.example .env      # then set GEMINI_API_KEY=...   (get one at aistudio.google.com/apikey)
-```
-
-`.env` is gitignored; `.env.example` is tracked so the required variables are documented in the
-repo. Variables already present in the environment win over the file, so an explicit
-`GEMINI_API_KEY=... python run_llm_eval.py` is never overridden by a stale file. A missing file is
-not an error — exporting the variable directly is equally valid, and CI has no `.env`. The runner
-checks for the key **before** building pools or running the HSMM arm, so a missing key fails in
-one line instead of several minutes in.
+`detect_trial` issues all of a trial's boundary requests at once; the step loop issues exactly the
+same requests (`tests/test_detector_contract.py` checks the request sets are equal), so both read
+the same cache entries.
 
 ---
 
-## 5. `eval/element_metrics.py` — scoring both detectors identically
+## 5. The client and the response cache
 
-> **Now one of three layers.** `eval/span_metrics.py` ([`eval.md`](eval.md) §7b) scores the same
-> arms by **span existence** instead of per element, which removes the flag-density and
-> span-width effects this layer still carries. It sits alongside; nothing here changed, and every
-> number below still describes the detector it always did. Each arm's report carries both, under
-> `trial_located`/`step_level` and under `spans`.
+`llm/client.ChatClient` is a plain OpenAI-compatible `/chat/completions` client with rate limiting,
+a request budget and an on-disk cache.
 
-### The HSMM adapter
+**The cache key is sha256(base_url + model + messages + temperature [+ max_tokens]).** So:
 
-`step_verdicts_from_flags` turns per-tick channel flags into one `StepVerdict` per step: a step is
-`is_anomaly` if **any** tick inside it is flagged. That is the only mask — there is no persistence
-variant, here or in the tick layer ([`eval.md`](eval.md) §2), so both arms are scored through one
-rule and the two detectors' false-alarm numbers mean the same thing.
+- **a replay must use the original `--base-url`.** Breakfast's responses were collected through
+  `http://localhost:11435/v1`, EPIC-Tent's through `http://localhost:11434/v1`. The same server on
+  another port is a different key;
+- **any byte change to a prompt is a cache miss.** That is why `llm/` prompt text is frozen;
+- **`--max-requests 0` replays only.** A miss then raises `BudgetExceeded` instead of sending
+  anything, which is the check that nothing changed. Phase D of the restructure replayed all
+  158,234 cached requests with 0 misses;
+- switching `--model` starts an empty namespace, and results under different models are not
+  comparable.
 
-A step spans ~11 ticks, so the HSMM does carry more per-step exposure than the LLM's single
-verdict. That is handled at the threshold rather than by filtering the output: $\alpha$ moves
-false alarms and recall together along a curve `run_threshold_sweep.py` measures
-([`eval.md`](eval.md) §6), whereas a run-length filter would mute the structural channels
-(whose true signal is one tick wide) while sparing the duration channels.
+`llm_cache/` under each corpus directory holds days of GPU time. Never delete it.
 
-### Channel → predicted type
-
-The LLM names a type in words. To compare, the HSMM has to name one too, from the channels that
-fired. Measured in-window firing rates over 20 real trials:
-
-| | `s_emit` | `s_verb` | `s_noun` | `s_temporal` | `s_dur_two` | `s_transition` | `s_recipe_trans` |
-|---|---|---|---|---|---|---|---|
-| substitution | 1.00 | 0.10 | **1.00** | 0.00 | 0.00 | 0.00 | 0.00 |
-| abandonment | 0.40 | 0.05 | 0.25 | 0.15 | **0.60** | 0.15 | 0.05 |
-| omission | 0.80 | 0.25 | 0.45 | 0.10 | 0.15 | **0.35** | 0.25 |
-| transposition | 0.90 | 0.35 | 0.60 | 0.30 | 0.30 | **0.70** | 0.20 |
-| repetition | 0.80 | 0.20 | 0.55 | **0.40** | **0.40** | 0.10 | 0.05 |
-
-Two things follow, and both are decisions of principle that the table confirms rather than
-choices tuned to make numbers look good:
-
-**`s_emit` names no type at all.** It fires on 0.40–1.00 of *every* error type, which is by
-construction — it is the joint marginal $-\log P(v,n\mid\cdot)$, so it carries no type information
-its two component channels do not already carry. A step where only `s_emit` fires is a detection
-with **no** predicted type, landing in `type_confusion`'s `"none"` column: the honest reading of
-"something is off here but the model cannot say what."
-
-**Priority is by specificity of evidence**, `s_transition` first: an ordering violation *explains*
-an odd duration at that position, not the other way round. Then `s_dur_two`, which is signed and
-so names a direction (`left_early` → abandonment, `stuck` → repetition) rather than merely
-"unusual". Emission channels last, since a boundary the causal filter has not caught up to yet
-fires them as a side effect of every structural error.
-
-The residual confusions are the ones this repo already documents rather than new artefacts:
-transposition → `omission` (both are `s_transition`; the cascade cannot separate them), and
-repetition split between `repetition` and `substitution` (its ambiguity is stated outright in
-[`synthetic.md`](synthetic.md)).
-
-### Why the step unit, and not the trial verdict
-
-`trial_located` is reported alongside, but the step layer is the one that makes the two arms
-comparable on false alarms, because it counts every flagged step instead of collapsing a trial's
-strays into one ([`eval.md`](eval.md) §7). The difference is not cosmetic here: on the test split
-the LLM raises about **3.2 alarms for every false positive `trial_located` charges it**, against
-about 1.1–1.4 for the HSMM arm, so the trial verdict understates the LLM's chattiness by roughly
-a factor of three relative to the HSMM's. Measured at step level over 3684 steps, the LLM arm
-produces 734 false positives against the HSMM's 120–206 while detecting fewer anomalies.
-
-### What is reported
-
-`evaluate_steps` returns the same `per_type` / `attribution` / `healthy` shape as
-`metrics.evaluate`, so the printer and `eval/plotting.py` work on it unchanged. It keeps the
-`precision` vs `precision_excl_healthy` split — `fp_healthy` is the same shared constant pooled
-into every type's denominator at step level too, so the anti-self-deception argument in
-[`eval.md`](eval.md) §2 carries over verbatim. `latency_tol = 5` ticks becomes `tol_steps = 1`,
-since five ticks does not translate to a unit whose median width is eleven.
-
-Three additions the tick layer structurally cannot provide:
-
-| Field | What it measures |
-|---|---|
-| `type_confusion` | predicted × true anomaly type. The tick layer's attribution matrix only *proxies* this through which channel fired. |
-| `correction_accuracy` | does the proposed correct move match the pre-injection step? Token match and duration match are reported **separately**, because abandonment leaves verb and noun untouched — a combined score would credit naming a step the detector never had to identify. |
-| `parse_failure_rate` | LLM arms only. |
-
-plus two pooled views:
-
-| Field | Unit | Question |
-|---|---|---|
-| `step_level` | one step | of all steps, which were correctly classified? |
-| **`trial_located`** | one trial | did the detector flag **in the right place** on this trial? |
-
-`trial_located` is the headline metric (§0) and mirrors `run_threshold_sweep.py`'s `trial_loc`
-([`eval.md`](eval.md) §6) in step space rather than tick space. A degraded trial's positive range
-is `gt_steps` $\cup$ `debris`; a flag inside it is a hit (TP) and no in-range flag is a miss (FN);
-a flag outside it is a **stray**, charged as a false positive *independently* of whether the trial
-was also hit, so finding the anomaly buys no absolution for firing elsewhere. Healthy trials have
-no range: any flag is a false positive.
-
-`stray_rate` (per degraded trial) and `healthy.false_positive_rate` (per healthy trial) are
-reported separately rather than pooled into one FPR, because a degraded trial can contribute both
-a TP and an FP and so is not a member of a well-defined negative class — `FP/(FP+TN)` would mix
-the two populations and is deliberately not reported.
-
-### What counts as one test — the `step_level` pool
-
-Two rules define the pool, and both apply identically to every arm.
-
-**One ground-truth window is one test.** A window can span several steps — a transposition spans
-the swapped pair, averaging 2.01 ground-truth steps per trial. Flagging either half is a complete
-detection of the one event that was injected, so the window contributes exactly one TP (any of its
-steps flagged) or one FN (none flagged), never one per step. Scoring per step would book a false
-negative for the unflagged sibling of a pair the detector had already found.
-
-**Injection debris is excluded entirely.** A degraded step is *injection-touched* if it contains or
-borders an edited tick, or if its own tick range spans a `tick_map` splice
-(`textify.injection_touched_steps`, using the provenance fields in
-[`synthetic.md`](synthetic.md) §2.1). A touched step that is **not** ground truth is neither the
-injected anomaly nor a clean normal step: it is an artefact of the edit, and it is dropped from the
-pool rather than counted either way.
-
-Substitution's edit now spans its whole segment and lands exactly on the boundary already there,
-so it no longer produces this kind of debris — the only case remaining in practice is repetition,
-when its duplicate merges with its original across a `tick_map` splice.
-
-Both rules move the denominator, so `chance_precision` is computed from the same scoreable pool
-rather than from `tp + fp + fn` — that quantity varies with how much a given detector flags and
-would hand the two arms different baselines for identical data.
-
-`evaluate_steps` takes `artifact_steps` per degraded trial; omitting it disables the debris rule,
-which is what keeps `run_evaluation.py`'s tick-level path unchanged.
+`QuotaExhausted` (a per-day cap on a hosted provider) stops immediately rather than retrying.
+`--dry-run` in the eval scripts prints the request count before anything is sent.
 
 ---
 
-## 6. Running it locally (the default)
+## 6. Serving locally
 
-The client defaults to `http://localhost:11434/v1` with `gemma3:27b`. A local server removes every
-constraint the hosted path imposes -- no key, no pacing, no daily quota -- and it *pins the model*,
-which the hosted path cannot: `gemini-2.5-flash-lite` was retired mid-experiment here, invalidating
-the results collected against it. For a baseline whose numbers end up in a writeup, that
-reproducibility is the strongest argument for local, ahead of speed or cost.
+The default is ollama at `http://localhost:11434/v1` with `gemma3:27b`. A local server pins the
+model; a hosted one can retire it mid-experiment, which happened here once.
 
-```bash
-# rootless install, no sudo
-mkdir -p ~/.local/ollama && cd ~/.local/ollama
-curl -sSL -o o.tar.zst https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64.tar.zst
-tar --zstd -xf o.tar.zst && rm o.tar.zst
-export PATH="$HOME/.local/ollama/bin:$PATH" LD_LIBRARY_PATH="$HOME/.local/ollama/lib:$LD_LIBRARY_PATH"
-ollama serve &
-ollama pull gemma3:27b
-```
+Four traps, each silent:
 
-`--rpm` and `--concurrency` default *by destination*, because the right value is opposite in the
-two cases: a localhost URL gets no pacing and 8 workers, anything else gets 15 rpm and 1 worker
-(concurrency against a request-capped free tier just converts one 429 into eight).
+1. **Bound `OLLAMA_CONTEXT_LENGTH` when raising `OLLAMA_NUM_PARALLEL`.** KV cache is allocated
+   as context × parallel; at the model default (131k for gemma3) and 8 slots that is 80 GB, and
+   ollama puts two thirds of the model on the CPU without an error. Bounding the context made the
+   same run 4× faster. Check `curl localhost:11434/api/ps`: `size_vram` must equal `size`.
+2. **ollama truncates an over-long prompt from the front**, dropping the system prompt and still
+   answering. Tick-unit prompts reach ~3,900 tokens; serve them with
+   `OLLAMA_CONTEXT_LENGTH=8192`. `llm_breakfast.sh` preflights the longest request.
+3. **Layer placement is fixed at load time.** A model loaded while JAX holds the GPU stays mostly
+   on CPU. Load it first, or unload (`keep_alive: 0`) and reload. Both runner scripts check and
+   repair this, and re-pin `keep_alive` (each `/v1` request resets it to 5 minutes).
+4. **JAX preallocates 75% of the card.** The runners set `XLA_PYTHON_CLIENT_PREALLOCATE=false`;
+   it costs the HSMM nothing measurable.
 
-### Sharing the GPU with JAX
+`qwen3` is a poor fit: its thinking mode cannot be disabled through the OpenAI endpoint, so each
+one-line verdict costs ~250 completion tokens and it invents out-of-vocabulary types.
 
-JAX preallocates ~75% of the device on first use -- **37 GB of a 48 GB card**, measured -- which
-starves a model server that has not loaded yet. `run_llm_eval.py` therefore sets
-`XLA_PYTHON_CLIENT_PREALLOCATE=false` by default, after which JAX holds **572 MB** and JAX plus
-`gemma3:27b` coexist at 29.5 GB.
-
-Measured cost of disabling it, HSMM arm on 20 real trials: **68.83 s vs 68.97 s** -- nothing. This
-workload is dominated by XLA compilation and a few large ops, not allocation churn, so there is no
-trade-off to manage.
-
-If you would rather keep the arms apart anyway, `--skip-llm` then `--skip-hsmm` **merge** into one
-report at the same `--out`. The merge is guarded on the pool-defining arguments (seed, source,
-trial counts, checkpoint): a run with a different `--seed` is refused rather than silently
-producing a table that looks like a comparison and is not one.
-
-### Measured throughput, and why concurrency disappoints here
-
-Prefix-only requests are independent, so they are issued through a thread pool. n=10 real trials,
-251 requests, RTX 6000 Ada:
-
-| model | concurrency 1 | 8 | 16 |
-|---|---|---|---|
-| `gemma3:4b` | 104 s | **63 s** (1.66x) | 61 s (1.70x) |
-| `gemma3:27b` | 850 s | 701 s (1.21x) | — |
-
-Real, but far short of the ~7x that independent requests suggest, and it saturates by 8 workers.
-The client is not the bottleneck; llama.cpp simply batches weakly. This is the ollama-vs-vLLM
-difference: vLLM's continuous batching is what converts request independence into throughput.
-
-### The configuration trap that dominates everything else
-
-**Raising `OLLAMA_NUM_PARALLEL` without also bounding `OLLAMA_CONTEXT_LENGTH` will silently push
-most of the model onto the CPU.** KV cache is allocated as `context_length x num_parallel`, and
-these models default to enormous contexts -- 131072 for gemma3, 40960 for qwen3. At
-`NUM_PARALLEL=8` that is an **80 GB** demand on a 48 GB card, so ollama loads only what fits:
-
-```
-llama_kv_cache: size = 81920.00 MiB (131072 cells, 10 layers, 8/8 seqs)
-load_tensors: offloaded 21/63 layers to GPU      <- gemma3:27b, two thirds on CPU
-```
-
-Nothing errors. The run just becomes CPU inference. Measured on n=10, 251 requests:
-
-| gemma3:27b | concurrency 1 | concurrency 8 |
-|---|---|---|
-| default context (21/63 layers on GPU) | 850 s | 701 s |
-| `OLLAMA_CONTEXT_LENGTH=2048` (63/63 on GPU) | **212 s** | **167 s** |
-
-**4x from one environment variable** -- far more than concurrency ever contributed. At
-`--unit step` the longest prompt this evaluation produces is 842 tokens (1476 with recipe
-descriptions), so 2048 is ample.
-
-**`--unit tick` breaks that.** Measured on the served model: the system prompt alone is 776 tokens
-(1540 with recipes), and a tick prefix costs ~6.5 tokens per line, so the longest test-split trial
-(447 ticks) reaches **3852 tokens** -- and ollama truncates an over-long prompt **from the front**,
-silently dropping the system prompt (the response grammar, the vocabulary, the anomaly
-definitions) while still returning a plausible reply. It appears as a parse-failure cliff on long
-trials and as nothing else. `run_llm_eval.py --unit tick` therefore prints the longest request's
-size and the context length to serve before it sends anything.
-
-Serve tick-unit runs with `OLLAMA_CONTEXT_LENGTH=8192`. That is 8 x 8192 of KV, which still leaves
-`gemma3:27b` fully on the GPU (verify: `curl localhost:11434/api/ps` -- `size_vram` should equal
-`size`).
-
-One trap on top of the trap: **ollama decides layer placement from free VRAM at load time and
-keeps that decision**. Loading the model while JAX holds the card -- which any `run_*.py` import
-does -- gives 18/63 layers on GPU and CPU-speed inference for the rest of the session, with the
-same silence as above. Load the model first, or unload and reload it (`keep_alive: 0`, then one
-warm-up request) once the GPU is free.
-
-Gemma 3's sliding-window attention is a red herring here. ollama does churn ~250 MB KV checkpoints
-in its log (`n_swa = 1024`) and that churn is real, but it is not the bottleneck — the layer-offload
-lines above are. `gemma3:4b` has the same SWA architecture and scales fine, precisely because it
-fits on the GPU whole. Read the offload count, not the SWA chatter.
-
-### Model choice
-
-`gemma3:27b` is the recommended local model. **`qwen3:32b` is a poor fit despite being a
-reasonable model**, for a mechanical reason: its thinking mode cannot be disabled through the
-OpenAI-compatible endpoint. `think: false` works only on ollama's native `/api/chat`
-(4 completion tokens, 0.26 s), while the OpenAI path ignores it and also ignores
-`chat_template_kwargs: {enable_thinking: false}`; `PARAMETER think false` in a Modelfile is
-rejected as an unknown parameter. The result is 219-294 completion tokens per verdict against
-gemma3's ~15, roughly 10x the generation cost for a one-line answer, plus a tendency to invent
-out-of-vocabulary types ("Sequence Anomaly", "Time Anomaly"). Supporting it would mean teaching
-the client ollama's native protocol, which is exactly the provider-specific coupling
-`--base-url` exists to avoid.
-
-So: **ollama is right for validating the pipeline and for n<=10; vLLM is what makes n=100+
-pleasant.** Raise `OLLAMA_NUM_PARALLEL` to at least `--concurrency` if you use concurrency -- and
-bound `OLLAMA_CONTEXT_LENGTH` when you do, or you will lose far more to CPU offload than
-concurrency wins back.
-
-## 7. Running it
-
-
+The runners survive losing their terminal:
 
 ```bash
-# cost the sweep first -- no key needed, no requests sent
-python run_llm_eval.py --config configs/breakfast.yaml --dry-run
-
-# the HSMM arm alone: no key, no budget, no network
-python run_llm_eval.py --config configs/breakfast.yaml --skip-llm
-
-# cheap smoke test (after `cp .env.example .env` and filling in GEMINI_API_KEY)
-python run_llm_eval.py --config configs/breakfast.yaml --protocol batch --n 2 --max-real 2
-
-# the real thing, both variants
-python run_llm_eval.py --config configs/breakfast.yaml --variant both --n 20 --max-real 20
-
-# score the 2-stage cascade as the HSMM arm instead of the joint model
-python run_llm_eval.py --config configs/breakfast.yaml --cascade
-
-# switch back to a hosted provider (needs GEMINI_API_KEY in .env)
-python run_llm_eval.py --base-url https://generativelanguage.googleapis.com/v1beta/openai \
-    --model gemini-3.1-flash-lite
+setsid nohup scripts/eval/llm_breakfast.sh > /dev/null 2>&1 < /dev/null &
 ```
 
-### The tick-unit sweep — `run_tick_test.sh`
+Re-running after a crash is always safe: completed responses replay from the cache. Stop a runner
+by PID. `pkill -f llm_breakfast.sh` also matches the shell running it.
 
-A full test-split run at `--unit tick` (§1) is ~18x the requests of a step run, so it gets a
-driver rather than a command line. One prompt variant per invocation:
+---
 
-```bash
-VARIANT=no-recipes ./run_tick_test.sh      # the like-for-like comparison vs the HSMM
-VARIANT=with-recipes ./run_tick_test.sh    # the arm that reads labels.json
-```
+## 7. Results
 
-Three things about it are deliberate:
+Under metric G, the LLM arms sit 0.02–0.08 F1 above the flag-every-run null on Breakfast and
+~0.01 above it on EPIC-Tent. They flag 49–91% of error-free runs and raise 16–41 alarms per 10
+minutes. The HSMM arms score 0.17–0.29 F1 higher at about a tenth of the alarm rate. Recipe descriptions make the predictive arm flag a
+little less on Breakfast (F1 0.375 → 0.410) and change nothing on EPIC-Tent. Under PREGO's own
+protocol (metric E) the predictive arm reproduces PREGO's published line, and so does flagging
+every step. Tables: README ("Results"); history: [`logbook.md`](logbook.md).
 
-- **It is built to survive losing whatever started it.** Launch it detached
-  (`setsid nohup env VARIANT=no-recipes ./run_tick_test.sh > /dev/null 2>&1 < /dev/null &`) and it
-  keeps running with no controlling terminal. Re-running after a crash, a kill or a reboot is
-  always safe and always the right move: every response is cached on
-  `sha256(base_url + model + messages + temperature)`, so a restart replays completed work from
-  disk at no cost and resumes at the first request that never landed. No stage overwrites a
-  finished stage's results.
-- **The two arms are separate invocations into the same `--out`**, which `_write_report` merges —
-  guarded on `POOL_DEFINING_ARGS`, so it refuses to merge arms scored on different pools. That is
-  not tidiness: the HSMM arm wants JAX on the GPU and the LLM arm wants ollama holding 22 GB of
-  weights on the same card, and one process means both are resident at once. Sequencing them keeps
-  each alone with the card.
-- **It sets `PYTHONPATH` explicitly**, as a guard rather than a fix. When several git worktrees
-  share one venv, the editable install resolves to whichever checkout last synced it — and if that
-  is a checkout without the tick unit, a bare `import cook_ad` dies on the first
-  `elements_from_trajectory(..., unit=)` call. Pinning `PYTHONPATH` to this checkout's `src` makes
-  the run correct regardless of which worktree owns the editable pointer.
+---
 
-  If the pointer *is* wrong, re-sync from the checkout you want — **with the extras**:
+## 8. Code
 
-  ```bash
-  uv sync --extra dev --extra gpu
-  ```
-
-  A bare `uv sync` installs only the base dependency group, which here means uninstalling 46
-  packages including `jax-cuda12-plugin` and the CUDA runtime. JAX then falls back to CPU without
-  announcing it, and every fit in this repo silently gets ~an order of magnitude slower. Check
-  before and after with `uv sync --extra dev --extra gpu --check` (a dry run) and
-  `python -c "import jax; print(jax.default_backend())"`. `uv pip install -e .` is the
-  pip-compatibility path and would be overwritten by the next sync, so it is not the fix either.
-
-  The durable fix is a `.venv` per worktree, which is uv's default anyway. Note the same guard is
-  what `./py` applies to every other runner.
-
-### Which HSMM, and which checkpoint
-
-The **joint** model is the default (`--cascade` switches back), on
-`dataset/processed/breakfast/joint_params.npz`.
-
-That choice changes **both** arms, not just the HSMM one: the model Viterbi-segments each healthy
-trial, which decides where `error_injection` can place an error, and therefore what text the LLM
-ends up reading. The LLM never sees the model, but it reads trials the model segmented.
-
-The checkpoint was **not** chosen on training likelihood, which is unusable on this model — a
-random recipe partition has been measured to beat the ground-truth partition by 175 nats, because
-~65k per-recipe transition parameters sit against ~10⁴ observed segment transitions. Nor on recipe
-ARI, which does not move detection (tripling it, 0.31 → 0.86, moved mean recall 0.823 → 0.821).
-Nor on segmentation quality, which is indistinguishable across every available checkpoint
-(boundary-F1 0.987–0.990 against the ground-truth action labels; injections land on a step
-boundary 95% of the time; all six).
-
-The one axis that separates them is **effective $K_R$** — how many of the 16 nominal recipe
-components the fit actually uses — and more of them is measurably *worse*:
-
-| checkpoint | init | eff $K_R$ | healthy FPR | step prec | step recall | mean prec |
-|---|---|---|---|---|---|---|
-| **`joint_params`** | cascade warm start | **5** | **0.050** | **0.951** | **0.802** | **0.947** |
-| `joint_kmeans10` | k-means | 9 | 0.075 | 0.936 | 0.792 | 0.922 |
-| `joint_noun10` | noun histogram | 11 | 0.075 | 0.938 | 0.762 | 0.915 |
-| `joint_noun16` | noun histogram | 14 | 0.100 | 0.893 | 0.759 | 0.901 |
-
-(40 real trials, 5 injections each, scored through this file's own step layer.)
-
-Recall is flat — 0.880–0.910, no trend. Precision and healthy false-positive rate degrade
-monotonically as effective $K_R$ rises. The mechanism is the same over-parameterisation that makes
-training likelihood useless: splitting the corpus across more live components thins the data
-behind each per-recipe transition and duration table, so the fitted rows are noisier, the quantile
-thresholds derived from them looser, and spurious flags more frequent. **Extra recipe capacity
-costs precision and buys no recall.**
-
-Honest reading of the evidence: at $n = 40$ the individual gaps are small (healthy FPR 0.050 vs
-0.100 is 2 trials against 4). The *monotone trend across four checkpoints in three separate
-metrics* is the evidence, not any one pairwise difference. `joint_noun16` does hold the best
-abandonment recall (0.90 vs 0.78) if that channel is ever the specific target.
-
-`joint_clean.npz` and `joint_d09.npz` are not candidates: they are the same fit as `joint_params`
-at iteration 200 and 320 rather than 100, with the same effective $K_R = 5$, and iterating past
-~100 changes downstream metrics by nothing. Every joint checkpoint reports `converged: false` —
-that is the `tol`-based stopping rule being structurally unable to fire against a period-3 limit
-cycle in the objective, not an unfinished fit.
-
-### Figures
-
-`run_llm_eval.py` writes per-arm figures as it goes. `render_llm_compare_png.py` then reads only
-the report JSON and draws the HSMM against the LLM. `render_llm_narrate_png.py` is the per-trial
-view — one trial, the ground-truth window, what each detector flagged, and the text it produced.
-It makes no requests: every reply is read back out of the response cache, so it can be re-run and
-restyled for free.
-
-```bash
-python render_llm_narrate_png.py --error-type substitution
-```
-
-
-```bash
-python render_llm_compare_png.py --report dataset/processed/breakfast/llm_full_report.json
-```
-
-| figure | shows |
+| Concept | Where |
 |---|---|
-| `compare_detection_{source}` | recall and precision per error type, both detectors |
-| `compare_steplevel` | pooled step-level precision / recall / F1, with the **chance-precision line** |
-| `compare_type_confusion_{source}` | predicted x true type heatmaps, side by side, fixed [0,1] scale |
-| `compare_type_accuracy` | the confusion diagonal alone -- given a detection, was the type right? |
-| `compare_correction` | accuracy of the proposed "correct move", tokens and duration separately |
-| `compare_latency` | mean detection latency in steps |
-| `compare_healthy_fpr` | trial-level false-positive rate on healthy controls |
-
-The chance line on `compare_steplevel` is not decoration. Step-level precision has to be read
-against the base rate of anomalous steps or a detector that flags everything looks respectable:
-`gemma3:4b` scored 0.166 precision at n=10, which is 1.16x chance, i.e. essentially nothing.
-`step_level.chance_precision` is computed in `evaluate_steps` from the true step total rather than
-derived in the renderer, because `tp+fp+fn` moves with how much a given detector flags and would
-hand the two arms different baselines for identical data.
-
-Being layout-only, the renderer can restyle a three-hour sweep's figures in seconds.
-
-Healthy trajectories and all five injections are built **once per source** and handed to every
-arm, so the LLM and the HSMM score byte-identical degraded trials. Regenerating them per arm would
-silently compare two different datasets, which is the failure mode this whole layer exists to
-avoid.
+| shared prompt building, few-shot draw | `detectors/llm_base.py:LLMDetector` (`fit`, `build_prompt`, `steps`) |
+| the verdict detector | `detectors/llm_verdict.py:LLMVerdictDetector` (`step`, `detect_trial`, `known_at`) |
+| the predictive detector | `detectors/llm_predictive.py:LLMPredictiveDetector` (`step`, `_boundary`, `_over_run`, `_close_run`, `detect_trial`) |
+| runs, ticks, rendering | `llm/textify.py:steps_from_ids`, `ticks_from_ids`, `elements_from_ids`, `render_tick_lines` |
+| prompts, variants, exemplars | `llm/prompts.py:build_variant`, `build_system_prompt`, `recipe_block`, `assembly_block`, `select_exemplars`, `fewshot_block` |
+| verdict protocols and parsing | `llm/detect.py:run_trial`, `run_incremental`, `run_conversational`, `run_batch`, `parse_response` |
+| predictive requests, parsing, channels | `llm/predict.py:run_predictive`, `parse_predictions`, `symbol_disagreement`, `duration_disagreement`, `duration_tolerance`, `build_rationales` |
+| client, cache, budget | `llm/client.py:ChatClient` (`complete`, `complete_many`, `_cache_key`), `BudgetExceeded`, `QuotaExhausted` |
+| runners | `scripts/eval/llm_breakfast.sh`, `scripts/eval/llm_epic_tent.sh` |
+| tests | `tests/test_detector_contract.py`, `test_llm_detect.py`, `test_predict.py`, `test_prompts_domain.py`, `test_textify.py`, `test_prego_protocol.py` |

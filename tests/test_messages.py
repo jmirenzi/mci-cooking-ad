@@ -3,7 +3,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from cook_ad.hsmm import emissions, messages, params
+from _fixtures import one_recipe_tables
+from cook_ad.hsmm import kernels
+from cook_ad.hsmm.params import RecipeView
+from cook_ad.hsmm.train import messages
 
 jax.config.update("jax_enable_x64", True)
 
@@ -98,7 +101,7 @@ def test_forward_backward_matches_bruteforce(t, k, d_max, t_true):
     log_init_j, log_trans_j = jnp.array(log_init), jnp.array(log_trans)
     log_dur_pmf_j, log_dur_survival_j = jnp.array(log_dur_pmf), jnp.array(log_dur_survival)
 
-    log_norm, _ = messages.forward_pass(
+    log_norm, _ = kernels.forward_pass(
         loglik, log_init_j, log_trans_j, log_dur_pmf_j, log_dur_survival_j, mask, d_max
     )
     assert jnp.isclose(jnp.exp(jnp.sum(log_norm)), bf_total, rtol=1e-8)
@@ -134,19 +137,19 @@ def test_starved_mode_no_nan():
     noun_counts = jnp.full((k, vocab_nouns), 0.5).at[jnp.arange(1, k), jnp.arange(1, k) % vocab_nouns].set(200.0)
     noun_counts = noun_counts.at[starved, :].set(0.0)
 
-    p = params.HSMMParams(
+    p = RecipeView(
         init_counts, trans_counts, verb_counts, noun_counts, jnp.full((k,), 5.0), jnp.full((k,), 0.3)
     )
-    log_probs = params.to_log_probs(p, d_max)
+    log_probs = one_recipe_tables(p, d_max)
 
     active_states = jax.random.randint(jax.random.PRNGKey(99), (t,), 1, k)
     verb_ids, noun_ids = active_states % vocab_verbs, active_states % vocab_nouns
     mask = jnp.ones((t,), dtype=bool)
 
-    loglik = emissions.sequence_loglik(verb_ids, noun_ids, log_probs.log_emit_v, log_probs.log_emit_n, mask)
+    loglik = kernels.sequence_loglik(verb_ids, noun_ids, log_probs.log_emit_v, log_probs.log_emit_n, mask)
     xi_trans, xi_dur, cens, gamma, log_z = messages.combine_sufficient_stats(
-        loglik, mask, log_probs.log_init, log_probs.log_trans,
-        log_probs.log_dur_pmf, log_probs.log_dur_survival, d_max,
+        loglik, mask, log_probs.log_init, log_probs.log_A,
+        log_probs.log_pmf, log_probs.log_surv, d_max,
     )
 
     for arr in (xi_trans, xi_dur, cens, gamma, log_z):

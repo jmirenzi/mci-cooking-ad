@@ -8,36 +8,19 @@ k_subtask: 64   # weak-limit nominal; covers 48 actions + 1 SIL/"stall" state + 
 k_recipe: 16    # weak-limit nominal; covers 10 known recipes + headroom
 
 prior:
-  alpha_pi: 1.0            # recipe Dirichlet concentration (weak-limit: keep small) -- mirrors breakfast_mini.yaml
+  alpha_pi: 1.0            # recipe Dirichlet concentration (weak-limit: keep small)
 
 duration:
   d_max_ticks: 200   # ~p99 of segment lengths at 1s ticks; longer segments right-censor into the last bin
-  shrinkage_kappa: 5.0     # global-shape pseudocount for per-(Z,R) NB fitting -- mirrors breakfast_mini.yaml
+  shrinkage_kappa: 5.0     # global-shape pseudocount for per-(Z,R) NB fitting (docs/training.md §5)
 
 em:
-  restarts: 10
-  annealing: false   # deterministic annealing toggle, off by default; flip on if restarts alone don't escape the non-log-concave prior
-  chunk_size: 8
+  chunk_size: 8   # trials per E-step chunk; the joint chunk is max(1, chunk_size // k_recipe)
 
 joint_em:
-  warm_start: true         # if false, use random init + restarts (fallback only)
-  cascade_hsmm_params: dataset/processed/breakfast/hsmm_params.npz
-  cascade_recipe_params: dataset/processed/breakfast/recipe_params.npz
-  n_restarts: 1             # warm-start is deterministic; >1 only for random fallback
-  max_iters: 100
-  tol: 1.0e-4
-  # NOT overriding em.chunk_size's derived joint chunk_size (max(1, em.chunk_size // k_recipe)
-  # = max(1, 8 // 16) = 1) here on purpose: at K=64/D_max=200/T_max~650 on a 6GB GPU, raising
-  # it is unverified and risks an OOM mid-run, which checkpointing can't recover gracefully
-  # from mid-iteration. Safe to raise once a checkpointed run has shown real memory headroom.
-  checkpoint_every: 5       # iterations between resumable checkpoints -- see run_joint.py --resume
-  # Measured directly on a real full-scale checkpoint (K_R=16, 931/1024 duration cells near-
-  # empty): the pooled global per-state duration fit, refit from scratch every M-step, swung
-  # r=471->38 in ONE step for a state where every recipe's own cell had ~0 occupancy -- and
-  # because kappa*pmf_global is shared across all 16 recipes' copies of that state, the swing
-  # perturbed 16 cells at once, driving a sustained ~30-iteration objective decline. 0.7 means
-  # the used global fit is 70% previous-iteration / 30% fresh each M-step (see
-  # durations.fit_durations_shrunk's docstring for the exact mechanism and the EMA formula).
+  # EMA weight on the pooled per-state duration fit (docs/training.md §5): measured, an undamped
+  # refit swung r 471 -> 38 in one M-step for a near-empty state, perturbing all 16 recipe
+  # copies of it at once. 0.7 = 70% previous fit, 30% fresh.
   global_damping: 0.7
 
 ambient_gaps:

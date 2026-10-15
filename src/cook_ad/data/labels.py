@@ -1,7 +1,7 @@
 """Recipe/subtask ground-truth labels.
 
 VALIDATION ONLY. Nothing in this module is ever fed to EM/training -- it exists to
-score recovered latent states (Phase 3 cascade, Phase 6 evaluation) against the
+score recovered recipes and subtasks (hsmm/train/metrics.py) against the
 Breakfast annotations, kept in a file structurally separate from the integer
 training sequences.
 """

@@ -201,7 +201,7 @@ def test_fps_overrides_only_apply_to_the_three_published_exceptions():
 # ---------------------------------------------------------------------------
 # End-to-end, against the real annotations. Skipped when they are absent, unlike
 # test_parse_breakfast's equivalent: Breakfast is a prerequisite for the whole repo, whereas
-# these 16 MB are fetched on demand by tools_fetch_epic_tent.py.
+# these 16 MB are fetched on demand by scripts/data/fetch_epic_tent.py.
 # ---------------------------------------------------------------------------
 from pathlib import Path  # noqa: E402
 
@@ -213,7 +213,7 @@ CONFIG_PATH = REPO_ROOT / "configs" / "epic_tent.yaml"
 
 needs_data = pytest.mark.skipif(
     not (ROOT / pet.ACTION_FILE).exists(),
-    reason="run tools_fetch_epic_tent.py to fetch the annotations",
+    reason="run scripts/data/fetch_epic_tent.py to fetch the annotations",
 )
 
 
@@ -307,7 +307,7 @@ def test_clean_fragments_never_touch_an_error_span(built):
 
 
 # ---------------------------------------------------------------------------
-# PREGO's split. Loaded by path because tools_epic_tent_split.py is a repo-root script, not part
+# PREGO's split. Loaded by path because scripts/data/epic_tent_splits.py is a script, not part
 # of the package. An earlier version put the unrated participants in TRAIN and ranked by mean,
 # which reproduced PREGO's 14/15 counts with the wrong membership.
 # ---------------------------------------------------------------------------
@@ -316,7 +316,7 @@ import importlib.util  # noqa: E402
 
 def _split_tool():
     spec = importlib.util.spec_from_file_location("tools_epic_tent_split",
-                                                  REPO_ROOT / "tools_epic_tent_split.py")
+                                                  REPO_ROOT / "scripts" / "data" / "epic_tent_splits.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -354,7 +354,7 @@ def test_prego_split_boundary_is_strictly_below_point_six(tmp_path):
 
 
 @pytest.mark.skipif(not (ROOT / "uncertainty").exists(),
-                    reason="run tools_fetch_epic_tent.py --uncertainty")
+                    reason="run scripts/data/fetch_epic_tent.py --uncertainty")
 def test_prego_split_reproduces_their_published_test_ids():
     """The 15 keys of PREGO's own step_anticipation/data/predictions/
     output_miniROAD_Epic-tent-O.json."""

@@ -16,7 +16,7 @@ vocab:
 
 k_subtask: 16   # 12 distinct (verb, noun) pairs + SIL, with headroom. Unlike EPIC, this IS
                 # one-state-per-pair: the 12 published action classes factor injectively into
-                # pairs, so recipe/lexical_init's anchored emissions hand the state space over
+                # pairs, so hsmm/train/lexical_init's anchored emissions hand the state space over
                 # rather than having to discover it. 16 rather than 13 leaves the weak-limit
                 # prior room to split a state whose duration is bimodal (`insert stake` covers
                 # four tent corners in the paper's finer 38-way taxonomy, which the public
@@ -35,26 +35,16 @@ duration:
   shrinkage_kappa: 5.0
 
 em:
-  restarts: 10
-  annealing: false
   chunk_size: 8   # 29 sequences, T up to 2124. Length-bucketed chunking makes this cheap; the
                   # whole corpus is 23226 ticks, an order of magnitude under Breakfast.
 
 joint_em:
-  warm_start: false       # no cascade artifacts exist for this corpus; use run_joint_lexical.py
-  chunk_size: 8           # set explicitly: run_joint_lexical otherwise derives
-                          # max(1, em.chunk_size // k_recipe), which at k_recipe=1 would be 8
-                          # anyway, but the derivation is not the reason it should be 8.
+  chunk_size: 8
   recipe_features: pairs  # the Breakfast default, NOT EPIC's `nouns`. EPIC switched because
   idf_recipes: false      # 3806 pairs are far too sparse and equipment nouns dominate; 12 dense
                           # pairs have neither problem. Both must move together -- see
-                          # recipe/lexical_init.cluster_recipes. At k_recipe=1 neither matters,
-                          # but leaving EPIC's values here would mislead anyone raising k_recipe.
-  n_restarts: 1
-  max_iters: 100
-  tol: 1.0e-4             # not reachable: joint EM lands in a period-3 limit cycle and never
-                          # satisfies this, so max_iters is the real stopping rule.
-  checkpoint_every: 5
+                          # hsmm/train/lexical_init.cluster_recipes. At k_recipe=1 neither
+                          # matters, but EPIC's values here would mislead anyone raising k_recipe.
   global_damping: 0.7
 
 ambient_gaps:

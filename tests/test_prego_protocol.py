@@ -1,4 +1,4 @@
-"""PREGO's trimmed, step-level protocol as run_epic_tent_eval --trim implements it.
+"""PREGO's trimmed, step-level protocol (metric E) as scripts/eval/eval_epic_tent.py --trim runs it.
 
 Each test pins one decision the protocol could quietly get wrong. The reference is PREGO's own
 scorer (step_anticipation/src/models/llm_hf.py): `correct = matches[:-1]; mistake = matches[-1]`,
@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from cook_ad.eval.span_metrics import Flag
+from cook_ad.eval import metric_e
+from cook_ad.eval.metric_g import Flag
 from cook_ad.llm import predict
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -21,10 +22,12 @@ SIL = ("stall", "idle")
 
 @pytest.fixture(scope="module")
 def ev():
-    spec = importlib.util.spec_from_file_location("run_epic_tent_eval",
-                                                  REPO_ROOT / "run_epic_tent_eval.py")
+    spec = importlib.util.spec_from_file_location("eval_epic_tent",
+                                                  REPO_ROOT / "scripts" / "eval" / "eval_epic_tent.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.step_extents = metric_e.step_extents
+    module.drop_truncated_under_run = metric_e.drop_truncated_under_run
     return module
 
 
