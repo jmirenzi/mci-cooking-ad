@@ -9,11 +9,10 @@ It is a sanity and validity test, not a benchmark. Control matters more than rea
 exception: the output must be at the **logistics level** the HSMM is trained on (`take bowl`,
 `pour water`), not the recipe-step level (`make roux`).
 
-**Status (2026-10-15):** Stages 1–3 are built and committed: phases, tags (reviewed by Jack,
-unchanged from the proposal) and expansions for all 18 recipes (257 steps, none skipped). They are
-**waiting for Jack's spot-check** (`runs/drift_synth/reports/expansion_review.md`). Stages 4–10
-are built and tested, and `null` generates end to end. M4 (all conditions plus sanity plots) is
-next.
+**Status (2026-10-15):** built end to end. All 31 conditions × 3 seeds × 8 persons are generated
+under `dataset/processed/drift_synth/` (about 22k sessions, 470 MB, 70 s), and the sanity plots are
+in (§8). Open for Jack: the duration scale a, β and the day-noise σ, and whether to lengthen waits
+(sessions run 2.8 min against CC4D's 15.7). No detector has been run on the data.
 
 ---
 
@@ -185,7 +184,46 @@ recipes, hand-written expansions and tags, the real knobs) and covers the spec's
 
 It also checks that pre-onset days are identical between `null` and a drift condition.
 
-## 8. Code
+## 8. Sanity results
+
+`scripts/drift_synth/sanity_plots.py` writes to `runs/drift_synth/reports/sanity/`. The numbers
+below are means over the 18 recipes, 150 clean Monte Carlo sessions per recipe and θ, from
+θ = 0.5 on every knob. "MC noise" is the same comparison against a rerun at θ = 0.5 with
+another seed.
+
+**Isolation** (`isolation.png`): the change at |Δθ| = 0.45 as a multiple of MC noise.
+
+| knob | core-token marginals | take/put/wash marginals | bigrams | log durations |
+|---|---|---|---|---|
+| sour | 10.8× | 5.8× | 2.4× | 1.0× |
+| calorie_conscious | 41.3× | 21.5× | 4.6× | 1.1× |
+| mise_en_place | 1.1× | 1.0× | 3.9× | 1.0× |
+| tidy | 1.0× | 11.6× | 6.0× | 1.0× |
+| slow | 1.0× | 1.0× | 1.0× | 4.0× |
+| fine_motor | 2.1× | 1.0× | 1.4× | 2.0× |
+
+Each knob moves the feature group it targets and leaves the rest at noise. The off-target
+entries are expected:
+
+- `sour` and `calorie` move take/put/wash because an inserted or omitted ingredient brings or loses
+  its own logistics. Any change in tokens also moves bigrams.
+- `fine_motor` moves marginals through its repetitions.
+- `calorie`'s fat-token speed-up is too small to see in durations (1.1×).
+- `mise_en_place` is the weakest knob (3.9× on bigrams), as the pre-check predicted.
+
+**Dose-response** (`dose_response.png`): monotone in |Δθ| for every knob on its own feature. At
+|Δθ| ≤ 0.05 nothing is distinguishable from noise. `slow` reaches W1 = 0.44 against 0.11 noise,
+while `sour` at 0.45 is 7× noise on marginal JS.
+
+**Lengths** (`lengths.png`): the median session is 2.8 min, against 5.8 for EPIC sessions (2–15 min
+band) and 15.7 for CC4D normal recordings. The median action is 2.2 s against EPIC's 1.6 s, with
+more synthetic actions under 0.5 s (recognizer inserts and jitter). Sessions are short because EPIC
+`wait` narrations are a few seconds long; waiting is not modelled.
+
+**Granularity** (`examples.md`): synthetic sessions read at EPIC's level ("take onion, cut onion,
+add onion, put onion"). Recognizer noise produces the odd pair ("turn-on garlic").
+
+## 9. Code
 
 | Concept | Where |
 |---|---|
@@ -208,4 +246,5 @@ It also checks that pre-onset days are identical between `null` and a drift cond
 | pre-check report | `scripts/drift_synth/precheck.py` |
 | offline assets (stages 1–3) | `scripts/drift_synth/build_assets.py --stage phases\|tags\|expansions` |
 | generation (stages 4–9) | `scripts/drift_synth/generate.py`; `configs/drift_synth/generator.yaml`, `conditions.yaml` |
+| sanity plots | `scripts/drift_synth/sanity_plots.py` |
 | tests | `tests/test_drift_synth_graphs.py`, `tests/test_drift_synth_generator.py`, `tests/test_drift_synth_expand.py`, `tests/_drift_fixtures.py` |

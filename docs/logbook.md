@@ -5,6 +5,13 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-15 — synthetic drift data: all conditions + sanity plots (M4)
+
+31 conditions × 3 seeds × 8 persons generated (about 22k sessions, 70 s). At |Δθ| 0.45 every knob
+moves its own feature group and leaves the others at MC noise. The weakest is mise_en_place
+(bigrams 3.9×). Dose-response is monotone. Sessions run 2.8 min against CC4D's 15.7, because
+waits are unmodelled (`docs/drift_synth.md` §8, `scripts/drift_synth/sanity_plots.py`).
+
 ## 2026-10-15 — synthetic drift data: step expansions (M2)
 
 gemma3, one pass per step: zero variants, padded pairs ("add pan"). Two passes plus validation:

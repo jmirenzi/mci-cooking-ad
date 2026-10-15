@@ -258,7 +258,7 @@ scored step by step as PREGO's code does.
 - **Drift detection** ([`next_steps.md`](next_steps.md) §2): frozen weekly references, and a
   recipe-stratified permutation test that says whether and where a person's normal behaviour has
   changed (weekly, monthly, yearly). Its test data comes from the generator in
-  [`drift_synth.md`](drift_synth.md) (Stages 1–3 built; expansions awaiting spot-check).
+  [`drift_synth.md`](drift_synth.md) (built; all conditions generated, sanity plots in §8).
 - **Live narration.** `narrate` needs a Viterbi segmentation, so today only Hindsight detections
   can be narrated. A live version would phrase a question from the filter's current belief at the
   moment an alarm is raised.
