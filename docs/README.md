@@ -11,18 +11,14 @@ EM — deliberately *not* a neural model. Every question the system asks ("did y
 toasting?") traces back to a single argmax over a fitted parameter row. That auditability is
 the design constraint the rest of the architecture serves.
 
-> **Restructure in progress** ([`restructure.md`](restructure.md)). New homes so far, which the
-> old modules now call into: `core.py` (`Trial`, `Alarm`, `Detection`, `OperatingPoint`,
-> `AnomalyDetector`), `hsmm/params.py` (`JointHSMMParams`, `LogTables`, `load`/`save`),
-> `hsmm/kernels.py` (filter predict/update, backward messages, forward pass, Viterbi),
-> `hsmm/model.py` (`class HSMM`), `hsmm/batch.py` (many-trial inference),
-> `detectors/thresholds.py` (`class BadSets`), and the HSMM detectors
-> `detectors/hsmm_live.py` (`LiveHSMMDetector`), `hsmm_lag.py` (`LagHSMMDetector`),
-> `hsmm_hindsight.py` (`HindsightHSMMDetector`) with `detectors/narrate.py`, and the LLM
-> detectors `detectors/llm_base.py`, `llm_verdict.py` (`LLMVerdictDetector`) and
-> `llm_predictive.py` (`LLMPredictiveDetector`). `run_epic_tent_eval.py` and `run_llm_eval.py`
-> already run every arm on the detectors. The
-> table below still describes the old layout until the docs rewrite (Phase G).
+> **Restructure in progress** ([`restructure.md`](restructure.md)): the code below this note is
+> partly stale until the docs rewrite (Phase G). Current layout: `core.py` (`Trial`, `Alarm`,
+> `AnomalyDetector`); `hsmm/` (`params`, `kernels`, `model.HSMM`, `batch`, `train/`);
+> `detectors/` (`thresholds.BadSets`, `hsmm_live`, `hsmm_lag`, `hsmm_hindsight`, `narrate`,
+> `llm_base`, `llm_verdict`, `llm_predictive`); `eval/` (`metric_g`, `metric_e`, `pools`,
+> `harness`); scripts under `scripts/{data,train,eval,figures,analysis}` plus
+> `scripts/demo_trial.py`. The old root scripts, `anomaly/`, `recipe/` and `lifecycle/` are gone
+> (tag `pre-restructure`).
 
 ---
 

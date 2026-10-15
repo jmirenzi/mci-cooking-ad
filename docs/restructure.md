@@ -1,6 +1,6 @@
 # Restructure plan
 
-Status: **in progress — Phases A–D done; Phase E code done, verification pending** (tag `pre-restructure`; goldens in `runs/golden/`,
+Status: **in progress — Phases A–E done** (tag `pre-restructure`; goldens in `runs/golden/`,
 made by `scripts/verify/{dump_golden.py,run_tables.sh}`, checked by `compare_golden.py`; see
 "Progress notes" at the end). Written 2026-10-14 with the repo owner. The agent doing the work
 reads this file top to bottom before touching code, works on branch `restructure`, and deletes this
@@ -661,3 +661,38 @@ and completed). `test_detector_contract.py` now has 20 tests: LLMPredictive and 
 request sets, batch refuses `step()`, prompt bytes equal `prompts.build_variant`, and a real-cache
 step-loop replay of two Breakfast trials (tick unit) with 0 uncached requests. Full suite: 533
 passed.
+
+**Phase E.** Built: `hsmm/train/` (joint EM without the tilt/kernel branches, lexical init,
+hard EM, smoothing, duration refit, duration fitting, E-step messages, clustering metrics),
+`scripts/train/` with `train_hsmm.sh` (`PRESET=lexhard|dish|epic_tent|epic_tent_prego`),
+`eval/{metric_g,metric_e,pools,harness}.py`, `scripts/eval/{eval_breakfast,eval_epic_tent}.py`
+and the two LLM runner shells, `scripts/data/*`, `scripts/figures/trial_figure.py` (rewritten,
+not ported), `scripts/demo_trial.py`. Deleted: the 43 root scripts (findings in the logbook),
+`anomaly/`, `recipe/`, `lifecycle/`, the cascade halves of `hsmm/`, `eval/{batch,span_metrics,
+element_metrics,counterfactual,metrics,plotting}.py`, `configs/breakfast_mini.yaml`, the shims.
+`llm/textify.py`'s ground-truth helpers stay (llm/ plumbing is unchanged; the injector tests use them).
+
+Deviations: `eval/pools.py` exists already in E, holding today's two Breakfast builders
+(per-type, placed by the scored model; per-trial, the LLM pool) so behaviour is unchanged until
+Phase F. The EPIC-Tent `control/hsmm-injected` row was scored under G-gap, which is deleted; it is
+now scored under G (one alarm per run), so its numbers move. The `@merge_tol=0` control row is
+gone. `eval_breakfast.py` also scores the two LLM verdict arms (tick unit) on the LLM pool, which the
+old headline table did not carry.
+
+Results.
+- Per-trial goldens (`dump_golden.py`, now new-API only) into `runs/golden_E`: all 6 configs pass
+  bitwise, float diagnostics included, LLM replays 0 uncached.
+- Tables (`run_tables.sh`, `compare_tables.py`): all five EPIC-Tent reports reproduce to 3
+  decimals (metric G and E, LLM arms included; the two rows above skipped). Breakfast: every test
+  grid, all train-picked operating points, and every row of the headline LLM-pool table
+  reproduce. The train-split grids of lexhard and dish-given differ by at most 0.004 in some
+  cells; the OLD code differs from its own rerun on the same table by up to 0.001 (exactly tied
+  Viterbi paths, broken differently run to run), so this is not attributable to the restructure.
+  Two runs of the NEW code on the same table are identical in every cell.
+- Training: `train_hsmm.sh` presets epic_tent and lexhard (shortened) reproduce the old 4-stage
+  pipeline bitwise at every stage; dish matches through smoothing and its duration refit differs by
+  1.6e-10 from one exactly tied Viterbi path that the old code itself breaks differently between
+  runs (shown with two old runs).
+- Tests: 352 passed.
+- Cost, warm, new / old: Hindsight `detect_many` 17.7 / 17.7 s (1.00x), Live `detect_trial`
+  99.9 / 100.1 s (1.00x), EPIC-Tent `--skip-llm` 10.8 / 11.7 s (0.93x).

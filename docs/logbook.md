@@ -4,6 +4,12 @@ Dated entries, newest first, ≤ 5 lines each: what was tried, the number, the v
 script or commit that measured it. (Older history is folded in from the previous docs during the
 restructure's Phase G.)
 
+## 2026-10-15 — restructure, Phase E verified
+
+New-API-only code reproduces every per-trial golden bitwise, every EPIC-Tent table, every
+Breakfast test grid and the Breakfast headline table; train-split grids move by <= 0.004, inside
+the old code's own run-to-run spread (Viterbi ties). Cost 0.93-1.00x. `docs/restructure.md`.
+
 ## 2026-10-14 — restructure, Phase E: scripts deleted, and what each had found
 
 Forty-three root scripts and the cascade/metric-A/B/D/F/G-gap code were deleted (all recoverable at
