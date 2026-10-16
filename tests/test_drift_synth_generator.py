@@ -325,3 +325,16 @@ def test_habit_concentrates_orders_and_zero_is_a_no_op():
                     for _ in range(500))
     assert tight[tuple(pref)] > 250 and free[tuple(pref)] < 100
     assert all(is_topological(OMELET, list(o)) for o in tight)
+
+
+def test_per_knob_ranges_and_habit_range():
+    from cook_ad.drift_synth.sampler import make_person
+    a = toy_assets()
+    base = make_person(0, 1, a)
+    a.gen = dict(a.gen, person=dict(a.gen["person"], theta0_by_knob={"slow": [0.4, 0.6]},
+                                    habit=[0.0, 1.0]))
+    p = make_person(0, 1, a)
+    assert 0.4 <= p.theta0["slow"] <= 0.6 and 0.0 <= p.habit <= 1.0
+    assert p.repertoire == base.repertoire and p.habit_orders == base.habit_orders
+    assert {k: v for k, v in p.theta0.items() if k != "slow"} == \
+        {k: v for k, v in base.theta0.items() if k != "slow"}

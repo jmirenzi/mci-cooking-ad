@@ -97,12 +97,14 @@ def make_person(seed, idx, assets):
     n = int(rng.integers(min(lo, len(recipes)), min(hi, len(recipes)) + 1))
     rep = tuple(recipes[i] for i in sorted(rng.choice(len(recipes), size=n, replace=False)))
     w = rng.dirichlet(np.full(n, p["dirichlet_alpha"]))
-    t_lo, t_hi = p["theta0"]
-    theta0 = {k: float(rng.uniform(t_lo, t_hi)) for k in K.KNOBS}
+    ranges = {k: p.get("theta0_by_knob", {}).get(k, p["theta0"]) for k in K.KNOBS}
+    theta0 = {k: float(rng.uniform(*ranges[k])) for k in K.KNOBS}   # one draw per knob, always
     # Drawn after every other trait, so adding them changed none of the earlier draws.
     habit_orders = {r: K.sample_topological_order(assets.graphs[r], 0.5, 0.0, rng) for r in rep}
+    habit = p.get("habit", 0.0)
+    habit = float(rng.uniform(*habit)) if isinstance(habit, (list, tuple)) else float(habit)
     return PersonCfg(f"p{idx:02d}", rep, tuple(float(x) for x in w), p["p_two_sessions"], theta0,
-                     float(p.get("habit", 0.0)), habit_orders)
+                     habit, habit_orders)
 
 
 def theta1_for(theta0, moving):

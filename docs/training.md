@@ -126,6 +126,12 @@ Both are regularisation, chosen on a nested dev split (`scripts/data/make_dev_sp
 the grid and τ = 30 the best. Without backoff the transition table is a lookup of the training
 bigrams: flagged healthy runs were 0.8% on train against 4.3% on test.
 
+**A population prior across people** (`hsmm/train/global_prior.py`, post-fit) is the same move
+as backoff, across people rather than recipes:
+- Run-length counts of first runs and run-to-run transitions per recipe, from many people's streams, keyed by (verb, noun).
+- Each of a person's rows gets λ × the population's row, after lifting every cell to count 1, so λ = 0 is the identity.
+- Used only on the synthetic drift data so far ([`drift_synth.md`](drift_synth.md) §9.2): it helps at cold start, and with a single α it can erase the transition channel's catches.
+
 ## 4. Stage 4: duration refit
 
 `scripts/train/refit_durations.py` → `hsmm/train/refit.py:refit_durations`. Decode every training
@@ -179,6 +185,7 @@ dev split.
 | Concept | Where |
 |---|---|
 | the pipeline | `scripts/train/train_hsmm.sh` |
+| population prior (post-fit) | `hsmm/train/global_prior.py:count_global`, `apply_global_prior`, `state_pairs` |
 | lexical warm start | `hsmm/train/lexical_init.py:lexical_to_joint`, `observed_pairs`, `anchored_emission_counts`, `hard_segments`, `cluster_recipes` |
 | dish labels as recipes | `lexical_init.py:recipe_label_assignment`, `pinned_recipe_log_prior` |
 | soft joint EM | `hsmm/train/joint_em.py:run_joint_em`, `e_step`, `m_step`, `make_lam_schedule`, `infer_recipe` |

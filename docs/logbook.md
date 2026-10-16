@@ -5,6 +5,13 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-16 — global population prior + per-person fine-tune (metric G)
+
+60 simulated people → one count prior. Mean over 4 persons, F1 person-only → +prior: 10 days
+0.152 → 0.200, 30 days 0.241 → 0.301, 100 days 0.360 → 0.362, 200 days 0.398 → 0.377. λ (1–100)
+barely matters. All 4 losing cells are validation picks jumping to a loose α. CC4D: real orders
+are as varied as uniform, real step time is 4–5× ours (`docs/drift_synth.md` §9.2–9.3).
+
 ## 2026-10-16 — lowering the synthetic healthy alarm floor (metric G)
 
 Hindsight F1 / healthy-trial FPR: baseline 0.202 / 0.90; 600 training days 0.238 / 0.51 (learns

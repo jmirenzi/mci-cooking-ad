@@ -331,6 +331,91 @@ All runs use the same person, Hindsight at its validation-picked α; live L=0 ag
 - **Capability decline stays invisible in every setting.** Δ alarms vs twin is within ±0.3 at
   slow or fine_motor +0.55, so §9's verdict holds.
 
+### 9.2 A global prior from a simulated population
+
+`scripts/eval/eval_synth_prior.py`, `hsmm/train/global_prior.py`. Noise off throughout.
+
+**The population:** 60 people (seed 1000, never test subjects), 30 days each, 2,336 sessions.
+- Preference knobs θ0 ~ U(0.05, 0.95), capability knobs ~ U(0.4, 0.6), habit ~ U(0, 1).
+- Their tick streams are run-length counted per recipe into first-run and run-to-run transition counts, keyed by (verb, noun). States are pairs, so these counts are the prior with no population EM, and they project onto any person's state inventory.
+- One prior serves every person model.
+
+**The fine-tune:** the person's four-stage dish fit (§9), then post-fit, like `smoothing.backoff_counts`:
+- Each transition and init row gets λ × the population's row for that recipe and pair. λ is in pseudocounts per row: λ = 10 is the population worth about 10 of the person's own observations of what follows that action.
+- Cells are first lifted to count 1, so under the MAP mode a cell the person never produced is worth exactly λ·P_global.
+- λ = 0 is the person-only model bit for bit. A transition nobody produced stays on the floor.
+- "Global only" drops the person's own init and transition counts.
+
+**The test persons:** seed 0, persons 0–3, habit 2, capability U(0.4, 0.6), 1.3 sessions a day.
+Each is trained on its first 10, 30, 100 or 200 days, validated on days 200–259 (injected errors,
+α picked by G-F1) and tested on days 260–319. Every arm and N uses the same pools, placed by the
+person's N = 200 model.
+
+**Mean over the 4 persons, Hindsight, test days, metric G:**
+
+| train days (≈ sessions) | arm | F1 | precision | recall | alarms / 10 min | healthy-trial FPR |
+|---|---|---|---|---|---|---|
+| 10 (13) | person only | 0.152 | 0.088 | 0.609 | 29.46 | 0.97 |
+| 10 | + prior λ = 1 | **0.200** | 0.143 | 0.422 | 15.04 | 0.81 |
+| 10 | global only | 0.197 | 0.140 | 0.363 | 10.98 | 0.82 |
+| 30 (40) | person only | 0.241 | 0.177 | 0.400 | 8.90 | 0.73 |
+| 30 | + prior λ = 1 | **0.301** | 0.334 | 0.357 | 6.95 | 0.50 |
+| 30 | global only | 0.277 | 0.296 | 0.301 | 5.61 | 0.55 |
+| 100 (130) | person only | 0.360 | 0.418 | 0.318 | 2.00 | 0.30 |
+| 100 | + prior λ = 1 | 0.362 | 0.550 | 0.305 | 2.23 | 0.31 |
+| 100 | global only | 0.322 | 0.460 | 0.253 | 1.24 | 0.24 |
+| 200 (260) | person only | **0.398** | 0.587 | 0.302 | 0.97 | 0.21 |
+| 200 | + prior λ = 1 | 0.377 | 0.643 | 0.295 | 1.62 | 0.25 |
+| 200 | global only | 0.338 | 0.562 | 0.250 | 0.89 | 0.18 |
+
+λ = 3, 10, 30 and 100 are within 0.01 F1 of λ = 1 at 10–30 days, and no better than it later
+(`runs/drift_synth/eval_synth_prior_p0*.json`).
+
+**F1 change from the prior (λ = 1), per person:**
+
+| train days | p00 | p01 | p02 | p03 |
+|---|---|---|---|---|
+| 10 | +0.09 | +0.07 | +0.08 | −0.05 |
+| 30 | +0.10 | +0.12 | +0.13 | −0.10 |
+| 100 | −0.17 | +0.05 | +0.09 | +0.05 |
+| 200 | −0.18 | +0.03 | +0.04 | +0.03 |
+
+**What it says.**
+
+- **The prior is a clear win at cold start.** At 10–30 days mean F1 rises by 0.05–0.06 and the
+  healthy-trial FPR falls from 0.73 to 0.50. With 100+ days it is a wash on average.
+- **λ hardly matters,** because at the strict α the detector asks only whether a transition is
+  possible: any prior mass turns "never seen" into "allowed". At α = 1e-10 on p00 (200 days)
+  the prior cuts the healthy-trial FPR from 0.16 to 0.03. It also removes every
+  transition-channel catch of omission (29 → 0) and transposition (60 → 0): the person-only
+  model was detecting them as "a transition this person never made".
+- **Every loss is an operating-point failure.** In all four losing cells (p00 at 100 and 200 days,
+  p03 at 10 and 30) the prior arm's validation pick jumped from α ≤ 1e-7 to α = 0.015–0.05,
+  where alarms explode. Where the pick stayed strict, the prior helped in 12 of 12 cells.
+  - **A split α** (transition channels picked separately from the rest, `harness.hindsight_split_grid`) recovers part of p00's loss: F1 0.22 → 0.29–0.30 at 100–200 days, still below person-only 0.40.
+  - **Next:** a prior that fades with the person's own row count, paired with the split α.
+- **Why persons differ:** p01 and p02 cook high-freedom recipes (stir fry 1.6×10¹⁰ orders, scrambled eggs 3.6×10⁶); p00 and p03 cook constrained ones. At 30 days, test transitions the person had never produced are 13% for p01/p02 and 6–7% for p00/p03. At 200 days they are 0.6–1.4% for all four, and 0.03–0.15% are unseen by the population too. This explains part of the pattern, but not p03's early loss.
+
+### 9.3 Calibration against CaptainCook4D
+
+`scripts/drift_synth/calibrate_cc4d.py` writes `runs/drift_synth/reports/cc4d_calibration.{md,json}`.
+The real data are CC4D recordings with no Order Error or Missing Step tag: 5–13 per recipe.
+
+- **Order variety matches uniform rollouts.** At equal sample size, the share of distinct orders is
+  real 0.57–1.00 against generator 0.61–1.00. Real orders are about 25% closer to their medoid than
+  uniform ones (normalized Kendall).
+- **Habit:** real within-person distance 0.086 (91 pairs), between-person 0.104 (477 pairs). Habit 2
+  gives 0.022 / 0.099, and the best grid fit is habit ≈ 0–0.25. Set aside for now: 2–3 lab repeats
+  per person make the within-person figure mostly noise.
+- **Real recordings break the task graphs.** For sautéed mushrooms 0 of 7 normal recordings follow its
+  edges, tomato chutney 1 of 5, pan-fried tofu 5 of 9. People interleave and overlap steps (by
+  annotated start time), which the graphs, and so the generator, cannot produce.
+- **Durations are 4–5× short on every kind of step, not only waits.** The median recording has
+  716 s of step time against 169 s for a synthetic session; steps with a `wait` token are 4.0×
+  short, the rest 4.6×. The largest gaps are "cook for N minutes" steps the expansion gave no
+  `wait` (pan-fried tofu, "cook 5 to 6 minutes": 327 s real, 8 s generated).
+  - **Planned:** scale each step's tokens to CC4D's median step time, keeping EPIC's proportions within the step, and refit everything (overnight).
+
 ## 10. Code
 
 | Concept | Where |
@@ -356,5 +441,7 @@ All runs use the same person, Hindsight at its validation-picked α; live L=0 ag
 | offline assets (stages 1–3) | `scripts/drift_synth/build_assets.py --stage phases\|tags\|expansions` |
 | generation (stages 4–9) | `scripts/drift_synth/generate.py`; `configs/drift_synth/generator.yaml`, `conditions.yaml` |
 | sanity plots | `scripts/drift_synth/sanity_plots.py` |
+| global prior + fine-tune (§9.2) | `hsmm/train/global_prior.py:count_global`, `apply_global_prior`, `state_pairs`; `scripts/eval/eval_synth_prior.py`; `harness.hindsight_split_grid`, `split_op` |
+| CC4D calibration (§9.3) | `scripts/drift_synth/calibrate_cc4d.py` |
 | anomaly detector on synthetic pools (§9) | `scripts/eval/eval_synth_ad.py` (`--train-days`, `--habit`, `--noise-scale`); `configs/drift_synth/hsmm.yaml`; repetition spans from `sampler.sample_session` (`meta.repeats`); `export.step_labels` |
 | tests | `tests/test_drift_synth_graphs.py`, `tests/test_drift_synth_generator.py`, `tests/test_drift_synth_expand.py`, `tests/_drift_fixtures.py` |

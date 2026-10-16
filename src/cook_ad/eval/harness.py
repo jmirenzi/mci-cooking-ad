@@ -60,6 +60,26 @@ def hindsight_grid(det, trace, alphas):
     return np.stack(cols, axis=1)
 
 
+TRANSITION_CHANNELS = ("s_transition", "s_recipe_transition")
+
+
+def hindsight_split_grid(det, trace, alphas, split=TRANSITION_CHANNELS):
+    """(T, A, A) bool: the `split` channels at alphas[i] OR every other channel at alphas[j].
+    For priors that make a transition rare rather than impossible, which needs a looser alpha
+    on the transition channels than the emission and duration channels can bear."""
+    per = [det.flags(trace, OperatingPoint(a)) for a in alphas]
+    sp = np.stack([np.any(np.stack([f[c] for c in split]), axis=0) for f in per], axis=1)
+    rest = np.stack([np.any(np.stack([f[c] for c in CHANNELS if c not in split]), axis=0)
+                     for f in per], axis=1)
+    return sp[:, :, None] | rest[:, None, :]
+
+
+def split_op(alphas, idx, split=TRANSITION_CHANNELS):
+    """The per-channel OperatingPoint at a hindsight_split_grid index."""
+    a_split, a_rest = alphas[idx[0]], alphas[idx[1]]
+    return OperatingPoint({c: (a_split if c in split else a_rest) for c in CHANNELS})
+
+
 def live_grid(det, trace, alphas, kappas):
     """(T, A, K) bool: any channel flags, at each (alpha, kappa); emission channels ignore kappa."""
     alphas, kap = np.asarray(alphas), np.asarray(kappas)
