@@ -371,6 +371,10 @@ person's N = 200 model.
 λ = 3, 10, 30 and 100 are within 0.01 F1 of λ = 1 at 10–30 days, and no better than it later
 (`runs/drift_synth/eval_synth_prior_p0*.json`).
 
+![Cold-start curves](figures/drift_synth_prior_curves.png)
+
+(`./py scripts/eval/eval_synth_prior.py --stage plot`)
+
 **F1 change from the prior (λ = 1), per person:**
 
 | train days | p00 | p01 | p02 | p03 |

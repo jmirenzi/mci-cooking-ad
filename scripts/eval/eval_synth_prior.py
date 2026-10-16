@@ -214,10 +214,77 @@ def summarize():
               f"{t('repetition'):.2f} |")
 
 
+def plot(path="runs/drift_synth/reports/prior_curves.png"):
+    """Cold-start curves: F1, healthy-trial FPR and recall vs training days, per person (thin)
+    and mean (thick), for person-only, + prior (lambda = 1) and global-only."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    arms = [("lambda=0", "person only", "#2a78d6"), ("lambda=1", "+ global prior (λ = 1)", "#eb6834"),
+            ("global only", "global only", "#1baf7a")]
+    res = {f.stem.split("_")[-1]: json.loads(f.read_text())["results"]
+           for f in sorted(Path("runs/drift_synth").glob("eval_synth_prior_p*.json"))}
+    days = list(TRAIN_DAYS)
+    ink, ink2, grid = "#1a1a19", "#5f5e58", "#e4e3dd"
+    panels = [("f1", "F1 (injected errors)"), ("healthy_trial_fpr", "healthy-trial FPR"),
+              ("recall", "recall")]
+    fig, axes = plt.subplots(1, 4, figsize=(18, 4.4), constrained_layout=True)
+    for ax, (key, title) in zip(axes[:3], panels):
+        ax.grid(True, color=grid, linewidth=0.8)
+        ax.set_axisbelow(True)
+        for sp in ("top", "right"):
+            ax.spines[sp].set_visible(False)
+        for arm, label, color in arms:
+            per = np.array([[res[p][str(n)][arm][key] for n in days] for p in sorted(res)])
+            for row in per:
+                ax.plot(days, row, color=color, linewidth=0.8, alpha=0.35)
+            ax.plot(days, per.mean(axis=0), color=color, linewidth=2.2, marker="o", markersize=5,
+                    label=label)
+        ax.set_xscale("log")
+        ax.set_xticks(days, [f"{n}\n(~{round(n * 1.3)} sess.)" for n in days])
+        ax.tick_params(colors=ink2, labelsize=8)
+        ax.set_title(title, color=ink, fontsize=10, loc="left")
+        ax.set_xlabel("person's own training days", color=ink2, fontsize=9)
+    axes[0].legend(frameon=False, fontsize=8, labelcolor=ink)
+    # per person: F1(+prior) - F1(person only); hollow = the prior arm's validation pick left
+    # the strict end of the alpha grid (alpha > 1e-7)
+    ax = axes[3]
+    ax.grid(True, color=grid, linewidth=0.8)
+    ax.set_axisbelow(True)
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    ax.axhline(0, color=ink2, linewidth=1)
+    colors = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"]
+    for color, pid in zip(colors, sorted(res)):
+        delta = [res[pid][str(n)]["lambda=1"]["f1"] - res[pid][str(n)]["lambda=0"]["f1"] for n in days]
+        loose = [res[pid][str(n)]["lambda=1"]["alpha"] > 1e-7 for n in days]
+        ax.plot(days, delta, color=color, linewidth=1.6)
+        for x, y, l in zip(days, delta, loose):
+            ax.plot(x, y, marker="o", markersize=7, color=color, markerfacecolor="white" if l else color,
+                    markeredgewidth=2)
+        ax.text(days[-1] * 1.08, delta[-1], pid, color=ink2, fontsize=8, va="center")
+    ax.plot([], [], marker="o", color=ink2, linestyle="none", markerfacecolor="white",
+            label="prior arm picked a loose α (> 1e-7)")
+    ax.plot([], [], marker="o", color=ink2, linestyle="none", label="picked α ≤ 1e-7")
+    ax.legend(frameon=False, fontsize=8, labelcolor=ink, loc="lower left")
+    ax.set_xscale("log")
+    ax.set_xticks(days, [str(n) for n in days])
+    ax.set_xlim(days[0] * 0.8, days[-1] * 1.5)
+    ax.tick_params(colors=ink2, labelsize=8)
+    ax.set_title("F1 change from the prior, per person", color=ink, fontsize=10, loc="left")
+    ax.set_xlabel("person's own training days", color=ink2, fontsize=9)
+    fig.suptitle(f"Global prior + fine-tune, {len(res)} synthetic persons (thin) and mean (thick); "
+                 "Hindsight, test days, metric G", color=ink, fontsize=11, x=0.01, ha="left")
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=130)
+    print(f"wrote {path}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--stage", choices=["population", "persons", "train", "eval", "summary"],
+    ap.add_argument("--stage", choices=["population", "persons", "train", "eval", "summary", "plot"],
                     required=True)
     ap.add_argument("--person", type=int, action="append")
     ap.add_argument("--days", type=int, action="append")
@@ -232,6 +299,8 @@ def main():
     elif a.stage == "eval":
         stage_eval(persons)
         summarize()
+    elif a.stage == "plot":
+        plot()
     else:
         summarize()
 
