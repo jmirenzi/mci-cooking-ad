@@ -35,6 +35,8 @@ class PersonCfg:
     weights: tuple               # Dirichlet draw over the repertoire
     p_two_sessions: float
     theta0: dict = field(default_factory=dict)
+    habit: float = 0.0           # strength of the routine step order (knobs.sample_topological_order)
+    habit_orders: dict = field(default_factory=dict)   # recipe id -> preferred topological order
 
 
 def mix_weights(person, day, mix_shift):

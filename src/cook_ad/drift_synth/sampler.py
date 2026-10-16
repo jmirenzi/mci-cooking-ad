@@ -34,10 +34,11 @@ class ConditionCfg:
 
 
 def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
-                   person_id="", day=0, session_idx=0):
+                   person_id="", day=0, session_idx=0, preferred=None, habit=0.0):
     """The spec's order: step order, variants, logistics, repetition, durations, noise."""
     kn, tags, gen = assets.knobs, assets.tags, assets.gen
-    order = K.sample_topological_order(recipe, theta["mise_en_place"], kn["mise_en_place"]["beta"], rng)
+    order = K.sample_topological_order(recipe, theta["mise_en_place"], kn["mise_en_place"]["beta"],
+                                       rng, preferred, habit)
 
     tokens, steps, applied, skipped = [], [], {}, []
     for s in order:
@@ -98,7 +99,10 @@ def make_person(seed, idx, assets):
     w = rng.dirichlet(np.full(n, p["dirichlet_alpha"]))
     t_lo, t_hi = p["theta0"]
     theta0 = {k: float(rng.uniform(t_lo, t_hi)) for k in K.KNOBS}
-    return PersonCfg(f"p{idx:02d}", rep, tuple(float(x) for x in w), p["p_two_sessions"], theta0)
+    # Drawn after every other trait, so adding them changed none of the earlier draws.
+    habit_orders = {r: K.sample_topological_order(assets.graphs[r], 0.5, 0.0, rng) for r in rep}
+    return PersonCfg(f"p{idx:02d}", rep, tuple(float(x) for x in w), p["p_two_sessions"], theta0,
+                     float(p.get("habit", 0.0)), habit_orders)
 
 
 def theta1_for(theta0, moving):
@@ -142,7 +146,8 @@ def generate_person(idx, condition, seed, assets):
         for s, rid in enumerate(recipes):
             sessions.append(sample_session(
                 assets.graphs[rid], assets.expansions[rid], theta, speed, assets, noise,
-                rng_for(seed, _SESSION, idx, d, s), person.person_id, d, s))
+                rng_for(seed, _SESSION, idx, d, s), person.person_id, d, s,
+                person.habit_orders.get(rid), person.habit))
 
     gt = {
         "condition": condition.name, "seed": seed, "person_id": person.person_id,
@@ -151,7 +156,7 @@ def generate_person(idx, condition, seed, assets):
         "moving_knobs": sorted(condition.moving), "delta": {k: round(theta1[k] - theta0[k], 6)
                                                            for k in sorted(condition.moving)},
         "theta0": _r(theta0), "theta1": _r(theta1),
-        "repertoire": list(person.repertoire), "weights0": [round(w, 6) for w in person.weights],
+        "repertoire": list(person.repertoire), "habit": person.habit, "weights0": [round(w, 6) for w in person.weights],
         "mix_shift": None if mix is None else {"onset_day": mix.onset_day,
                                                 "duration_days": mix.duration_days,
                                                 "weights1": [round(w, 6) for w in mix.weights1]},

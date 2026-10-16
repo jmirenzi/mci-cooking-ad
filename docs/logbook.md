@@ -5,6 +5,13 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-16 — lowering the synthetic healthy alarm floor (metric G)
+
+Hindsight F1 / healthy-trial FPR: baseline 0.202 / 0.90; 600 training days 0.238 / 0.51 (learns
+the noise, structural recall falls); habit 2 0.214 / 0.86; noise × 0.5 0.263 / 0.78; all three
+0.290 / 0.56; noise-free 0.355 / 0.45. The residual floor is unseen transitions (70–80% of
+flags). `s_recipe_transition` duplicates `s_transition` here (`docs/drift_synth.md` §9.1).
+
 ## 2026-10-16 — HSMM anomaly detector on synthetic data (metric G)
 
 One person (seed 0, p06), fitted on 265 normal sessions. Injected errors: F1 0.355 noise-free,

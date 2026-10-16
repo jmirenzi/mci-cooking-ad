@@ -17,6 +17,8 @@ The HSMM is fitted on days 0-199 only (dish preset: recipe = the CC4D recipe). T
 
 --noise off generates the same person without recognizer noise (into drift_synth_ad_clean/), to
 separate what the detector does with the behaviour from what it does with the recognizer.
+--train-days, --habit and --noise-scale are the healthy-floor levers (docs/drift_synth.md §9);
+each setting writes its own drift_synth_ad_d<days>_h<habit>_n<scale>/ and results file.
 """
 import argparse
 import json
@@ -29,7 +31,8 @@ from pathlib import Path
 sys.path.insert(0, os.getcwd())
 
 ROOT = Path("dataset/processed/drift_synth_ad")
-NOISE = True
+NOISE_SCALE = 1.0   # recognizer noise rates x this (0 = noise-free)
+HABIT = 0.0         # person routine strength (configs/drift_synth/generator.yaml person.habit)
 CONFIG = "configs/drift_synth/hsmm.yaml"
 SEED, PERSON = 0, 6
 N_DAYS, TRAIN_END, VAL_END = 320, 200, 260
@@ -51,8 +54,9 @@ def stage_data():
     from cook_ad.drift_synth.schedule import DriftRegime
 
     assets = load_assets()
-    if not NOISE:
-        assets.gen["recognizer"] = {k: 0.0 for k in assets.gen["recognizer"]} | {"min_event_s": 0.2}
+    assets.gen["recognizer"] = {k: (v if k == "min_event_s" else v * NOISE_SCALE)
+                                for k, v in assets.gen["recognizer"].items()}
+    assets.gen["person"]["habit"] = HABIT
     conds = [ConditionCfg("null", n_persons=1, n_days=N_DAYS)]
     conds += [ConditionCfg(cond_name(k, d), DriftRegime("sudden", TRAIN_END), {k: d}, n_persons=1,
                            n_days=N_DAYS) for k in KNOBS for d in LEVELS]
@@ -222,7 +226,7 @@ def stage_eval(out_path, chunk_size):
              + (f", kappa={ops[arm]['kappa']})" if ops[arm]["kappa"] else ")")] = harness.score_masks(
             [harness.alarm_mask(d, len(t.verbs)) for d, (_, t) in zip(dets_by_arm[arm], trials)], trials,
             TICK_S)
-    harness.table(rows, f"Synthetic person p06 (recognizer noise {'on' if NOISE else 'off'}), injected errors, test days {VAL_END}-{N_DAYS - 1} "
+    harness.table(rows, f"Synthetic person p06 (train days {TRAIN_END}, habit {HABIT:g}, noise x{NOISE_SCALE:g}), injected errors, test days {VAL_END}-{N_DAYS - 1} "
                         f"({len(streams['healthy'])} trials per group)")
 
     # 3. capability pools vs their normal twins (the same test days)
@@ -284,7 +288,8 @@ def stage_eval(out_path, chunk_size):
               f"{r.get('repeat_recall_G', float('nan')):.2f} | {top} |")
 
     harness.dump(out_path, {"metric": "G", "metric_g_definition": dict(metric_g.METRIC_G),
-                            "person": {"seed": SEED, "person": PERSON}, "days": {
+                            "person": {"seed": SEED, "person": PERSON, "habit": HABIT,
+                                       "noise_scale": NOISE_SCALE}, "days": {
                                 "train": [0, TRAIN_END], "val": [TRAIN_END, VAL_END],
                                 "test": [VAL_END, N_DAYS]},
                             "operating_points": ops, "injected_table": rows,
@@ -299,13 +304,23 @@ def main():
     ap.add_argument("--max-iters", type=int, default=60)
     ap.add_argument("--hard-iters", type=int, default=5)
     ap.add_argument("--chunk-size", type=int, default=8)
-    ap.add_argument("--noise", choices=["on", "off"], default="on")
+    ap.add_argument("--noise", choices=["on", "off"], default="on", help="off = --noise-scale 0")
+    ap.add_argument("--noise-scale", type=float, default=None)
+    ap.add_argument("--train-days", type=int, default=200, help="val and test are 60 days each after")
+    ap.add_argument("--habit", type=float, default=0.0)
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
-    global ROOT, NOISE
-    NOISE = a.noise == "on"
-    ROOT = ROOT if NOISE else ROOT.with_name(ROOT.name + "_clean")
-    a.out = a.out or f"runs/drift_synth/eval_synth_ad{'' if NOISE else '_clean'}.json"
+    global ROOT, NOISE_SCALE, HABIT, TRAIN_END, VAL_END, N_DAYS
+    NOISE_SCALE = a.noise_scale if a.noise_scale is not None else (1.0 if a.noise == "on" else 0.0)
+    HABIT = a.habit
+    TRAIN_END, VAL_END, N_DAYS = a.train_days, a.train_days + 60, a.train_days + 120
+    # The two first runs kept their names; every other setting gets its own directory.
+    if (TRAIN_END, HABIT) == (200, 0.0) and NOISE_SCALE in (0.0, 1.0):
+        tag = "" if NOISE_SCALE else "_clean"
+    else:
+        tag = f"_d{TRAIN_END}_h{HABIT:g}_n{NOISE_SCALE:g}"
+    ROOT = ROOT.with_name(ROOT.name + tag)
+    a.out = a.out or f"runs/drift_synth/eval_synth_ad{tag}.json"
     if a.stage == "data":
         stage_data()
     elif a.stage == "train":

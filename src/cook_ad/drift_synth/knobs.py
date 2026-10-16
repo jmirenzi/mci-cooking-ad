@@ -71,21 +71,31 @@ def _ordering_tables(graph):
     return _COUNTERS[key]
 
 
-def sample_topological_order(graph, mise_en_place, beta, rng):
+def sample_topological_order(graph, mise_en_place, beta, rng, preferred=None, habit=0.0):
     """A topological order of `graph`. Each available step is weighted by the number of orders
-    that complete it (so at mise_en_place = 0.5 the result is uniform over all topological
-    orders) times exp(beta * (2 * mise_en_place - 1) * is_prep). Steps must carry phases."""
+    that complete it (so at mise_en_place = 0.5 and habit = 0 the result is uniform over all
+    topological orders) times exp(beta * (2 * mise_en_place - 1) * is_prep). Steps must carry
+    phases.
+
+    `preferred` (a topological order) and `habit` >= 0 model a person's routine: a candidate
+    also gets exp(-habit * r), r = its rank among the available steps by position in
+    `preferred`. That is a sequential Mallows-style concentration around the habitual order;
+    habit = 0 leaves the draw, and the rng stream, exactly as without it."""
     index, count = _ordering_tables(graph)
     par = parents(graph)
     pos = {k: i for i, k in enumerate(index)}
     par_mask = [sum(1 << pos[p] for p in par[k]) for k in index]
     is_prep = [graph.steps[k].phase == "prep" for k in index]
     bias = beta * (2.0 * mise_en_place - 1.0)
+    pref_pos = {k: j for j, k in enumerate(preferred)} if preferred and habit else None
     mask = (1 << len(index)) - 1
     order = []
     while mask:
         cands = [i for i in range(len(index)) if mask >> i & 1 and not par_mask[i] & mask]
         logw = np.array([math.log(count(mask & ~(1 << i))) + bias * is_prep[i] for i in cands])
+        if pref_pos is not None:
+            ranks = np.argsort(np.argsort([pref_pos[index[i]] for i in cands]))
+            logw = logw - habit * ranks
         w = np.exp(logw - logw.max())
         i = cands[int(rng.choice(len(cands), p=w / w.sum()))]
         order.append(index[i])

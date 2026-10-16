@@ -277,6 +277,60 @@ hindsight shown, live L=0 agrees within 0.1):
   any one trial and visible only in aggregate. It is the case for the drift detector
   ([`next_steps.md`](next_steps.md) §2).
 
+### 9.1 Lowering the healthy alarm floor
+
+Three levers, one at a time and combined:
+
+- **Training days:** 200 → 600. Validation and test are always the 60 + 60 days after training.
+- **A routine (habit):** each person has a preferred topological order per recipe, and every
+  available step is down-weighted by exp(−habit × its rank in that order): a sequential
+  Mallows-style concentration. At habit = 0 the draws and the rng stream are unchanged, so every
+  dataset in §6 is identical (`generator.yaml: person.habit`, `knobs.sample_topological_order`).
+  Raising β would not do this: β only biases prep against cook by the person's `mise_en_place`
+  θ, and at θ ≈ 0.5 the order stays uniform.
+- **Recognizer noise scale:** × 0.5.
+
+All runs use the same person, Hindsight at its validation-picked α; live L=0 agrees within 0.02 F1.
+
+**Injected errors, test days, metric G:**
+
+| setting | F1 | precision | recall | alarms / 10 min | run FPR | healthy-trial FPR | subst. | aband. | omission | transp. | repet. |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| baseline (200 days, habit 0, noise × 1) | 0.202 | 0.142 | 0.350 | 10.41 | 0.059 | 0.897 | 0.99 | 0.23 | 0.24 | 0.21 | 0.22 |
+| 600 training days | 0.238 | 0.240 | 0.236 | 3.34 | 0.022 | 0.512 | 0.94 | 0.04 | 0.12 | 0.15 | 0.02 |
+| habit 2 | 0.214 | 0.154 | 0.346 | 9.02 | 0.052 | 0.859 | 0.97 | 0.17 | 0.18 | 0.28 | 0.19 |
+| noise × 0.5 | 0.263 | 0.202 | 0.378 | 7.17 | 0.043 | 0.782 | 0.99 | 0.19 | 0.19 | 0.41 | 0.08 |
+| all three | 0.290 | 0.290 | 0.291 | 3.27 | 0.021 | 0.561 | 0.98 | 0.05 | 0.12 | 0.26 | 0.09 |
+| noise × 0 (200 days, habit 0) | 0.355 | 0.374 | 0.338 | 2.70 | 0.017 | 0.449 | 0.99 | 0.08 | 0.22 | 0.37 | 0.01 |
+
+**Where the healthy alarms come from** (share of raw flags on the healthy twins):
+
+| setting | `s_emit` + `s_verb` + `s_noun` | `s_transition` | `s_recipe_transition` | `s_temporal` |
+|---|---|---|---|---|
+| baseline | 0.42 | 0.26 | 0.26 | 0.07 |
+| 600 training days | 0.05 | 0.44 | 0.43 | 0.07 |
+| habit 2 | 0.45 | 0.20 | 0.20 | 0.15 |
+| noise × 0.5 | 0.56 | 0.22 | 0.22 | 0.01 |
+| all three | 0.25 | 0.35 | 0.34 | 0.05 |
+| noise × 0 | 0.02 | 0.39 | 0.39 | 0.19 |
+
+**What it says.**
+
+- **Noise is the biggest lever, then data.**
+  - Removing noise halves healthy-trial FPR (0.90 → 0.45) and doubles F1.
+  - Tripling the training data takes FPR to 0.51, mostly by learning the noise. Emission flags fall from 42% to 5% of the floor.
+  - But that also costs recall on the structural errors: abandonment 0.23 → 0.04, repetition 0.22 → 0.02. The model has learned that a swapped or extra token is ordinary.
+- **Habit 2 barely moves the floor** (0.90 → 0.86). Transition alarms on noisy data come
+  mostly from noise-made transitions (an inserted token creates two new bigrams), not from the
+  step order.
+- **The floor that remains is transitions.** With noise off or enough data, `s_transition`
+  is 70–80% of healthy alarms. No setting gets the healthy-trial FPR below ~0.45, and the picked
+  α stays at the grid's strictest value.
+- **`s_recipe_transition` duplicates `s_transition` on this data.** It fires on the same runs at
+  every setting (dish given, 7 recipes), so it adds no information here.
+- **Capability decline stays invisible in every setting.** Δ alarms vs twin is within ±0.3 at
+  slow or fine_motor +0.55, so §9's verdict holds.
+
 ## 10. Code
 
 | Concept | Where |
@@ -289,6 +343,7 @@ hindsight shown, live L=0 agrees within 0.1):
 | step expansions (two passes, per-recipe sour sites), validation, EPIC exemplars | `drift_synth/expand.py:expand_step`, `sour_sites`, `validate_expansion`, `ExemplarIndex`, `build_expansions`; `configs/drift_synth/expansions/` |
 | tags | `drift_synth/tagging.py:propose_tags`, `write_tags`, `load_tags` (refuses unreviewed); `configs/drift_synth/tags.yaml` |
 | assets bundle, expansion I/O | `drift_synth/assets.py:Assets`, `load_assets`, `save_expansions`, `load_expansions` |
+| person routine (habit) | `drift_synth/sampler.py:make_person` (`habit_orders`), `knobs.sample_topological_order(preferred, habit)`; `generator.yaml: person.habit` |
 | knobs: variants, step order, duration scales, repetition, tidy rates | `drift_synth/knobs.py:apply_variants`, `sample_topological_order`, `slow_multiplier`, `token_multiplier`, `repetition_prob`, `tidy_rates`; `configs/drift_synth/knobs.yaml` |
 | take / put / wash | `drift_synth/kitchen_state.py:insert_logistics` |
 | durations and gaps | `drift_synth/durations.py:fit_duration_priors`, `fit_from_intervals`, `sample_duration`, `sample_gap` |
@@ -301,5 +356,5 @@ hindsight shown, live L=0 agrees within 0.1):
 | offline assets (stages 1–3) | `scripts/drift_synth/build_assets.py --stage phases\|tags\|expansions` |
 | generation (stages 4–9) | `scripts/drift_synth/generate.py`; `configs/drift_synth/generator.yaml`, `conditions.yaml` |
 | sanity plots | `scripts/drift_synth/sanity_plots.py` |
-| anomaly detector on synthetic pools (§9) | `scripts/eval/eval_synth_ad.py`; `configs/drift_synth/hsmm.yaml`; repetition spans from `sampler.sample_session` (`meta.repeats`); `export.step_labels` |
+| anomaly detector on synthetic pools (§9) | `scripts/eval/eval_synth_ad.py` (`--train-days`, `--habit`, `--noise-scale`); `configs/drift_synth/hsmm.yaml`; repetition spans from `sampler.sample_session` (`meta.repeats`); `export.step_labels` |
 | tests | `tests/test_drift_synth_graphs.py`, `tests/test_drift_synth_generator.py`, `tests/test_drift_synth_expand.py`, `tests/_drift_fixtures.py` |

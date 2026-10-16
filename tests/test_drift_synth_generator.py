@@ -311,3 +311,17 @@ def test_step_labels_and_repeats_are_logged():
     labels = step_labels(s, len(v), 0.5)
     assert len(labels) == len(v) and set(labels) <= {0, 1, 2, 3, 4, 5, 6}
     assert {1, 2, 3, 4, 5, 6} <= set(labels)    # every step's core tokens are labelled somewhere
+
+
+def test_habit_concentrates_orders_and_zero_is_a_no_op():
+    rng_a, rng_b = np.random.default_rng(3), np.random.default_rng(3)
+    pref = ["5", "3", "1", "2", "4", "6"]
+    for _ in range(50):     # habit 0: identical draws to the plain sampler
+        assert (sample_topological_order(OMELET, 0.5, 4.0, rng_a, pref, 0.0)
+                == sample_topological_order(OMELET, 0.5, 4.0, rng_b))
+    rng = np.random.default_rng(0)
+    free = Counter(tuple(sample_topological_order(OMELET, 0.5, 4.0, rng)) for _ in range(500))
+    tight = Counter(tuple(sample_topological_order(OMELET, 0.5, 4.0, rng, pref, 3.0))
+                    for _ in range(500))
+    assert tight[tuple(pref)] > 250 and free[tuple(pref)] < 100
+    assert all(is_topological(OMELET, list(o)) for o in tight)

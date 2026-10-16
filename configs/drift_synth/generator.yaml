@@ -27,6 +27,7 @@ person:
   dirichlet_alpha: 1.0       # recipe frequency weights
   p_two_sessions: 0.3        # else one session a day
   theta0: [0.25, 0.75]       # each knob's baseline ~ U(lo, hi)
+  habit: 0.0                 # routine step order: 0 = uniform over topological orders (open)
 
 day_noise:                   # (open) logit-space sigma per knob
   sigma: {sour: 0.3, calorie_conscious: 0.3, mise_en_place: 0.3, tidy: 0.3, slow: 0.2, fine_motor: 0.2}
