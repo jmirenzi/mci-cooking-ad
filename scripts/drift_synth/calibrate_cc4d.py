@@ -27,7 +27,7 @@ from cook_ad.drift_synth.assets import load_assets
 from cook_ad.drift_synth.graphs import ancestors, recipe_key
 from cook_ad.drift_synth.knobs import sample_topological_order
 from cook_ad.drift_synth.noise import NoiseCfg
-from cook_ad.drift_synth.sampler import rng_for, sample_session
+from cook_ad.drift_synth.sampler import rng_for, sample_session, step_owners
 
 BAD_TAGS = {"Order Error", "Missing Step"}
 HABITS = (0.0, 0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0)
@@ -133,8 +133,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sims", type=int, default=200, help="rollouts per recipe for order/duration stats")
     ap.add_argument("--out", default="runs/drift_synth/reports/cc4d_calibration")
+    ap.add_argument("--write-scales", default=None,
+                    help="write per-step time scales (CC4D median / generator median) here, e.g. "
+                         "configs/drift_synth/step_time_scale.json")
     args = ap.parse_args()
     assets = load_assets()
+    assets.step_scale = None   # measure the UNcalibrated generator
     graphs = assets.graphs
     beta = assets.knobs["mise_en_place"]["beta"]
     real = real_recordings(assets.gen["paths"]["cc4d"], graphs)
@@ -211,15 +215,9 @@ def main():
             s = sample_session(graphs[r], assets.expansions[r], theta, 1.0, assets, off, rng_for(7, 77, i))
             ev = s.meta["clean_events"]
             tot_sim.append(ev[-1][1] - ev[0][0] if ev else 0.0)
-            # each event's time (to the next event's start) goes to its step; logistics go to the
-            # step of the nearest core event before them, else after them
-            steps = [e[4] for e in ev]
-            last = None
-            owner = []
-            for k, st in enumerate(steps):
-                if st is not None:
-                    last = st
-                owner.append(last if last is not None else next((x for x in steps[k:] if x), None))
+            # each event's time (to the next event's start) goes to its step, by the sampler's own
+            # ownership rule, so the scales written below are the ones the generator applies
+            owner = step_owners([e[4] for e in ev])
             acc = {}
             for k, e in enumerate(ev):
                 end = ev[k + 1][0] if k + 1 < len(ev) else e[1]
@@ -246,11 +244,38 @@ def main():
         "median_session_sim_s": float(np.median(sess_sim)),
     }
 
+    if args.write_scales:
+        write_scales(report["durations"]["steps"], sorted(graphs), args.write_scales)
+
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.with_suffix(".json").write_text(json.dumps(report, indent=1, default=float))
     write_md(report, out.with_suffix(".md"))
     print(f"wrote {out}.md / .json")
+
+
+SCALE_CLIP = (0.5, 60.0)
+
+
+def write_scales(rows, recipes, path):
+    """{recipe: {step: scale, "_recipe": the recipe's median scale}}, global median for recipes
+    with no CC4D normal recording. Clipped to SCALE_CLIP."""
+    clip = lambda x: float(min(max(x, SCALE_CLIP[0]), SCALE_CLIP[1]))  # noqa: E731
+    by_r = {}
+    for row in rows:
+        if row["ratio"]:
+            by_r.setdefault(row["recipe"], {})[row["step"]] = clip(row["ratio"])
+    glob = float(np.median([v for d in by_r.values() for v in d.values()]))
+    scales = {}
+    for r in recipes:
+        d = by_r.get(r, {})
+        scales[r] = dict(d, _recipe=float(np.median(list(d.values()))) if d else glob)
+    Path(path).write_text(json.dumps(
+        {"source": "scripts/drift_synth/calibrate_cc4d.py --write-scales: CC4D normal-recording "
+                   "median step time / the uncalibrated generator's median (noise off, theta 0.5, "
+                   "speed 1); applied to each step's event durations and gaps", "clip": SCALE_CLIP,
+         "global_median": glob, "scales": scales}, indent=1, sort_keys=True) + "\n")
+    print(f"wrote {path} (global median scale {glob:.2f})")
 
 
 def write_md(rep, path):

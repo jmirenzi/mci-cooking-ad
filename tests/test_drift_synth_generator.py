@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from scipy.stats import chi2, chisquare, ks_2samp, norm
 
-from _drift_fixtures import OMELET, TAGS, VOCAB, theta, toy_assets
+from _drift_fixtures import OMELET, SALAD, TAGS, VOCAB, theta, toy_assets
 from cook_ad.drift_synth import ground_truth as GT
 from cook_ad.drift_synth.durations import fit_from_intervals
 from cook_ad.drift_synth.export import export, to_ticks
@@ -338,3 +338,19 @@ def test_per_knob_ranges_and_habit_range():
     assert p.repertoire == base.repertoire and p.habit_orders == base.habit_orders
     assert {k: v for k, v in p.theta0.items() if k != "slow"} == \
         {k: v for k, v in base.theta0.items() if k != "slow"}
+
+
+def test_step_time_scale_stretches_only_its_step():
+    from cook_ad.drift_synth.noise import NoiseCfg
+    from cook_ad.drift_synth.sampler import sample_session
+    a = toy_assets()
+    th = theta()
+    plain = sample_session(SALAD, a.expansions["salad"], th, 1.0, a, NoiseCfg().off(), rng_for(1, 1))
+    a.step_scale = {"salad": {"2": 3.0, "_recipe": 1.0}}
+    scaled = sample_session(SALAD, a.expansions["salad"], th, 1.0, a, NoiseCfg().off(), rng_for(1, 1))
+    from cook_ad.drift_synth.sampler import step_owners
+    owners = step_owners([e[4] for e in plain.meta["clean_events"]])
+    for p, q, owner in zip(plain.meta["clean_events"], scaled.meta["clean_events"], owners):
+        assert p[2:] == q[2:]                      # same tokens, same draws
+        ratio = (q[1] - q[0]) / (p[1] - p[0])      # logistics follow the step that owns them
+        assert ratio == pytest.approx(3.0 if owner == "2" else 1.0, rel=1e-2)  # ms rounding

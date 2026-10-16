@@ -33,6 +33,17 @@ class ConditionCfg:
     n_days: int = 70
 
 
+def step_owners(steps):
+    """Per event, the recipe step its time belongs to: a core token's own step; a logistics token
+    (None) goes to the nearest core step before it, else the first one after it."""
+    out, last = [], None
+    for k, st in enumerate(steps):
+        if st is not None:
+            last = st
+        out.append(last if last is not None else next((x for x in steps[k:] if x is not None), None))
+    return out
+
+
 def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
                    person_id="", day=0, session_idx=0, preferred=None, habit=0.0):
     """The spec's order: step order, variants, logistics, repetition, durations, noise."""
@@ -69,11 +80,19 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
             repeats.append(len(final) - 1)
 
     slow = K.slow_multiplier(theta, kn)
+    # CC4D step-time calibration (calibrate_cc4d.py --write-scales): every event's duration and
+    # following gap times its step's scale. Absent = 1, the uncalibrated generator.
+    scale = (getattr(assets, "step_scale", None) or {}).get(recipe.recipe_id, {})
+    cap = (gen.get("durations") or {}).get("max_event_s")   # None = uncapped
+    owner = step_owners(final_step)
     t = 0.0
     clean = []
     for i, tok in enumerate(final):
-        d = sample_duration(assets.durations, tok, speed * slow * K.token_multiplier(tok, theta, kn, tags), rng)
-        gap = sample_gap(assets.durations, speed * slow, rng)
+        m = scale.get(owner[i], scale.get("_recipe", 1.0)) if scale else 1.0
+        d = sample_duration(assets.durations, tok,
+                            m * speed * slow * K.token_multiplier(tok, theta, kn, tags), rng)
+        d = min(d, cap) if cap else d
+        gap = sample_gap(assets.durations, m * speed * slow, rng)
         clean.append(Event(round(t, 3), round(t + d, 3), tok[0], tok[1]))
         t += d + (gap if i + 1 < len(final) else 0.0)
 

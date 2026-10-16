@@ -21,6 +21,8 @@ logistics_verbs: {take: take, put: put, wash: wash}
 
 durations:
   source: epic               # cc4d_fine is not public; cc4d_step not built
+  step_scale: null           # or configs/drift_synth/step_time_scale.json (CC4D step-time calibration)
+  max_event_s: null          # cap on one event's duration (the calibrated variant uses 600)
 
 person:
   repertoire: [6, 10]        # recipes per person, inclusive

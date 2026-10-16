@@ -18,6 +18,7 @@ class Assets:
     durations: object     # DurationModel
     vocab: dict           # {"verbs": {name: id}, "nouns": {name: id}, ...}
     gen: dict             # configs/drift_synth/generator.yaml
+    step_scale: dict | None = None   # recipe -> {step: CC4D time scale, "_recipe": fallback}
 
 
 # ---- expansions on disk: configs/drift_synth/expansions/<recipe>.json -------------------------
@@ -71,4 +72,11 @@ def load_assets(gen_path="configs/drift_synth/generator.yaml"):
         durations=durations,
         vocab=json.loads(Path(p["vocab"]).read_text()),
         gen=gen,
+        step_scale=load_step_scale(gen),
     )
+
+
+def load_step_scale(gen):
+    """The CC4D step-time scales if generator.yaml's durations.step_scale names a file."""
+    path = (gen.get("durations") or {}).get("step_scale")
+    return json.loads(Path(path).read_text())["scales"] if path else None

@@ -418,7 +418,17 @@ The real data are CC4D recordings with no Order Error or Missing Step tag: 5–1
   716 s of step time against 169 s for a synthetic session; steps with a `wait` token are 4.0×
   short, the rest 4.6×. The largest gaps are "cook for N minutes" steps the expansion gave no
   `wait` (pan-fried tofu, "cook 5 to 6 minutes": 327 s real, 8 s generated).
-  - **Planned:** scale each step's tokens to CC4D's median step time, keeping EPIC's proportions within the step, and refit everything (overnight).
+  - **Step-time calibration** (built, off by default): `calibrate_cc4d.py --write-scales` writes
+    `configs/drift_synth/step_time_scale.json`, where each step's scale is the CC4D median step
+    time divided by the uncalibrated generator's median.
+    - Scales run from 2.8× (banana pancakes) to 9.1× (sautéed mushrooms), with a 4.15× global median.
+    - The sampler multiplies every event's duration and following gap by its step's scale; logistics take their owning step's (`sampler.step_owners`). Single events are capped at 600 s.
+    - Calibrated sessions: median 807 s against CC4D's 716 s of step time.
+    - Enable with `generator.yaml: durations.step_scale` and `max_event_s`.
+  - **The calibrated rerun** (`scripts/drift_synth/overnight_cal.sh`, `eval_synth_prior.py --variant cal`)
+    uses 1 s ticks, d_max 300 (`configs/drift_synth/hsmm_cal.yaml`), training sizes 10 / 30 / 200
+    days and 20 soft-EM iterations, to fit in a night. After iteration 20 the objective moved less
+    than 0.2% in 13 of 16 uncalibrated fits.
 
 ## 10. Code
 
@@ -445,7 +455,7 @@ The real data are CC4D recordings with no Order Error or Missing Step tag: 5–1
 | offline assets (stages 1–3) | `scripts/drift_synth/build_assets.py --stage phases\|tags\|expansions` |
 | generation (stages 4–9) | `scripts/drift_synth/generate.py`; `configs/drift_synth/generator.yaml`, `conditions.yaml` |
 | sanity plots | `scripts/drift_synth/sanity_plots.py` |
-| global prior + fine-tune (§9.2) | `hsmm/train/global_prior.py:count_global`, `apply_global_prior`, `state_pairs`; `scripts/eval/eval_synth_prior.py`; `harness.hindsight_split_grid`, `split_op` |
-| CC4D calibration (§9.3) | `scripts/drift_synth/calibrate_cc4d.py` |
+| global prior + fine-tune (§9.2) | `hsmm/train/global_prior.py:count_global`, `apply_global_prior` (fixed or fading: `person_counts`, `n0`), `state_pairs`; `eval_synth_prior.py --stage eval-split`; `scripts/eval/eval_synth_prior.py`; `harness.hindsight_split_grid`, `split_op` |
+| CC4D calibration (§9.3) | `scripts/drift_synth/calibrate_cc4d.py` (`--write-scales`); `sampler.step_owners`; `assets.load_step_scale`; `configs/drift_synth/step_time_scale.json`; `scripts/drift_synth/overnight_cal.sh` |
 | anomaly detector on synthetic pools (§9) | `scripts/eval/eval_synth_ad.py` (`--train-days`, `--habit`, `--noise-scale`); `configs/drift_synth/hsmm.yaml`; repetition spans from `sampler.sample_session` (`meta.repeats`); `export.step_labels` |
 | tests | `tests/test_drift_synth_graphs.py`, `tests/test_drift_synth_generator.py`, `tests/test_drift_synth_expand.py`, `tests/_drift_fixtures.py` |
