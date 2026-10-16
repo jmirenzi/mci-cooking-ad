@@ -9,7 +9,7 @@ It is a sanity and validity test, not a benchmark. Control matters more than rea
 exception: the output must be at the **logistics level** the HSMM is trained on (`take bowl`,
 `pour water`), not the recipe-step level (`make roux`).
 
-**Status (2026-10-15):** built end to end. All 31 conditions × 3 seeds × 8 persons are generated
+**Status (2026-10-16):** built end to end. All 31 conditions × 3 seeds × 8 persons are generated
 under `dataset/processed/drift_synth/` (about 22k sessions, 470 MB, 70 s), and the sanity plots are
 in (§8). Open for Jack: the duration scale a, β and the day-noise σ, and whether to lengthen waits
 (sessions run 2.8 min against CC4D's 15.7). No detector has been run on the data.
@@ -399,6 +399,32 @@ person's N = 200 model.
   - **A split α** (transition channels picked separately from the rest, `harness.hindsight_split_grid`) recovers part of p00's loss: F1 0.22 → 0.29–0.30 at 100–200 days, still below person-only 0.40.
   - **Next:** a prior that fades with the person's own row count, paired with the split α.
 - **Why persons differ:** p01 and p02 cook high-freedom recipes (stir fry 1.6×10¹⁰ orders, scrambled eggs 3.6×10⁶); p00 and p03 cook constrained ones. At 30 days, test transitions the person had never produced are 13% for p01/p02 and 6–7% for p00/p03. At 200 days they are 0.6–1.4% for all four, and 0.03–0.15% are unseen by the population too. This explains part of the pattern, but not p03's early loss.
+
+**Split α and a fading prior** (`--stage eval-split`, the same fits and pools). Every arm picks
+the transition channels' α separately from the other channels' on validation. A fading prior
+gives a row the person has left n times λ₀ / (1 + n / n₀). Mean over the 4 persons, Hindsight,
+test days, metric G (F1 / healthy-trial FPR):
+
+| train days | person only | prior λ = 1 | fade (λ₀ 10, n₀ 3) | fade (10, 10) | fade (30, 3) |
+|---|---|---|---|---|---|
+| 10 | 0.149 / 0.99 | **0.204** / 0.80 | **0.204** / 0.80 | 0.203 / 0.81 | 0.200 / 0.80 |
+| 30 | 0.240 / 0.73 | **0.314** / 0.45 | 0.308 / 0.45 | 0.308 / 0.48 | 0.307 / 0.49 |
+| 100 | 0.360 / 0.31 | 0.382 / 0.20 | **0.385** / 0.17 | 0.367 / 0.31 | 0.373 / 0.22 |
+| 200 | **0.399** / 0.21 | 0.394 / 0.15 | 0.396 / 0.16 | 0.395 / 0.13 | 0.392 / 0.14 |
+
+![Split α curves](figures/drift_synth_prior_split_curves.png)
+
+- **The split α is what helps.** With it, the fixed prior's loss at 100–200 days becomes a gain
+  or a tie (single α 0.362 / 0.377 → split 0.382 / 0.394), and its healthy-trial FPR stays below
+  person-only at every size.
+- **Fading adds nothing measurable:** every setting is within 0.02 F1 of the fixed prior.
+- **p00 still loses at 100–200 days** (person-only 0.40, any prior 0.29–0.30). Even faded, a
+  transition p00 never made goes from ~1e-12 to ~1e-3, and it only flags again at a loose
+  transition α (0.015) where ordinary rare transitions flag too. For p00, "never made by this
+  person" was a nearly clean error signal (about 1% of healthy test transitions are new to it).
+  **p03 loses at 10–30 days** (0.26 → 0.19–0.21), where its picks go to α_trans 0.05–0.2.
+- **No prior setting is best for every person.** Which one is can be measured on the person's
+  own validation data.
 
 ### 9.3 Calibration against CaptainCook4D
 

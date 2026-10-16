@@ -5,6 +5,13 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-16 — split transition α and a fading prior (metric G)
+
+Split α turns the fixed prior's 100–200-day loss into a gain or tie (mean F1 0.382 / 0.394 against
+person-only 0.360 / 0.399). A fading prior λ₀/(1+n/n₀) is within 0.02 of fixed everywhere. p00
+(100–200 days) and p03 (10–30) still lose with any prior. The CC4D-calibrated overnight rerun was
+started, then stopped by Jack: early problems first.
+
 ## 2026-10-16 — global population prior + per-person fine-tune (metric G)
 
 60 simulated people → one count prior. Mean over 4 persons, F1 person-only → +prior: 10 days
