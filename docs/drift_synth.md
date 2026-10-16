@@ -223,7 +223,61 @@ more synthetic actions under 0.5 s (recognizer inserts and jitter). Sessions are
 **Granularity** (`examples.md`): synthetic sessions read at EPIC's level ("take onion, cut onion,
 add onion, put onion"). Recognizer noise produces the odd pair ("turn-on garlic").
 
-## 9. Code
+## 9. Does the anomaly detector work on this data?
+
+`scripts/eval/eval_synth_ad.py`, results in `runs/drift_synth/eval_synth_ad{,_clean}.json`.
+
+**Setup.**
+- **The person:** seed 0, person 6 (θ0 slow = fine_motor = 0.41, 7 recipes), cooking for 320 days.
+- **The model:** fitted on days 0–199 (265 sessions) with the four-stage dish preset (`configs/drift_synth/hsmm.yaml`: K = 128, recipe = the CC4D recipe).
+- **Operating points:** best G-F1 on the five injected error types over days 200–259.
+- **Test days 260–319:**
+  - the injectors on the normal sessions;
+  - the same sessions re-sampled with `slow` or `fine_motor` raised by 0.2, 0.4 or 0.55. Common random numbers make each anomalous trial differ from its normal twin only in θ.
+- **Two versions of the person:** with the generator's recognizer noise, and without it (`--noise off`).
+
+**Injected errors, test days, metric G** (78 trials per group; null F1 0.052–0.055):
+
+| noise | arm | precision | recall | F1 | alarms / 10 min | run FPR | healthy-trial FPR | subst. | aband. | omission | transp. | repet. |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| off | hindsight (α 1e-10) | 0.374 | 0.338 | 0.355 | 2.70 | 0.017 | 0.449 | 0.99 | 0.08 | 0.22 | 0.37 | 0.01 |
+| off | live L=0 (α 1e-7, κ 0.9) | 0.370 | 0.344 | 0.357 | 2.80 | 0.018 | 0.449 | 0.99 | 0.08 | 0.22 | 0.38 | 0.03 |
+| on | hindsight (α 1e-10) | 0.142 | 0.350 | 0.202 | 10.41 | 0.059 | 0.897 | 0.99 | 0.23 | 0.24 | 0.21 | 0.22 |
+| on | live L=0 (α 1e-10, κ 0.9) | 0.144 | 0.350 | 0.204 | 10.22 | 0.058 | 0.910 | 0.99 | 0.23 | 0.22 | 0.22 | 0.23 |
+
+**Capability pools vs their normal twins** (metric G alarm counting: one alarm per flagged run;
+hindsight shown, live L=0 agrees within 0.1):
+
+| noise | pool | min / trial | alarms / 10 min | trials with alarm | more alarms than twin | fewer | Δ alarms / trial | repetition recall (G) |
+|---|---|---|---|---|---|---|---|---|
+| off | healthy twins | 2.7 | 2.70 | 0.45 | | | | |
+| off | slow +0.2 / +0.4 / +0.55 | 3.3 / 4.0 / 4.7 | 2.22 / 1.56 / 1.34 | 0.44 / 0.38 / 0.41 | 0.05 / 0.06 / 0.06 | 0.06 / 0.14 / 0.14 | +0.00 / −0.10 / −0.10 | |
+| off | fine_motor +0.2 / +0.4 / +0.55 | 3.0 / 3.4 / 3.8 | 2.30 / 2.21 / 2.03 | 0.44 / 0.46 / 0.49 | 0.08 / 0.10 / 0.15 | 0.13 / 0.09 / 0.13 | −0.04 / +0.03 / +0.04 | 0.04 / 0.06 / 0.06 |
+| on | healthy twins | 2.7 | 10.41 | 0.90 | | | | |
+| on | slow +0.55 | 4.7 | 6.19 | 0.87 | 0.29 | 0.24 | +0.08 | |
+| on | fine_motor +0.55 | 3.8 | 7.94 | 0.92 | 0.38 | 0.29 | +0.21 | 0.22 |
+
+**What it says.**
+
+- **Local errors are partly detected.** Substitution is caught (0.99). Transposition (0.37) and
+  omission (0.22) are about Breakfast's level for omission and below it for transposition.
+  Abandonment and repetition are nearly invisible without noise. With noise, recall on those two
+  rises to ~0.22 only because the alarms are everywhere (healthy-trial FPR 0.90).
+- **The healthy floor is structural.**
+  - The operating point lands at the grid's strictest α in both runs, and the healthy alarms are mostly `s_transition` / `s_recipe_transition`.
+  - Step orders are sampled uniformly over up to 10¹⁰ topological orders, so a held-out session often contains a transition never seen in 265 training sessions, and an unseen transition sits on the floor at any α.
+  - Recognizer noise then adds `s_emit` flags on swapped tokens: 4× the alarm rate.
+- **Capability decline is invisible to the per-trial detector at every level, with or without
+  noise.** Even at 1.73× slower, a slowed trial raises the same number of alarms as its twin:
+  - `s_temporal` fires more (raw flags 26 → 88), but on runs that are already alarmed.
+  - A 1.7× slowdown is 0.55 in log duration, under one standard deviation of EPIC's per-verb spread (σ ≈ 0.65–1.0).
+  - The `fine_motor` repetitions are normal for this person (at θ0 = 0.41, 14% of fine-motor tokens already repeat), so the model has learned them.
+
+  This is a property of per-trial anomaly detection, not a bug: a whole-person shift is small in
+  any one trial and visible only in aggregate. It is the case for the drift detector
+  ([`next_steps.md`](next_steps.md) §2).
+
+## 10. Code
 
 | Concept | Where |
 |---|---|
@@ -247,4 +301,5 @@ add onion, put onion"). Recognizer noise produces the odd pair ("turn-on garlic"
 | offline assets (stages 1–3) | `scripts/drift_synth/build_assets.py --stage phases\|tags\|expansions` |
 | generation (stages 4–9) | `scripts/drift_synth/generate.py`; `configs/drift_synth/generator.yaml`, `conditions.yaml` |
 | sanity plots | `scripts/drift_synth/sanity_plots.py` |
+| anomaly detector on synthetic pools (§9) | `scripts/eval/eval_synth_ad.py`; `configs/drift_synth/hsmm.yaml`; repetition spans from `sampler.sample_session` (`meta.repeats`); `export.step_labels` |
 | tests | `tests/test_drift_synth_graphs.py`, `tests/test_drift_synth_generator.py`, `tests/test_drift_synth_expand.py`, `tests/_drift_fixtures.py` |

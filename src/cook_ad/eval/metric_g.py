@@ -103,10 +103,13 @@ class GridScore:
     """Accumulates metric G over trials for a whole operating-point grid.
 
     add(group, flags (T, ...) bool, spans, verbs, nouns); `group` "healthy" for error-free
-    trials (they supply alarms/10 min and healthy-trial FPR), else the error type."""
+    trials (they supply alarms/10 min and healthy-trial FPR), else the error type.
+    `tick_seconds` converts ticks to time for alarms/10 min (1.0 on Breakfast and EPIC-Tent;
+    0.5 on EPIC-KITCHENS and the synthetic drift data)."""
 
-    def __init__(self):
+    def __init__(self, tick_seconds=1.0):
         self.groups = {}
+        self.tick_seconds = tick_seconds
 
     def add(self, group, flags, spans, verbs, nouns):
         flags = np.asarray(flags, dtype=bool)
@@ -142,7 +145,7 @@ class GridScore:
             rec = tp / max(n_spans, 1)
             f1 = np.where(prec + rec > 0, 2 * prec * rec / (prec + rec), 0.0)
         return {"precision": prec, "recall": rec, "f1": f1,
-                "alarms_per_10min": 600.0 * h["onsets"] / h["ticks"],
+                "alarms_per_10min": 600.0 * h["onsets"] / (h["ticks"] * self.tick_seconds),
                 "healthy_trial_fpr": h["any_flag"] / h["n_trials"],
                 "run_fpr": runs_flagged / max(n_correct, 1),
                 "per_type_recall": {k: st["hits"] / max(st["n_spans"], 1)

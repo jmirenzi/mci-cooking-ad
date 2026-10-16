@@ -73,9 +73,9 @@ def live_grid(det, trace, alphas, kappas):
     return out
 
 
-def sweep(masks_by_trial, trials):
+def sweep(masks_by_trial, trials, tick_seconds=1.0):
     """masks_by_trial[i]: (T, ...) bool grid for trials[i] = (group, Trial) -> metric G grid."""
-    score = metric_g.GridScore()
+    score = metric_g.GridScore(tick_seconds)
     for m, (group, t) in zip(masks_by_trial, trials):
         score.add(group, m, list(t.spans), t.verbs, t.nouns)
     return score.result()
@@ -100,9 +100,9 @@ def at(result, idx):
             "per_type": {k: get(v) for k, v in result["per_type_recall"].items()}}
 
 
-def score_masks(masks, trials):
+def score_masks(masks, trials, tick_seconds=1.0):
     """One operating point: [(T,) bool] -> the scalar metric G row."""
-    return at(sweep([np.asarray(m)[:, None] for m in masks], trials), (0,))
+    return at(sweep([np.asarray(m)[:, None] for m in masks], trials, tick_seconds), (0,))
 
 
 # ---- nulls ----------------------------------------------------------------------------------

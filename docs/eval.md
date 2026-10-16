@@ -59,6 +59,9 @@ in the middle of a run. Earlier metrics failed this test:
 channel)`. `GridScore` scores dense (T, P) flag matrices, P operating points at once, which is what
 sweeps use. `evaluate` takes every span of a trial at once: passing the same flags once per error
 type would charge a flag that hit a transposition as a false positive in the substitution entry.
+Alarms per 10 minutes need the tick length: `GridScore(tick_seconds)`, default 1.0 (Breakfast,
+EPIC-Tent). Pass 0.5 for EPIC-KITCHENS and the synthetic drift data, or the rate reads half the
+truth.
 
 ---
 

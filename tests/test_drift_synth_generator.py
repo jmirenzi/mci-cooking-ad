@@ -295,3 +295,19 @@ def test_conditions_file_expands_to_the_spec_set():
     assert conds["null"].regime.kind == "none" and conds["mix_shift_only"].mix_shift
     assert conds["slow_incremental"].regime.duration_days == 21
     assert conds["pref_plus_capability"].moving == {"sour": 0.4, "slow": 0.4}
+
+
+def test_step_labels_and_repeats_are_logged():
+    from cook_ad.drift_synth.export import step_labels
+    from cook_ad.drift_synth.noise import NoiseCfg
+    from cook_ad.drift_synth.sampler import sample_session
+    s = sample_session(OMELET, ASSETS.expansions["omelet"], theta(fine_motor=1.0), 1.0, ASSETS,
+                       NoiseCfg().off(), rng_for(5, 1))
+    clean = s.meta["clean_events"]
+    assert s.meta["repetitions"] == len(s.meta["repeats"]) > 0
+    for j in s.meta["repeats"]:      # a repeat duplicates the token just before it
+        assert clean[j][2:4] == clean[j - 1][2:4]
+    v, _ = to_ticks(s.events, VOCAB, ("stall", "idle"), 20, 0.5)
+    labels = step_labels(s, len(v), 0.5)
+    assert len(labels) == len(v) and set(labels) <= {0, 1, 2, 3, 4, 5, 6}
+    assert {1, 2, 3, 4, 5, 6} <= set(labels)    # every step's core tokens are labelled somewhere

@@ -5,6 +5,13 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-16 — HSMM anomaly detector on synthetic data (metric G)
+
+One person (seed 0, p06), fitted on 265 normal sessions. Injected errors: F1 0.355 noise-free,
+0.202 with recognizer noise (healthy-trial FPR 0.45 → 0.90; unseen transitions set the floor).
+slow and fine_motor at up to +0.55 θ: no per-trial signal (Δ alarms vs twin ≈ 0). Found and fixed:
+metric G's alarms/10 min assumed 1 s ticks (`GridScore(tick_seconds)`).
+
 ## 2026-10-15 — synthetic drift data: all conditions + sanity plots (M4)
 
 31 conditions × 3 seeds × 8 persons generated (about 22k sessions, 70 s). At |Δθ| 0.45 every knob

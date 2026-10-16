@@ -57,7 +57,7 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
     step_of = [next(it) if p == "core" else None for p in prov]
 
     final, final_step = [], []
-    n_rep = 0
+    repeats = []   # clean-event indices that are fine_motor repetitions (ground-truth spans)
     for tok, s in zip(with_log, step_of):
         u = rng.random()
         final.append(tok)
@@ -65,7 +65,7 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
         if u < K.repetition_prob(tok, theta, kn, tags):
             final.append(tok)
             final_step.append(s)
-            n_rep += 1
+            repeats.append(len(final) - 1)
 
     slow = K.slow_multiplier(theta, kn)
     t = 0.0
@@ -82,7 +82,7 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
         person_id=person_id, day=day, session_idx=session_idx, recipe_id=recipe.recipe_id,
         events=events, theta_day=dict(theta),
         meta={"order": order, "variants_applied": applied, "skipped_steps": skipped,
-              "repetitions": n_rep, "speed": round(speed, 6), "noise": counts,
+              "repetitions": len(repeats), "repeats": repeats, "speed": round(speed, 6), "noise": counts,
               "clean_events": [[e.t_start, e.t_end, e.verb, e.noun, s] for e, s in zip(clean, final_step)]},
     )
 

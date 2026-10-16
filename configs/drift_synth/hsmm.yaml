@@ -1,0 +1,32 @@
+# HSMM for one synthetic drift-data person (scripts/eval/eval_synth_ad.py). The stream is the
+# EPIC-100 vocabulary at 0.5 s ticks, as configs/epic.yaml; the recipe is the CC4D recipe
+# (--recipe-labels, so k_recipe is overridden by the person's repertoire).
+
+tick_seconds: 0.5
+
+vocab:
+  verbs: 98    # 97 EPIC verb classes + "stall" (SIL)
+  nouns: 306   # 305 EPIC noun classes + "idle" (SIL)
+
+k_subtask: 128  # one person's ~200 pairs covering >= 20 ticks include recognizer-noise pairs;
+                # 128 covers the real action inventory, the rest fall to background mass
+k_recipe: 7     # overridden by --recipe-labels
+
+prior:
+  alpha_pi: 1.0
+
+duration:
+  d_max_ticks: 200        # 100 s, as EPIC
+  shrinkage_kappa: 5.0
+
+em:
+  chunk_size: 2
+
+joint_em:
+  chunk_size: 2           # EPIC measured: K=128 compiles at chunk 2, not at chunk 1
+  global_damping: 0.7
+
+ambient_gaps:
+  inject_synthetic_gaps: false
+  sil_verb: "stall"
+  sil_noun: "idle"
