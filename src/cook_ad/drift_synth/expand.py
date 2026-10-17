@@ -1,10 +1,16 @@
 """Stage 3: each recipe step -> core (verb, noun) tokens plus knob variants, by the LLM, once.
 
-Per step, pass 1 asks for the core actions only, and pass 2 asks for a `calorie_conscious`
-variant whenever a core token uses a fat-tagged noun (a lower-fat substitute, or omit). Then one
-call per recipe asks where (at most 2 steps, possibly none) a cook who likes sour flavours would
-add one sour ingredient. Asked per step, the model put lemon and vinegar into nearly every step,
-hot chocolate included; asked once with the whole dish in view, it can say "nowhere".
+Per step, pass 1 asks for the core actions only, and pass 2 asks for a lower-fat variant (the
+`fatty` knob's remove side: a substitute, or omit) whenever a core token uses a fat-tagged noun.
+Then one call per recipe asks where (at most 2 steps, possibly none) a cook who likes sour
+flavours would add one sour ingredient. Asked per step, the model put lemon and vinegar into
+nearly every step, hot chocolate included; asked once with the whole dish in view, it can say
+"nowhere".
+
+The flavour pass (`add_flavour_variants`, 2026-10-17) adds the rest of the two-sided flavour
+knobs: one call per recipe and knob for the sweet / salty / fatty insert sites (1-2 steps, always
+some: how plausible they are is the affinity's job, `propose_affinity`), and, in code, an omit
+for every core token whose noun is one of the knob's nouns (knobs.yaml `nouns`).
 
 The JSON schemas enumerate the vocabulary, so the server cannot emit an out-of-vocab token.
 `validate_expansion` checks what a schema cannot. A failing reply is retried up to 3 times with
@@ -20,9 +26,12 @@ from cook_ad.drift_synth.kitchen_state import LOGISTIC_TAGS
 from cook_ad.drift_synth.types import StepExpansion, Variant
 
 VARIANT_KNOBS = {           # knob -> (allowed kinds, the noun tag its tokens must carry)
-    "sour": (("insert",), "sour"),
-    "calorie_conscious": (("substitute", "omit"), "fat"),
+    "sour": (("insert", "omit"), "sour"),
+    "sweet": (("insert", "omit"), "sweet"),
+    "salty": (("insert", "omit"), "salty"),
+    "fatty": (("insert", "substitute", "omit"), "fat"),
 }
+AFFINITY_LEVELS = {"rare": 0.1, "sometimes": 0.4, "common": 1.0}
 # A pair with one of these verbs moves an ingredient, so its noun must be one (not the pan).
 ADDING_VERBS = ("add", "pour", "sprinkle", "squeeze", "season", "scoop")
 # Ingredient nouns a step may use without the recipe naming them: generic stuff and the dish
@@ -222,7 +231,7 @@ def _retry(ask, build, check):
 
 def expand_step(step, recipe, vocab, tags, exemplars, llm_cfg, ingredients=None):
     """Core pass and calorie pass for one step. -> (StepExpansion or None,
-    {"core": [...], "calorie_conscious": [...]} attempt errors)."""
+    {"core": [...], "fatty": [...]} attempt errors)."""
     from cook_ad.drift_synth.lexicon import step_verb
     from cook_ad.drift_synth.llm import ask_json, client_for
     if step_verb(step.description) == "take":
@@ -250,9 +259,9 @@ def expand_step(step, recipe, vocab, tags, exemplars, llm_cfg, ingredients=None)
 
         def build_cal(r):
             sub = [(p["verb"], p["noun"]) for p in r["tokens"]]
-            return Variant("calorie_conscious", "substitute" if sub else "omit", step.step_id,
+            return Variant("fatty", "substitute" if sub else "omit", step.step_id,
                            sub, list(fat_idx))
-        var, log["calorie_conscious"] = _retry(
+        var, log["fatty"] = _retry(
             lambda fb: ask_json(client, CALORIE_SYSTEM, user + fb), build_cal,
             lambda v: validate_expansion(StepExpansion(step.step_id, toks, [v]), vocab, tags))
         if var is not None:
@@ -288,6 +297,137 @@ def sour_sites(recipe, expansions, vocab, tags, llm_cfg):
                 errs.append(f"step {k}: give at most two pairs")
         return errs
     return _retry(lambda fb: ask_json(client, sysmsg, user + fb), build, check)
+
+
+# ---- the flavour pass: sweet / salty / fatty inserts, omits, affinity --------------------------
+
+SITE_SYSTEM = """A cooking simulator has a cook who {likes}. You get a whole recipe, step by step
+with its actions as (verb, noun) pairs. If this cook made the dish their way, where would they add
+{what}? Choose the 1 or {max_steps} most natural steps, each with the single pair that adds it
+(e.g. {example}). Always choose at least one step, even for a dish where it would be unusual: how
+likely it is is decided elsewhere. Use only these nouns for the added ingredient: {nouns}, and only
+the listed verbs. Answer only with the JSON object."""
+
+SITE_KNOBS = {   # knob -> (likes, what, example)
+    "sweet": ("likes food sweeter", "extra sugar or syrup",
+              '"sprinkle sugar" over fruit, "pour syrup" on pancakes, "add sugar" to a sauce'),
+    "salty": ("likes food saltier", "extra salt", '"sprinkle salt" over a salad, "add salt" to a pan'),
+    "fatty": ("likes rich food", "extra fat",
+              '"add butter" to a pan, "pour oil" over vegetables, "sprinkle cheese" on top'),
+}
+
+AFFINITY_SYSTEM = """A cooking simulator has cooks with flavour preferences who sometimes change a
+recipe: adding something sour (lemon, lime, vinegar), something sweet (sugar, syrup), salt, or extra
+fat (butter, oil, cheese, cream). For the recipe you get, say for each how often a home cook who
+likes that flavour would add it to THIS dish:
+- "common": a usual, natural addition (salt on a savoury dish, butter on toast, syrup on pancakes)
+- "sometimes": plausible, some people do it
+- "rare": odd but possible (lime in hot chocolate, salt in coffee)
+Give a short reason for each. Answer only with the JSON object."""
+
+
+def sites_schema(vocab, step_ids, nouns):
+    verbs, _ = _vocab_lists(vocab)
+    pair = {"type": "object", "additionalProperties": False, "required": ["verb", "noun"],
+            "properties": {"verb": {"type": "string", "enum": verbs},
+                           "noun": {"type": "string", "enum": sorted(nouns)}}}
+    site = {"type": "object", "additionalProperties": False, "required": ["step", "pair"],
+            "properties": {"step": {"type": "string", "enum": sorted(step_ids, key=_id_key)},
+                           "pair": pair}}
+    return {"type": "object", "additionalProperties": False, "required": ["sites"],
+            "properties": {"sites": {"type": "array", "items": site, "minItems": 1,
+                                     "maxItems": MAX_SOUR_STEPS}}}
+
+
+def affinity_schema():
+    from cook_ad.drift_synth.knobs import FLAVOUR
+    one = {"type": "object", "additionalProperties": False, "required": ["reason", "level"],
+           "properties": {"reason": {"type": "string"},
+                          "level": {"type": "string", "enum": list(AFFINITY_LEVELS)}}}
+    return {"type": "object", "additionalProperties": False, "required": list(FLAVOUR),
+            "properties": {k: one for k in FLAVOUR}}
+
+
+def _recipe_block(recipe, expansions, vocab=None):
+    ids = sorted(expansions, key=_id_key)
+    out = (f"Recipe: {recipe.recipe_id}\n"
+           + "\n".join(f"step {k}: {recipe.steps[k].description} | actions: "
+                       + ", ".join(f"{v} {n}" for v, n in expansions[k].tokens) for k in ids))
+    return out + ("\n\n" + _vocab_block(vocab) if vocab else "")
+
+
+def flavour_sites(recipe, expansions, knob, nouns, vocab, tags, llm_cfg):
+    """One call per recipe and knob: {step_id: insert Variant} (1-2 steps), and the attempt errors."""
+    from cook_ad.drift_synth.llm import ask_json, client_for
+    ids = [k for k in sorted(expansions, key=_id_key) if expansions[k].tokens]
+    client = client_for(llm_cfg, sites_schema(vocab, ids, nouns), f"{knob}_sites")
+    likes, what, example = SITE_KNOBS[knob]
+    sysmsg = SITE_SYSTEM.format(likes=likes, what=what, max_steps=MAX_SOUR_STEPS, example=example,
+                                nouns=", ".join(sorted(nouns)))
+    user = _recipe_block(recipe, expansions, vocab)
+
+    def build(r):
+        out = {}
+        for site in r["sites"]:
+            out.setdefault(site["step"], Variant(knob, "insert", site["step"], [], None)
+                           ).tokens.append((site["pair"]["verb"], site["pair"]["noun"]))
+        return out
+
+    def check(sites):
+        errs = []
+        if not 1 <= len(sites) <= MAX_SOUR_STEPS:
+            errs.append(f"choose 1 to {MAX_SOUR_STEPS} steps, got {len(sites)}")
+        for k, var in sites.items():
+            errs += [f"step {k}: {e}" for e in validate_expansion(
+                StepExpansion(k, expansions[k].tokens, [var]), vocab, tags)]
+            errs += [f"step {k}: '{v} {n}' must add one of {sorted(nouns)}"
+                     for v, n in var.tokens if n not in nouns]
+            if len(var.tokens) > 1:
+                errs.append(f"step {k}: give one pair per step")
+        return errs
+    return _retry(lambda fb: ask_json(client, sysmsg, user + fb), build, check)
+
+
+def code_omits(exp, knob, nouns):
+    """An omit variant for every core token whose noun is one of the knob's nouns."""
+    return [Variant(knob, "omit", exp.step_id, [], [j])
+            for j, (_, n) in enumerate(exp.tokens) if n in nouns]
+
+
+def add_flavour_variants(recipe, expansions, knobs, vocab, tags, llm_cfg):
+    """-> ({step_id: StepExpansion} with every flavour knob's variants, {knob: attempt errors}
+    for failed site passes). Keeps the core tokens, the sour inserts and the lower-fat variants;
+    rebuilds everything this pass owns, so it can be rerun."""
+    from cook_ad.drift_synth.knobs import FLAVOUR
+    rename = {"calorie_conscious": "fatty"}
+    out = {}
+    for k, e in expansions.items():
+        keep = [Variant(rename.get(v.knob, v.knob), v.kind, v.anchor_step, v.tokens, v.replaces)
+                for v in e.variants]
+        keep = [v for v in keep if (v.knob, v.kind) in
+                {("sour", "insert"), ("fatty", "substitute"), ("fatty", "omit")}]
+        for knob in FLAVOUR:
+            if knob != "fatty":
+                keep += code_omits(e, knob, set(knobs[knob]["nouns"]))
+        out[k] = StepExpansion(e.step_id, e.tokens, keep)
+    failures = {}
+    for knob in SITE_KNOBS:
+        sites, hist = flavour_sites(recipe, out, knob, set(knobs[knob]["nouns"]), vocab, tags, llm_cfg)
+        if sites is None:
+            failures[knob] = hist
+        for k, var in (sites or {}).items():
+            e = out[k]
+            out[k] = StepExpansion(e.step_id, e.tokens, e.variants + [var])
+    return out, failures
+
+
+def propose_affinity(recipe, expansions, llm_cfg):
+    """-> {knob: {"level", "affinity", "reason"}} for one recipe (one call)."""
+    from cook_ad.drift_synth.llm import ask_json, client_for
+    client = client_for(llm_cfg, affinity_schema(), "flavour_affinity")
+    r = ask_json(client, AFFINITY_SYSTEM, _recipe_block(recipe, expansions))
+    return {k: {"level": v["level"], "affinity": AFFINITY_LEVELS[v["level"]], "reason": v["reason"]}
+            for k, v in r.items()}
 
 
 # ---- few-shot exemplars from EPIC-100 ---------------------------------------------------------

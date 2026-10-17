@@ -14,6 +14,17 @@ under `dataset/processed/drift_synth/` (about 22k sessions, 470 MB, 70 s), and t
 in (§8). Open for Jack: the duration scale a, β and the day-noise σ, and whether to lengthen waits
 (sessions run 2.8 min against CC4D's 15.7). No detector has been run on the data.
 
+**Revision (2026-10-17), not yet regenerated** (§§5–9 below describe the 18-recipe generator):
+- **8 recipes, not 18** (`recipes.yaml`): ≤ 14 steps, ≤ 10^2.5 orders, ≤ a third of tokens aliased.
+  The 18-recipe sessions were 6× Breakfast's length (40 runs against 6), with 32 distinct pairs per
+  recipe against 8, and no two sessions alike.
+- **No healthy repetitions.** `fine_motor` repeats with P = max(0, θ − 0.5)·0.6, healthy
+  θ0 ~ U(0, 0.4), and day noise never carries θ across the hinge (`knobs.keep_side_of_hinge`). A
+  repeat follows a pause of ≥ 2 s so it shows as a second run; before, 52% merged into one run.
+- **Two-sided flavour knobs with affinity**: `sour`, `sweet` (sugar, syrup), `salty` (salt only) and
+  `fatty` (replaces `calorie_conscious`) (§2). Affinity is LLM-proposed in
+  `configs/drift_synth/affinity.yaml` and waits on Jack's review (`reviewed: false`).
+
 ---
 
 ## 1. Design (settled; changes go through Jack)
@@ -35,8 +46,8 @@ in (§8). Open for Jack: the duration scale a, β and the day-noise σ, and whet
 | Stage | What | Randomness |
 |---|---|---|
 | 1 graphs | load and validate task graphs; LLM labels each step prep/cook/serve/cleanup | none (LLM, cached) |
-| 2 tags | LLM proposes tags per vocab item (`sour`, `fat`, `sweet`, `fine_motor`, `heat`, `cleaning`, `ingredient`, `tool`, `container`); Jack reviews | none |
-| 3 expansion | LLM expands each step into core tokens (pass 1), then a calorie variant for steps whose tokens use a fat noun (pass 2), then one call per recipe for ≤ 2 sour sites; validated, retried 3×, cached | none |
+| 2 tags | LLM proposes tags per vocab item (`sour`, `fat`, `sweet`, `salty` (salt only, by hand), `fine_motor`, `heat`, `cleaning`, `ingredient`, `tool`, `container`); Jack reviews | none |
+| 3 expansion | LLM expands each step into core tokens (pass 1), then a lower-fat variant for steps whose tokens use a fat noun (pass 2), then one call per recipe for ≤ 2 sour sites; the flavour pass adds 1–2 sweet / salty / fatty insert sites per recipe (LLM) and an omit for each core token with the knob's nouns (code); validated, retried 3×, cached | none |
 | 4 kitchen state | `take` before first use, `put` after last use, `wash`/`dry` after cleaning-relevant uses (rates from `tidy`) | seeded |
 | 5 durations | log-normal per verb, (verb, noun) backoff below 20 samples, from EPIC-100; gap distribution | seeded |
 | 6 knobs | θ ∈ [0, 1] per knob drives variants, step order, logistics and duration scales | seeded |
@@ -49,8 +60,10 @@ in (§8). Open for Jack: the duration scale a, β and the day-noise σ, and whet
 
 | knob | family | acts on |
 |---|---|---|
-| `sour` | preference | P(apply sour `insert` variants) = θ |
-| `calorie_conscious` | preference | P(apply fat `substitute`/`omit` variants) = θ; remaining fat-tagged durations × exp(−0.7θ) |
+| `sour` | preference (flavour) | adds or drops lemon, lime, vinegar |
+| `sweet` | preference (flavour) | adds or drops sugar, syrup |
+| `salty` | preference (flavour) | adds or drops salt |
+| `fatty` | preference (flavour) | adds butter, oil, cheese, cream; or the LLM's lower-fat substitute/omit; fat-tagged durations × exp(0.7(θ − 0.5)) |
 | `mise_en_place` | preference | step order: prep before cook |
 | `tidy` | preference | put-back and wash/dry rates |
 | `slow` | capability | every duration × exp(a(θ − 0.5)) |
@@ -59,7 +72,16 @@ in (§8). Open for Jack: the duration scale a, β and the day-noise σ, and whet
 **Knob parameters** (`configs/drift_synth/knobs.yaml`): `tidy` puts back with P from 0.1 to
 0.95 and washes tools and containers with P from 0 to 0.8, linear in θ. `slow` and `fine_motor` use
 a = 1 (θ from 0 to 1 scales duration by 0.61 to 1.65). `fine_motor` repeats a token with
-P = 0.02 + 0.3θ. `mise_en_place` uses β = 4. A capability knob's high θ is the impaired end.
+P = 0.6·max(0, θ − 0.5), after a pause of at least 2 s, and day noise never carries its θ across
+0.5, so a healthy person (θ0 < 0.5) never repeats. `mise_en_place` uses β = 4. A capability
+knob's high θ is the impaired end.
+
+**Flavour knobs are two-sided around θ = 0.5** (`knobs.variant_prob`). Above it, each of the knob's
+`insert` variants applies with P = 2(θ − 0.5)·affinity[recipe][knob]; below it, each `substitute`
+or `omit` applies with P = 2(0.5 − θ); at 0.5 the recipe is cooked as written. Affinity
+(`configs/drift_synth/affinity.yaml`: rare 0.1, sometimes 0.4, common 1.0) says how natural the
+addition is for the dish, so lime in hot chocolate stays possible but rare. Removal ignores
+affinity: an ingredient the recipe has can always be left out.
 
 **Step order.** A softmax over the steps available at each point is *not* uniform over
 topological orders. Each candidate is therefore weighted by the number of orders that complete it
@@ -158,7 +180,7 @@ The full report is `runs/drift_synth/reports/precheck.md`, written by `scripts/d
 ## 6. Conditions
 
 `configs/drift_synth/conditions.yaml`, expanded by `scripts/drift_synth/generate.py:conditions`
-into 31 conditions × 3 seeds × 8 persons × 70 days, with onset at day 28 and ramps of 21 days:
+into 37 conditions (31 before the 2026-10-17 knob revision) × 3 seeds × 8 persons × 70 days, with onset at day 28 and ramps of 21 days:
 
 - `null` and `mix_shift_only`;
 - every knob × {sudden, incremental, gradual}, with |Δθ| = 0.4;
@@ -492,9 +514,10 @@ The real data are CC4D recordings with no Order Error or Missing Step tag: 5–1
 | LLM calls with a JSON schema | `drift_synth/llm.py:client_for`, `ask_json`; `llm/client.py:ChatClient(response_format=)` |
 | step expansions (two passes, per-recipe sour sites), validation, EPIC exemplars | `drift_synth/expand.py:expand_step`, `sour_sites`, `validate_expansion`, `ExemplarIndex`, `build_expansions`; `configs/drift_synth/expansions/` |
 | tags | `drift_synth/tagging.py:propose_tags`, `write_tags`, `load_tags` (refuses unreviewed); `configs/drift_synth/tags.yaml` |
+| flavour pass and affinity | `drift_synth/expand.py:add_flavour_variants`, `flavour_sites`, `code_omits`, `propose_affinity`; `build_assets.py --stage flavour\|affinity`; `assets.load_affinity` (refuses unreviewed); `configs/drift_synth/affinity.yaml`; `runs/drift_synth/reports/flavour_review.md` |
 | assets bundle, expansion I/O | `drift_synth/assets.py:Assets`, `load_assets`, `save_expansions`, `load_expansions` |
 | person routine (habit) | `drift_synth/sampler.py:make_person` (`habit_orders`), `knobs.sample_topological_order(preferred, habit)`; `generator.yaml: person.habit` |
-| knobs: variants, step order, duration scales, repetition, tidy rates | `drift_synth/knobs.py:apply_variants`, `sample_topological_order`, `slow_multiplier`, `token_multiplier`, `repetition_prob`, `tidy_rates`; `configs/drift_synth/knobs.yaml` |
+| knobs: variants, step order, duration scales, repetition, tidy rates | `drift_synth/knobs.py:variant_prob`, `apply_variants`, `sample_topological_order`, `slow_multiplier`, `token_multiplier`, `repetition_prob`, `keep_side_of_hinge`, `tidy_rates`; `configs/drift_synth/knobs.yaml` |
 | take / put / wash | `drift_synth/kitchen_state.py:insert_logistics` |
 | durations and gaps | `drift_synth/durations.py:fit_duration_priors`, `fit_from_intervals`, `sample_duration`, `sample_gap` |
 | day noise, speed, recognizer noise | `drift_synth/noise.py:theta_for_day`, `day_speed_factor`, `recognizer_noise` |
@@ -503,7 +526,7 @@ The real data are CC4D recordings with no Order Error or Missing Step tag: 5–1
 | export | `drift_synth/export.py:export`, `to_ticks` (reuses `parse_epic.to_frame_segments`, `expand_verb_noun_to_ticks`) |
 | observable ground truth | `drift_synth/ground_truth.py:observable_stats`, `drift_magnitude`, `count_z`, `affected_features` |
 | pre-check report | `scripts/drift_synth/precheck.py` |
-| offline assets (stages 1–3) | `scripts/drift_synth/build_assets.py --stage phases\|tags\|expansions` |
+| offline assets (stages 1–3) | `scripts/drift_synth/build_assets.py --stage phases\|tags\|expansions\|flavour\|affinity` |
 | generation (stages 4–9) | `scripts/drift_synth/generate.py`; `configs/drift_synth/generator.yaml`, `conditions.yaml` |
 | sanity plots | `scripts/drift_synth/sanity_plots.py` |
 | global prior + fine-tune (§9.2) | `hsmm/train/global_prior.py:count_global`, `apply_global_prior` (fixed or fading: `person_counts`, `n0`), `state_pairs`; `eval_synth_prior.py --stage eval-split`; `scripts/eval/eval_synth_prior.py`; `harness.hindsight_split_grid`, `split_op` |

@@ -1,11 +1,11 @@
 """A global prior from a simulated population, fine-tuned per person (docs/drift_synth.md §9.2).
 
 Population: 60 people (seed 1000, never test subjects), 30 days each, preference knobs
-theta0 ~ U(0.05, 0.95), capability knobs ~ U(0.4, 0.6), habit ~ U(0, 1). Their tick streams are
+theta0 ~ U(0.05, 0.95), slow ~ U(0.4, 0.6), fine_motor ~ U(0, 0.4) (no repeats), habit ~ U(0, 1). Their tick streams are
 run-length counted per recipe (hsmm/train/global_prior.count_global): ONE global prior for every
 person model.
 
-Test persons: seed 0, persons 0-3, habit 2, capability ~ U(0.4, 0.6), 320 days (402-429
+Test persons: seed 0, persons 0-3, habit 2, slow ~ U(0.4, 0.6), fine_motor ~ U(0, 0.4), 320 days (402-429
 sessions). Sizes are counted in SESSIONS, in cooking order (day, then session of the day): train
 on the first N in {10, 30, 100, 250}, validation sessions 250-324, test sessions 325-399, so every
 person has the same 75 + 75 held-out sessions. Each person model is
@@ -44,7 +44,7 @@ VAL_START, TEST_START, TEST_END = 250, 325, 400      # session indices in cookin
 TRAIN_SESSIONS = (10, 30, 100, 250)
 LAMBDAS = (0.0, 1.0, 3.0, 10.0, 30.0, 100.0)
 GLOBAL_ONLY_LAMBDA = 30.0
-CAPABILITY = {"slow": [0.4, 0.6], "fine_motor": [0.4, 0.6]}
+CAPABILITY = {"slow": [0.4, 0.6], "fine_motor": [0.0, 0.4]}   # fine_motor below its hinge: no repeats
 TICK = 0.5
 SOFT_ITERS = 60
 TAG = ""          # results-file suffix

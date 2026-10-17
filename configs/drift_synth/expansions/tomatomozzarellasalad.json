@@ -26,13 +26,37 @@
   ],
   "variants": [
    {
-    "knob": "calorie_conscious",
+    "knob": "fatty",
     "kind": "omit",
     "anchor_step": "3",
     "tokens": [],
     "replaces": [
      0
     ]
+   },
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "3",
+    "tokens": [
+     [
+      "pour",
+      "syrup"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "3",
+    "tokens": [
+     [
+      "pour",
+      "oil"
+     ]
+    ],
+    "replaces": null
    }
   ]
  },
@@ -64,6 +88,30 @@
      ]
     ],
     "replaces": null
+   },
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "5",
+    "tokens": [
+     [
+      "add",
+      "sugar"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "5",
+    "tokens": [
+     [
+      "season",
+      "salt"
+     ]
+    ],
+    "replaces": null
    }
   ]
  },
@@ -76,13 +124,25 @@
   ],
   "variants": [
    {
-    "knob": "calorie_conscious",
+    "knob": "fatty",
     "kind": "omit",
     "anchor_step": "6",
     "tokens": [],
     "replaces": [
      0
     ]
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "6",
+    "tokens": [
+     [
+      "sprinkle",
+      "cheese"
+     ]
+    ],
+    "replaces": null
    }
   ]
  },
@@ -102,7 +162,20 @@
     "tomato"
    ]
   ],
-  "variants": []
+  "variants": [
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "8",
+    "tokens": [
+     [
+      "season",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
  },
  "9": {
   "tokens": [

@@ -13,6 +13,8 @@ paths:
   phases: configs/drift_synth/phases
   tags: configs/drift_synth/tags.yaml
   expansions: configs/drift_synth/expansions
+  knobs: configs/drift_synth/knobs.yaml
+  affinity: configs/drift_synth/affinity.yaml
   reports: runs/drift_synth/reports
-tag_set: [sour, fat, sweet, fine_motor, heat, cleaning, ingredient, tool, container]
+tag_set: [sour, fat, sweet, salty, fine_motor, heat, cleaning, ingredient, tool, container]
 tag_batch_size: 40

@@ -19,6 +19,7 @@ class Assets:
     vocab: dict           # {"verbs": {name: id}, "nouns": {name: id}, ...}
     gen: dict             # configs/drift_synth/generator.yaml
     step_scale: dict | None = None   # recipe -> {step: CC4D time scale, "_recipe": fallback}
+    affinity: dict | None = None     # recipe -> {flavour knob: affinity in [0, 1]}; None = all 1
 
 
 # ---- expansions on disk: configs/drift_synth/expansions/<recipe>.json -------------------------
@@ -73,6 +74,7 @@ def load_assets(gen_path="configs/drift_synth/generator.yaml"):
         vocab=json.loads(Path(p["vocab"]).read_text()),
         gen=gen,
         step_scale=load_step_scale(gen),
+        affinity=load_affinity(p["affinity"], recipes),
     )
 
 
@@ -80,3 +82,20 @@ def load_step_scale(gen):
     """The CC4D step-time scales if generator.yaml's durations.step_scale names a file."""
     path = (gen.get("durations") or {}).get("step_scale")
     return json.loads(Path(path).read_text())["scales"] if path else None
+
+
+def load_affinity(path, recipes, require_reviewed=True):
+    """configs/drift_synth/affinity.yaml -> {recipe: {knob: affinity}}. How plausible it is that
+    a cook who likes the flavour adds it to this dish; scales the flavour knobs' inserts only.
+    Raises unless the file says reviewed: true (LLM-proposed, hand-checked)."""
+    from cook_ad.drift_synth.knobs import FLAVOUR
+    d = yaml.safe_load(Path(path).read_text())
+    if require_reviewed and not d.get("reviewed"):
+        raise ValueError(f"{path} is not reviewed (set reviewed: true after checking it)")
+    out = {}
+    for r in recipes:
+        row = d["affinity"][r]
+        if set(row) != set(FLAVOUR) or not all(0.0 <= float(v) <= 1.0 for v in row.values()):
+            raise ValueError(f"{path}: {r} needs {list(FLAVOUR)} in [0, 1], got {row}")
+        out[r] = {k: float(v) for k, v in row.items()}
+    return out

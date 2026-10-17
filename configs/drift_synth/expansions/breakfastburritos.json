@@ -40,6 +40,18 @@
      ]
     ],
     "replaces": null
+   },
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "3",
+    "tokens": [
+     [
+      "add",
+      "syrup"
+     ]
+    ],
+    "replaces": null
    }
   ]
  },
@@ -52,13 +64,25 @@
   ],
   "variants": [
    {
-    "knob": "calorie_conscious",
+    "knob": "fatty",
     "kind": "omit",
     "anchor_step": "4",
     "tokens": [],
     "replaces": [
      0
     ]
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "4",
+    "tokens": [
+     [
+      "add",
+      "butter"
+     ]
+    ],
+    "replaces": null
    }
   ]
  },
@@ -69,7 +93,32 @@
     "egg"
    ]
   ],
-  "variants": []
+  "variants": [
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "5",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "5",
+    "tokens": [
+     [
+      "add",
+      "cream"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
  },
  "6": {
   "tokens": [
@@ -96,7 +145,20 @@
     "egg"
    ]
   ],
-  "variants": []
+  "variants": [
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "8",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
  },
  "9": {
   "tokens": [
@@ -114,6 +176,18 @@
      [
       "add",
       "lime"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "9",
+    "tokens": [
+     [
+      "add",
+      "sugar"
      ]
     ],
     "replaces": null

@@ -2,7 +2,7 @@
 # Review by hand: add/remove tags, then set `reviewed: true`. The generator refuses
 # this file until then. Knobs act on these tags (configs/drift_synth/knobs.yaml).
 reviewed: true
-tag_set: [sour, fat, sweet, fine_motor, heat, cleaning, ingredient, tool, container]
+tag_set: [sour, fat, sweet, salty, fine_motor, heat, cleaning, ingredient, tool, container]
 verbs:
   add: [fine_motor]
   adjust: [fine_motor]
@@ -338,7 +338,7 @@ nouns:
   salad: [ingredient]
   salami: [fat, ingredient]
   salmon: [ingredient]
-  salt: [ingredient]
+  salt: [salty, ingredient]   # salty = salt only (Jack, 2026-10-17)
   sandwich: [ingredient]
   sauce: [ingredient]
   sausage: [fat, ingredient]

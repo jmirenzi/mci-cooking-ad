@@ -6,6 +6,7 @@ paths:
   phases: configs/drift_synth/phases
   tags: configs/drift_synth/tags.yaml
   knobs: configs/drift_synth/knobs.yaml
+  affinity: configs/drift_synth/affinity.yaml
   expansions: configs/drift_synth/expansions
   vocab: dataset/processed/epic/vocab.json
   epic_annotations: dataset/epic_kitchens/annotations
@@ -29,11 +30,13 @@ person:
   dirichlet_alpha: 1.0       # recipe frequency weights
   p_two_sessions: 0.3        # else one session a day
   theta0: [0.25, 0.75]       # each knob's baseline ~ U(lo, hi)
-  theta0_by_knob: {}         # optional per-knob [lo, hi] overriding theta0
+  theta0_by_knob:            # optional per-knob [lo, hi] overriding theta0
+    fine_motor: [0.0, 0.4]   # healthy: below the repetition hinge (knobs.yaml), so no repeats
   habit: 0.0                 # routine step order: 0 = uniform over topological orders; or [lo, hi]
 
 day_noise:                   # (open) logit-space sigma per knob
-  sigma: {sour: 0.3, calorie_conscious: 0.3, mise_en_place: 0.3, tidy: 0.3, slow: 0.2, fine_motor: 0.2}
+  sigma: {sour: 0.3, sweet: 0.3, salty: 0.3, fatty: 0.3, mise_en_place: 0.3, tidy: 0.3, slow: 0.2,
+          fine_motor: 0.2}
   speed_rho: 0.7             # AR(1) on log speed
   speed_sigma: 0.08
 

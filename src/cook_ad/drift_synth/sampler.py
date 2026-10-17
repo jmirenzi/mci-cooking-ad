@@ -48,6 +48,7 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
                    person_id="", day=0, session_idx=0, preferred=None, habit=0.0):
     """The spec's order: step order, variants, logistics, repetition, durations, noise."""
     kn, tags, gen = assets.knobs, assets.tags, assets.gen
+    affinity = (getattr(assets, "affinity", None) or {}).get(recipe.recipe_id)
     order = K.sample_topological_order(recipe, theta["mise_en_place"], kn["mise_en_place"]["beta"],
                                        rng, preferred, habit)
 
@@ -57,7 +58,7 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
         if exp is None:
             skipped.append(s)
             continue
-        toks, used = K.apply_variants(exp, theta, kn, rng)
+        toks, used = K.apply_variants(exp, theta, kn, rng, affinity)
         tokens += toks
         steps += [s] * len(toks)
         if used:
@@ -85,6 +86,8 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
     scale = (getattr(assets, "step_scale", None) or {}).get(recipe.recipe_id, {})
     cap = (gen.get("durations") or {}).get("max_event_s")   # None = uncapped
     owner = step_owners(final_step)
+    rep_next = {i - 1 for i in repeats}          # events followed by their own repeat
+    rep_gap = kn["fine_motor"].get("repeat_gap_s", 0.0)
     t = 0.0
     clean = []
     for i, tok in enumerate(final):
@@ -93,6 +96,8 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
                             m * speed * slow * K.token_multiplier(tok, theta, kn, tags), rng)
         d = min(d, cap) if cap else d
         gap = sample_gap(assets.durations, m * speed * slow, rng)
+        if i in rep_next:
+            gap = max(gap, rep_gap)
         clean.append(Event(round(t, 3), round(t + d, 3), tok[0], tok[1]))
         t += d + (gap if i + 1 < len(final) else 0.0)
 
@@ -159,7 +164,7 @@ def generate_person(idx, condition, seed, assets):
     for d in range(condition.n_days):
         rng = rng_for(seed, _DAY, idx, d)
         base, which = theta_at(d, theta0, theta1, regime, rng)
-        theta = theta_for_day(base, dn["sigma"], rng)
+        theta = K.keep_side_of_hinge(theta_for_day(base, dn["sigma"], rng), base, assets.knobs)
         speed = day_speed_factor(speed, dn["speed_rho"], dn["speed_sigma"], rng)
         recipes = recipes_for_day(person, d, mix, rng)
         days.append({"day": d, "which": which, "theta_base": _r(base), "theta_day": _r(theta),

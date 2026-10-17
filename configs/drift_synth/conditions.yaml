@@ -13,7 +13,7 @@ defaults:
 #   null; mix_shift_only; <knob>_<regime> for every knob x regime below;
 #   pref_plus_capability; <knob>_sweep_<delta> for every sweep knob x delta (sudden).
 regimes: [sudden, incremental, gradual]
-knobs: [sour, calorie_conscious, mise_en_place, tidy, slow, fine_motor]
+knobs: [sour, sweet, salty, fatty, mise_en_place, tidy, slow, fine_motor]
 extra:
   "null": {regime: none, moving: {}}
   mix_shift_only: {regime: sudden, moving: {}, mix_shift: true}

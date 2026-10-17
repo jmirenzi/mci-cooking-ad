@@ -28,7 +28,20 @@
     "chocolate"
    ]
   ],
-  "variants": []
+  "variants": [
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "3",
+    "tokens": [
+     [
+      "add",
+      "cream"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
  },
  "5": {
   "tokens": [
@@ -37,7 +50,41 @@
     "sugar"
    ]
   ],
-  "variants": []
+  "variants": [
+   {
+    "knob": "sweet",
+    "kind": "omit",
+    "anchor_step": "5",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   },
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "5",
+    "tokens": [
+     [
+      "add",
+      "syrup"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "5",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
  },
  "6": {
   "tokens": [
@@ -85,6 +132,43 @@
     "chocolate"
    ]
   ],
-  "variants": []
+  "variants": [
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "8",
+    "tokens": [
+     [
+      "add",
+      "sugar"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "8",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "8",
+    "tokens": [
+     [
+      "add",
+      "butter"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
  }
 }

@@ -8,7 +8,9 @@ import yaml
 
 from cook_ad.drift_synth.graphs import linear_extension_counter, parents
 
-KNOBS = ("sour", "calorie_conscious", "mise_en_place", "tidy", "slow", "fine_motor")
+KNOBS = ("sour", "sweet", "salty", "fatty", "mise_en_place", "tidy", "slow", "fine_motor")
+FLAVOUR = ("sour", "sweet", "salty", "fatty")
+INSERT_KINDS, REMOVE_KINDS = ("insert",), ("substitute", "omit")
 
 
 def load_knobs(path):
@@ -25,21 +27,32 @@ def _lerp(lo_hi, theta):
 
 # ---- inclusion and substitution --------------------------------------------------------------
 
-def apply_variants(exp, theta, knobs, rng):
+def variant_prob(knob, kind, theta, knobs, affinity=None):
+    """P(apply one variant). A flavour knob is two-sided around 0.5: its inserts apply with
+    2 (theta - 0.5) * affinity above it, its substitutes and omits with 2 (0.5 - theta) below it."""
+    cfg = knobs.get(knob)
+    if cfg is None or cfg.get("operator") != "flavour":
+        return 0.0
+    t = theta[knob]
+    if kind in INSERT_KINDS:
+        return 2.0 * max(0.0, t - 0.5) * (1.0 if affinity is None else affinity.get(knob, 1.0))
+    if kind in REMOVE_KINDS:
+        return 2.0 * max(0.0, 0.5 - t)
+    return 0.0
+
+
+def apply_variants(exp, theta, knobs, rng, affinity=None):
     """One step's tokens after its knob variants. Each variant is drawn independently with
-    P = theta[its knob] (only kinds the knob declares). Substitute/omit act on base-token indices;
-    a variant whose indices another applied variant already took is skipped. Inserts go after
-    the step's last token. Returns (tokens, [applied variant indices]).
+    P = variant_prob (affinity: this recipe's {knob: affinity}, None = 1). Substitute/omit act
+    on base-token indices; a variant whose indices another applied variant already took is
+    skipped. Inserts go after the step's last token. Returns (tokens, [applied variant indices]).
     """
     replaced = {}      # base index -> replacement tokens ([] for omit)
     inserts = []
     applied = []
     for i, v in enumerate(exp.variants):
         draw = rng.random()  # always drawn, so later draws do not depend on which knobs moved
-        knob = knobs.get(v.knob)
-        if knob is None or v.kind not in knob.get("variant_kinds", ()):
-            continue
-        if draw >= theta[v.knob]:
+        if draw >= variant_prob(v.knob, v.kind, theta, knobs, affinity):
             continue
         if v.kind == "insert":
             inserts.extend(v.tokens)
@@ -114,23 +127,36 @@ def slow_multiplier(theta, knobs):
 
 
 def token_multiplier(token, theta, knobs, tags):
-    """Per-token duration multiplier from token-specific knobs (fine_motor, calorie_conscious)."""
+    """Per-token duration multiplier from token-specific knobs (fine_motor, fatty)."""
     verb, noun = token
     m = 1.0
     fm = knobs["fine_motor"]
     if is_tagged(tags, "verbs", verb, fm["target_tags"]["verbs"]):
         m *= math.exp(fm["a"] * (theta["fine_motor"] - 0.5))
-    cc = knobs["calorie_conscious"]
-    if is_tagged(tags, "nouns", noun, cc["target_tags"]["nouns"]):
-        m *= math.exp(-cc["fat_duration_k"] * theta["calorie_conscious"])
+    ft = knobs["fatty"]
+    if is_tagged(tags, "nouns", noun, ft["target_tags"]["nouns"]):
+        m *= math.exp(ft["fat_duration_k"] * (theta["fatty"] - 0.5))
     return m
 
 
 def repetition_prob(token, theta, knobs, tags):
+    """base + max * max(0, theta - hinge) for a fine-motor token, else 0."""
     fm = knobs["fine_motor"]
     if not is_tagged(tags, "verbs", token[0], fm["target_tags"]["verbs"]):
         return 0.0
-    return fm["repeat_base"] + theta["fine_motor"] * fm["repeat_max"]
+    return fm["repeat_base"] + fm["repeat_max"] * max(0.0, theta["fine_motor"] - fm["hinge"])
+
+
+def keep_side_of_hinge(theta_day, theta_base, knobs):
+    """Day noise may not carry a hinged knob across its hinge: a base theta at or below the
+    hinge keeps the day value at or below it (and above stays above), so a healthy person never
+    repeats on a noisy day."""
+    out = dict(theta_day)
+    for k, cfg in knobs.items():
+        h = cfg.get("hinge")
+        if h is not None and k in out:
+            out[k] = min(out[k], h) if theta_base[k] <= h else max(out[k], h)
+    return out
 
 
 def tidy_rates(theta, knobs):

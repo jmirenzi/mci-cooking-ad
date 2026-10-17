@@ -5,6 +5,13 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-17 — generator revision: 8 recipes, no healthy repeats, two-sided flavour knobs
+
+18-recipe sessions were 40 runs (Breakfast 6), 32 pairs per recipe (8), all unique; cut to 8 simple
+recipes. Healthy fine_motor repeated 12.5% of its tokens (52% merged into one run): now hinged at
+θ 0.5, healthy θ0 U(0, 0.4), 0 repeats in 634 null sessions. sour/sweet/salty/fatty two-sided with
+LLM affinity (awaiting review). Not yet regenerated or re-evaluated.
+
 ## 2026-10-17 — CC4D-calibrated prior rerun (metric G)
 
 Mean F1, person only → prior λ = 1 (split α), at 10 / 30 / 250 sessions: 0.117 → 0.147, 0.185 → 0.301,

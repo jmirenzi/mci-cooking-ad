@@ -17,7 +17,7 @@
   ],
   "variants": [
    {
-    "knob": "calorie_conscious",
+    "knob": "fatty",
     "kind": "omit",
     "anchor_step": "2",
     "tokens": [],
@@ -45,7 +45,7 @@
   ],
   "variants": [
    {
-    "knob": "calorie_conscious",
+    "knob": "fatty",
     "kind": "omit",
     "anchor_step": "4",
     "tokens": [],
@@ -70,7 +70,32 @@
     "pan"
    ]
   ],
-  "variants": []
+  "variants": [
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "5",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "5",
+    "tokens": [
+     [
+      "pour",
+      "oil"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
  },
  "6": {
   "tokens": [
@@ -79,7 +104,20 @@
     "food"
    ]
   ],
-  "variants": []
+  "variants": [
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "6",
+    "tokens": [
+     [
+      "add",
+      "sugar"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
  },
  "7": {
   "tokens": [
@@ -88,7 +126,29 @@
     "salt"
    ]
   ],
-  "variants": []
+  "variants": [
+   {
+    "knob": "salty",
+    "kind": "omit",
+    "anchor_step": "7",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   },
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "7",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
  },
  "8": {
   "tokens": [
@@ -157,13 +217,37 @@
   ],
   "variants": [
    {
-    "knob": "calorie_conscious",
+    "knob": "fatty",
     "kind": "omit",
     "anchor_step": "13",
     "tokens": [],
     "replaces": [
      0
     ]
+   },
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "13",
+    "tokens": [
+     [
+      "pour",
+      "syrup"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "13",
+    "tokens": [
+     [
+      "pour",
+      "butter"
+     ]
+    ],
+    "replaces": null
    }
   ]
  }

@@ -13,7 +13,7 @@ import yaml
 
 # Which tags make sense for which kind of item. A verb is never an ingredient; a noun is never
 # fine-motor (the fine-motor knob acts on actions).
-NOUN_TAGS = ("sour", "fat", "sweet", "heat", "cleaning", "ingredient", "tool", "container")
+NOUN_TAGS = ("sour", "fat", "sweet", "salty", "heat", "cleaning", "ingredient", "tool", "container")
 VERB_TAGS = ("fine_motor", "heat", "cleaning")
 
 TAG_SYSTEM = """You tag kitchen vocabulary items for a cooking simulator. Each item is an EPIC-KITCHENS

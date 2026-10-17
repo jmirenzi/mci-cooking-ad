@@ -18,6 +18,15 @@
      ]
     ],
     "replaces": null
+   },
+   {
+    "knob": "sour",
+    "kind": "omit",
+    "anchor_step": "1",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
    }
   ]
  },
@@ -46,7 +55,17 @@
     "lime"
    ]
   ],
-  "variants": []
+  "variants": [
+   {
+    "knob": "sour",
+    "kind": "omit",
+    "anchor_step": "4",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   }
+  ]
  },
  "6": {
   "tokens": [
@@ -55,7 +74,20 @@
     "corn"
    ]
   ],
-  "variants": []
+  "variants": [
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "6",
+    "tokens": [
+     [
+      "add",
+      "butter"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
  },
  "7": {
   "tokens": [
@@ -64,7 +96,44 @@
     "corn"
    ]
   ],
-  "variants": []
+  "variants": [
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "7",
+    "tokens": [
+     [
+      "add",
+      "sugar"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "7",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "7",
+    "tokens": [
+     [
+      "add",
+      "cream"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
  },
  "8": {
   "tokens": [
@@ -112,7 +181,29 @@
     "salt"
    ]
   ],
-  "variants": []
+  "variants": [
+   {
+    "knob": "salty",
+    "kind": "omit",
+    "anchor_step": "11",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   },
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "11",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
  },
  "12": {
   "tokens": [
@@ -136,13 +227,25 @@
   ],
   "variants": [
    {
-    "knob": "calorie_conscious",
+    "knob": "fatty",
     "kind": "omit",
     "anchor_step": "13",
     "tokens": [],
     "replaces": [
      0
     ]
+   },
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "13",
+    "tokens": [
+     [
+      "add",
+      "syrup"
+     ]
+    ],
+    "replaces": null
    }
   ]
  }

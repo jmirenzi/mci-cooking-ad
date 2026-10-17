@@ -39,7 +39,7 @@ def stats_cache():
 # ---- 1. vocab compliance ---------------------------------------------------------------------
 
 def test_every_emitted_token_is_in_vocab():
-    cond = ConditionCfg("c", DriftRegime("sudden", 10), {"sour": 0.4, "calorie_conscious": 0.4},
+    cond = ConditionCfg("c", DriftRegime("sudden", 10), {"sour": 0.4, "fatty": 0.4},
                         n_persons=3, n_days=21)
     for i in range(cond.n_persons):
         _, sessions, _ = generate_person(i, cond, 0, ASSETS)
@@ -78,7 +78,7 @@ def _linked_tokens(knob, tokens):
         return {t for t in tokens if t.split(" ")[1] in nouns}
     if knob == "sour":
         return noun_in({"lemon", "vinegar"})
-    if knob == "calorie_conscious":
+    if knob == "fatty":
         return noun_in({"oil", "cheese", "basil"})
     if knob == "tidy":
         return {t for t in tokens if t.split(" ")[0] in ("put", "wash")}
@@ -92,13 +92,13 @@ def _linked_durations(knob, tokens):
         return set(tokens)
     if knob == "fine_motor":
         return {t for t in tokens if TAGS["verbs"].get(t.split(" ")[0]) == ["fine_motor"]}
-    if knob == "calorie_conscious":
+    if knob == "fatty":
         return {t for t in tokens if "fat" in TAGS["nouns"].get(t.split(" ")[1], [])}
     return set()
 
 
-@pytest.mark.parametrize("knob", ["sour", "calorie_conscious", "mise_en_place", "tidy", "slow",
-                                  "fine_motor"])
+@pytest.mark.parametrize("knob", ["sour", "sweet", "salty", "fatty", "mise_en_place", "tidy",
+                                  "slow", "fine_motor"])
 def test_knob_isolation(knob, stats_cache):
     th0, th1 = theta(), theta(**{knob: 0.95})
     for recipe in ("omelet", "salad"):
@@ -242,13 +242,42 @@ def test_logistic_counts_do_not_depend_on_order():
     assert c1 == c2
 
 
-def test_variants_apply_by_theta():
-    exp = toy_assets().expansions["salad"]["3"]
+def test_flavour_knobs_are_two_sided_around_half():
+    exp = toy_assets().expansions["salad"]["3"]   # sour insert (vinegar), fatty omit (oil)
     rng = np.random.default_rng(0)
-    full, _ = apply_variants(exp, theta(sour=1.0, calorie_conscious=1.0), ASSETS.knobs, rng)
+    full, _ = apply_variants(exp, theta(sour=1.0, fatty=0.0), ASSETS.knobs, rng)
     assert full == [("mix", "lettuce"), ("pour", "vinegar")]
-    none, used = apply_variants(exp, theta(sour=0.0, calorie_conscious=0.0), ASSETS.knobs, rng)
-    assert none == exp.tokens and used == []
+    for th in (theta(), theta(sour=0.0, fatty=1.0)):   # as written: 0.5, or the other two sides
+        same, used = apply_variants(exp, th, ASSETS.knobs, rng)
+        assert same == exp.tokens and used == []
+
+
+def test_affinity_scales_inserts_only():
+    exp = toy_assets().expansions["salad"]["3"]
+    n = 4000
+
+    def rate(th, aff, tok):
+        rng = np.random.default_rng(1)
+        return sum(tok in apply_variants(exp, th, ASSETS.knobs, rng, aff)[0] for _ in range(n)) / n
+    assert rate(theta(sour=1.0), {"sour": 0.1}, ("pour", "vinegar")) == pytest.approx(0.1, abs=0.02)
+    assert rate(theta(sour=0.75), {"sour": 1.0}, ("pour", "vinegar")) == pytest.approx(0.5, abs=0.03)
+    assert rate(theta(fatty=0.0), {"fatty": 0.1}, ("pour", "oil")) == 0.0   # the omit ignores it
+
+
+def test_healthy_fine_motor_never_repeats():
+    from cook_ad.drift_synth.knobs import keep_side_of_hinge, repetition_prob
+    kn = ASSETS.knobs
+    assert repetition_prob(("cut", "tomato"), theta(fine_motor=0.5), kn, TAGS) == 0.0
+    assert repetition_prob(("cut", "tomato"), theta(fine_motor=0.9), kn, TAGS) == pytest.approx(0.24)
+    base = theta(fine_motor=0.45)
+    assert keep_side_of_hinge(theta(fine_motor=0.7), base, kn)["fine_motor"] == 0.5
+    assert keep_side_of_hinge(theta(fine_motor=0.3), theta(fine_motor=0.8), kn)["fine_motor"] == 0.5
+    a = toy_assets()
+    a.gen = dict(a.gen, person=dict(a.gen["person"], theta0_by_knob={"fine_motor": [0.3, 0.5]}),
+                 day_noise=dict(a.gen["day_noise"], sigma=dict(a.gen["day_noise"]["sigma"], fine_motor=2.0)))
+    for i in range(4):
+        _, sessions, _ = generate_person(i, ConditionCfg("null", n_days=40), 0, a)
+        assert sum(s.meta["repetitions"] for s in sessions) == 0
 
 
 def test_duration_fit_backs_off():
@@ -291,7 +320,7 @@ def test_conditions_file_expands_to_the_spec_set():
     sys.path.insert(0, "scripts/drift_synth")
     from generate import conditions
     conds, seeds = conditions("configs/drift_synth/conditions.yaml")
-    assert len(conds) == 31 and seeds == [0, 1, 2]   # 2 + 6x3 + 1 + 2x5
+    assert len(conds) == 37 and seeds == [0, 1, 2]   # 2 + 8x3 + 1 + 2x5
     assert conds["null"].regime.kind == "none" and conds["mix_shift_only"].mix_shift
     assert conds["slow_incremental"].regime.duration_days == 21
     assert conds["pref_plus_capability"].moving == {"sour": 0.4, "slow": 0.4}
@@ -305,8 +334,9 @@ def test_step_labels_and_repeats_are_logged():
                        NoiseCfg().off(), rng_for(5, 1))
     clean = s.meta["clean_events"]
     assert s.meta["repetitions"] == len(s.meta["repeats"]) > 0
-    for j in s.meta["repeats"]:      # a repeat duplicates the token just before it
+    for j in s.meta["repeats"]:      # a repeat duplicates the token just before it, after a pause
         assert clean[j][2:4] == clean[j - 1][2:4]
+        assert clean[j][0] - clean[j - 1][1] >= ASSETS.knobs["fine_motor"]["repeat_gap_s"] - 1e-6
     v, _ = to_ticks(s.events, VOCAB, ("stall", "idle"), 20, 0.5)
     labels = step_labels(s, len(v), 0.5)
     assert len(labels) == len(v) and set(labels) <= {0, 1, 2, 3, 4, 5, 6}

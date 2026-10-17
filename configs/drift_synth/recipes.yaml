@@ -1,21 +1,14 @@
-# The approved CaptainCook4D recipes (task_graphs/<id>.json). Approved by Jack 2026-10-15 from
-# runs/drift_synth/reports/precheck.md section 6. Every knob is covered by >= 6 of them.
+# The CaptainCook4D recipes (task_graphs/<id>.json) the generator cooks. Cut 2026-10-17 (Jack)
+# from the 18 approved 2026-10-15 to the 8 simplest: <= 14 steps, <= 10^2.5 topological orders,
+# at most a third of tokens sharing a (verb, noun) pair with another step (docs/drift_synth.md §1).
+# Dropped: scrambledeggs, herbomeletwithfriedtomatoes, capresebruschetta, cucumberraita,
+# sautedmushrooms, broccolistirfry, panfriedtofu, tomatochutney, microwaveeggsandwich, coffee.
 recipes:
-  - scrambledeggs
-  - herbomeletwithfriedtomatoes
   - tomatomozzarellasalad
-  - capresebruschetta
-  - cucumberraita
   - buttercorncup
-  - sautedmushrooms
-  - broccolistirfry
   - zoodles
-  - panfriedtofu
-  - tomatochutney
-  - microwaveeggsandwich
   - microwavefrenchtoast
   - breakfastburritos
   - spicedhotchocolate
   - cheesepimiento
   - blenderbananapancakes
-  - coffee

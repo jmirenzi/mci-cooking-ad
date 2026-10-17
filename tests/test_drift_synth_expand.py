@@ -15,7 +15,7 @@ def _reply(tokens, variants=()):
 def test_valid_reply_parses_and_passes():
     exp = parse("4", _reply([("add", "tomato"), ("pour", "oil")],
                             [("sour", "insert", [("squeeze", "lemon")], []),
-                             ("calorie_conscious", "omit", [], [1])]))
+                             ("fatty", "omit", [], [1])]))
     assert validate_expansion(exp, VOCAB, TAGS) == []
     assert exp.variants[0].replaces is None and exp.variants[1].replaces == [1]
 
@@ -23,9 +23,9 @@ def test_valid_reply_parses_and_passes():
 def test_validation_catches_what_a_schema_cannot():
     bad = StepExpansion("4", [("take", "tomato"), ("pour", "oil"), ("fly", "kite")], [
         Variant("sour", "insert", "4", [("pour", "oil")], None),          # not sour-tagged
-        Variant("calorie_conscious", "omit", "4", [], [0]),                # tomato is not fat
-        Variant("calorie_conscious", "substitute", "4", [("pour", "oil")], [9]),  # out of range
-        Variant("sour", "omit", "4", [], [1]),                             # wrong kind
+        Variant("fatty", "omit", "4", [], [0]),                # tomato is not fat
+        Variant("fatty", "substitute", "4", [("pour", "oil")], [9]),  # out of range
+        Variant("sour", "substitute", "4", [("pour", "oil")], [1]),        # wrong kind
     ])
     errs = " | ".join(validate_expansion(bad, VOCAB, TAGS))
     for needle in ("fetch logistics", "'fly kite' is not in the vocabulary", "sour-tagged",

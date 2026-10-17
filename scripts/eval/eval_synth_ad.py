@@ -1,6 +1,7 @@
 """Does the HSMM anomaly detector work on the synthetic drift data (docs/drift_synth.md §10)?
 
-One normal person (seed 0, person 6: baseline slow = fine_motor = 0.41) cooks for 320 days.
+One normal person (seed 0, person 6; fine_motor below its repetition hinge, so no healthy
+repeats) cooks for 320 days.
 The HSMM is fitted on days 0-199 only (dish preset: recipe = the CC4D recipe). Then:
 
 - injected errors: the five Breakfast injectors on held-out normal days, placed in the fitted
