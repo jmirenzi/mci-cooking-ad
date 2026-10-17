@@ -5,6 +5,12 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-17 — CC4D-calibrated prior rerun (metric G)
+
+Mean F1, person only → prior λ = 1 (split α), at 10 / 30 / 250 sessions: 0.117 → 0.147, 0.185 → 0.301,
+0.353 → 0.373; healthy FPR at 250 is 0.23 → 0.10. Every person gains at 30 and 250, p00 included; p00
+and p03 tie or lose at 10 (loose α_trans). Fading = fixed again. `overnight_cal.sh`, 4 h 47 min.
+
 ## 2026-10-17 — training size counted in sessions; calibrated rerun started
 
 `eval_synth_prior.py` splits by session index, not day: train on the first N sessions, validate on

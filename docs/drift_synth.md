@@ -457,7 +457,29 @@ The real data are CC4D recordings with no Order Error or Missing Step tag: 5–1
   - **The calibrated rerun** (`scripts/drift_synth/overnight_cal.sh`, `eval_synth_prior.py --variant cal`)
     uses 1 s ticks, d_max 300 (`configs/drift_synth/hsmm_cal.yaml`), training sizes 10 / 30 / 250
     sessions and 20 soft-EM iterations, to fit in a night. After iteration 20 the objective moved less
-    than 0.2% in 13 of 16 uncalibrated fits.
+    than 0.2% in 13 of 16 uncalibrated fits. It ran in 4 h 47 min on 2026-10-17.
+
+**Calibrated rerun, mean over the 4 persons, Hindsight, test sessions 325–399, metric G (F1 / healthy-trial FPR):**
+
+| train sessions | person only | prior λ = 1 (split α) | fade (λ₀ 10, n₀ 3) |
+|---|---|---|---|
+| 10 | 0.117 / 1.00 | **0.147** / 0.97 | 0.146 / 0.97 |
+| 30 | 0.185 / 0.83 | **0.301** / 0.45 | 0.300 / 0.46 |
+| 250 | 0.353 / 0.23 | **0.373** / 0.10 | **0.373** / 0.11 |
+
+![calibrated split-alpha curves](figures/drift_synth_prior_split_curves_cal.png)
+
+- **On calibrated data the prior helps every person at 30 and 250 sessions** (per-person F1 gains of
+  0.01–0.15). That includes p00, which lost 0.10 with any prior on the uncalibrated data.
+- **At 10 sessions p00 and p03 tie or lose** (0.118 → 0.119, 0.120 → 0.112). In both cells validation
+  picked a loose transition α (0.07, 0.1); p01 and p02 gain 0.06.
+- **Fading is again within 0.01 of the fixed prior everywhere, and split α is within 0.015 of a
+  single α.** The single α already lands on α_trans 1e-5 to 1e-4, not the 1e-10 of the uncalibrated run.
+- **Recall is almost all substitution** (0.98). Abandonment is 0.00–0.05, omission 0.07–0.11 and
+  repetition 0.02–0.06 from 30 sessions on. The prior trades about 0.02 recall for half the healthy FPR.
+- Not comparable cell for cell with the uncalibrated tables: tick length, event durations, soft-EM
+  iterations (20 against 60) and the split unit all changed. Alarms per 10 minutes fall mainly
+  because calibrated sessions are about 5 times longer.
 
 ## 10. Code
 
