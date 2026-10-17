@@ -5,22 +5,24 @@ theta0 ~ U(0.05, 0.95), capability knobs ~ U(0.4, 0.6), habit ~ U(0, 1). Their t
 run-length counted per recipe (hsmm/train/global_prior.count_global): ONE global prior for every
 person model.
 
-Test persons: seed 0, persons 0-3, habit 2, capability ~ U(0.4, 0.6), 320 days: train on the
-first N in {10, 30, 100, 200}, validation days 200-259, test days 260-319. Each person model is
+Test persons: seed 0, persons 0-3, habit 2, capability ~ U(0.4, 0.6), 320 days (402-429
+sessions). Sizes are counted in SESSIONS, in cooking order (day, then session of the day): train
+on the first N in {10, 30, 100, 250}, validation sessions 250-324, test sessions 325-399, so every
+person has the same 75 + 75 held-out sessions. Each person model is
 the four-stage dish fit (configs/drift_synth/hsmm.yaml), then the global prior is added post-fit
 at strength lambda (apply_global_prior; lambda = 0 is the person-only model, "global only" drops
 the person's own init/transition counts). Injected errors are placed once per person (by its
-N = 200 person-only model), so every arm and N is scored on the same trials. Hindsight's alpha
+largest-N person-only model), so every arm and N is scored on the same trials. Hindsight's alpha
 is picked per arm on validation by best G-F1 and reported on test. Recognizer noise is off.
 
     ./py scripts/eval/eval_synth_prior.py --stage population
     ./py scripts/eval/eval_synth_prior.py --stage persons
-    ./py scripts/eval/eval_synth_prior.py --stage train [--person 0 --days 200]
+    ./py scripts/eval/eval_synth_prior.py --stage train [--person 0 --sessions 250]
     ./py scripts/eval/eval_synth_prior.py --stage eval [--person 0]
 
 --variant cal is the CC4D-calibrated generator (configs/drift_synth/step_time_scale.json, events
 capped at 600 s): 1 s ticks, d_max 300 (configs/drift_synth/hsmm_cal.yaml), training sizes 10 /
-30 / 200 days and 20 soft-EM iterations (the objective moves < 0.2% after iteration 20 in 13 of
+30 / 250 sessions and 20 soft-EM iterations (the objective moves < 0.2% after iteration 20 in 13 of
 16 uncalibrated fits), to fit in a night. Everything goes to drift_synth_prior_cal/ and
 runs/drift_synth/*_cal_*.json.
 """
@@ -37,8 +39,9 @@ ROOT = Path("dataset/processed/drift_synth_prior")
 CONFIG = "configs/drift_synth/hsmm.yaml"
 POP_SEED, POP_N, POP_DAYS = 1000, 60, 30
 SEED, PERSONS = 0, (0, 1, 2, 3)
-N_DAYS, VAL_START, TEST_START = 320, 200, 260
-TRAIN_DAYS = (10, 30, 100, 200)
+N_DAYS = 320                                         # generated; every person has >= 402 sessions
+VAL_START, TEST_START, TEST_END = 250, 325, 400      # session indices in cooking order
+TRAIN_SESSIONS = (10, 30, 100, 250)
 LAMBDAS = (0.0, 1.0, 3.0, 10.0, 30.0, 100.0)
 GLOBAL_ONLY_LAMBDA = 30.0
 CAPABILITY = {"slow": [0.4, 0.6], "fine_motor": [0.4, 0.6]}
@@ -49,12 +52,12 @@ VARIANT = "base"
 
 
 def set_variant(name):
-    global ROOT, CONFIG, TICK, TRAIN_DAYS, SOFT_ITERS, TAG, VARIANT
+    global ROOT, CONFIG, TICK, TRAIN_SESSIONS, SOFT_ITERS, TAG, VARIANT
     VARIANT = name
     if name == "cal":
         ROOT = Path("dataset/processed/drift_synth_prior_cal")
         CONFIG = "configs/drift_synth/hsmm_cal.yaml"
-        TICK, TRAIN_DAYS, SOFT_ITERS, TAG = 1.0, (10, 30, 200), 20, "_cal"
+        TICK, TRAIN_SESSIONS, SOFT_ITERS, TAG = 1.0, (10, 30, 250), 20, "_cal"
 
 
 def _assets(person_cfg):
@@ -69,6 +72,12 @@ def _assets(person_cfg):
         a.step_scale = load_step_scale(a.gen)
         a.gen["export"] = dict(a.gen["export"], tick_seconds=TICK)
     return a
+
+
+def _in_order(seqs, labels):
+    """The person's sessions in cooking order (day, then session of the day)."""
+    key = {e["trial_id"]: (e["day"], e["session_idx"]) for e in labels}
+    return sorted(seqs, key=lambda s: key[s["trial_id"]])
 
 
 def stage_population():
@@ -104,30 +113,31 @@ def stage_persons():
         person, sessions, gt = generate_person(i, cond, SEED, assets)
         d = ROOT / "persons" / person.person_id
         export(sessions, d / "null", assets.vocab, gt, assets.gen["export"])
-        seqs = json.loads((d / "null" / "sequences.json").read_text())
-        day = {e["trial_id"]: e["day"] for e in json.loads((d / "null" / "labels.json").read_text())}
-        for n in TRAIN_DAYS:
-            train = [s["trial_id"] for s in seqs if day[s["trial_id"]] < n]
-            test = [s["trial_id"] for s in seqs if day[s["trial_id"]] >= VAL_START]
-            (d / "null" / f"split_{n}.json").write_text(json.dumps(
-                {"seed": SEED, "test_frac": None, "train_trial_ids": train, "test_trial_ids": test,
-                 "rule": f"train = days < {n}; held out = days >= {VAL_START}"}, indent=1))
+        seqs = _in_order(json.loads((d / "null" / "sequences.json").read_text()),
+                         json.loads((d / "null" / "labels.json").read_text()))
+        assert len(seqs) >= TEST_END, (person.person_id, len(seqs))
+        for n in TRAIN_SESSIONS:
+            (d / "null" / f"split_s{n}.json").write_text(json.dumps(
+                {"seed": SEED, "test_frac": None, "train_trial_ids": [s["trial_id"] for s in seqs[:n]],
+                 "test_trial_ids": [s["trial_id"] for s in seqs[VAL_START:TEST_END]],
+                 "rule": f"train = first {n} sessions; held out = sessions {VAL_START}-{TEST_END - 1}"},
+                indent=1))
         print(f"{person.person_id}: {len(sessions)} sessions, repertoire {list(person.repertoire)}, "
               f"habit {person.habit}")
 
 
-def stage_train(persons, days):
+def stage_train(persons, sizes):
     for i in persons:
         d = ROOT / "persons" / f"p{i:02d}"
-        for n in days:
-            out = d / f"model_{n}"
+        for n in sizes:
+            out = d / f"model_s{n}"
             if (out / "model.npz").exists():
                 print(f"p{i:02d} N={n}: exists")
                 continue
             out.mkdir(parents=True, exist_ok=True)
             common = ["--config", CONFIG, "--sequences", str(d / "null" / "sequences.json"),
                       "--labels", str(d / "null" / "labels.json"),
-                      "--split-file", str(d / "null" / f"split_{n}.json"), "--recipe-labels"]
+                      "--split-file", str(d / "null" / f"split_s{n}.json"), "--recipe-labels"]
             steps = [
                 ["scripts/train/fit_lexical.py", *common, "--init-prior-scale", "0.0", "--anchor",
                  "50", "--max-iters", str(SOFT_ITERS), "--out", str(out / "soft.npz")],
@@ -166,21 +176,20 @@ def stage_eval(persons, chunk_size=8):
     for i in persons:
         pid = f"p{i:02d}"
         d = ROOT / "persons" / pid
-        seqs = json.loads((d / "null" / "sequences.json").read_text())
         labels = json.loads((d / "null" / "labels.json").read_text())
-        day = {e["trial_id"]: e["day"] for e in labels}
+        seqs = _in_order(json.loads((d / "null" / "sequences.json").read_text()), labels)
         _, names = recipe_label_assignment(seqs, labels)
-        placement = hparams.load(str(d / "model_200" / "model.npz"))
+        placement = hparams.load(str(d / f"model_s{max(TRAIN_SESSIONS)}" / "model.npz"))
 
         def pool(lo, hi):
-            part = [s for s in seqs if lo <= day[s["trial_id"]] < hi]
+            part = seqs[lo:hi]
             entries, keep = pools.injected_per_trial(placement, part, d_max, seed=SEED,
                                                      chunk_size=chunk_size)
             streams = pools.per_trial_to_streams(entries)
             dish = recipe_label_assignment([part[k] for k in keep], labels)[0]
             return harness.trials_from_streams(streams, dish)
 
-        val, test = pool(VAL_START, TEST_START), pool(TEST_START, N_DAYS)
+        val, test = pool(VAL_START, TEST_START), pool(TEST_START, TEST_END)
 
         def masks(det, trials, grid):
             out = []
@@ -193,8 +202,8 @@ def stage_eval(persons, chunk_size=8):
             return out
 
         results[pid] = {}
-        for n in TRAIN_DAYS:
-            base = hparams.load(str(d / f"model_{n}" / "model.npz"))
+        for n in TRAIN_SESSIONS:
+            base = hparams.load(str(d / f"model_s{n}" / "model.npz"))
             arms = {f"lambda={lam:g}": apply_global_prior(base, gcounts, names, lam) for lam in LAMBDAS}
             arms["global only"] = apply_global_prior(base, gcounts, names, GLOBAL_ONLY_LAMBDA, replace=True)
             results[pid][n] = {}
@@ -214,7 +223,7 @@ def stage_eval(persons, chunk_size=8):
                       f"healthy-trial FPR={row['healthy_trial_fpr']:.2f} "
                       f"alarms/10min={row['alarms_per_10min']:.2f}", flush=True)
         harness.dump(f"runs/drift_synth/eval_synth_prior{TAG}_{pid}.json",
-                     {"metric": "G", "person": pid, "results": results[pid]})
+                     {"metric": "G", "person": pid, "unit": "sessions", "results": results[pid]})
     return results
 
 
@@ -250,25 +259,24 @@ def stage_eval_split(persons, chunk_size=8):
     for i in persons:
         pid = f"p{i:02d}"
         d = ROOT / "persons" / pid
-        seqs = json.loads((d / "null" / "sequences.json").read_text())
         labels = json.loads((d / "null" / "labels.json").read_text())
-        day = {e["trial_id"]: e["day"] for e in labels}
+        seqs = _in_order(json.loads((d / "null" / "sequences.json").read_text()), labels)
         rec = {e["trial_id"]: e["recipe_label"] for e in labels}
         _, names = recipe_label_assignment(seqs, labels)
-        placement = hparams.load(str(d / "model_200" / "model.npz"))
+        placement = hparams.load(str(d / f"model_s{max(TRAIN_SESSIONS)}" / "model.npz"))
 
         def pool(lo, hi):
-            part = [s for s in seqs if lo <= day[s["trial_id"]] < hi]
+            part = seqs[lo:hi]
             entries, keep = pools.injected_per_trial(placement, part, d_max, seed=SEED,
                                                      chunk_size=chunk_size)
             dish = recipe_label_assignment([part[k] for k in keep], labels)[0]
             return harness.trials_from_streams(pools.per_trial_to_streams(entries), dish)
 
-        val, test = pool(VAL_START, TEST_START), pool(TEST_START, N_DAYS)
+        val, test = pool(VAL_START, TEST_START), pool(TEST_START, TEST_END)
         out = {}
-        for n in TRAIN_DAYS:
-            base = hparams.load(str(d / f"model_{n}" / "model.npz"))
-            train = [s for s in seqs if day[s["trial_id"]] < n]
+        for n in TRAIN_SESSIONS:
+            base = hparams.load(str(d / f"model_s{n}" / "model.npz"))
+            train = seqs[:n]
             person = count_global(train, [rec[s["trial_id"]] for s in train])
             out[n] = {}
             for arm, (lam, n0) in FADE_ARMS.items():
@@ -301,20 +309,29 @@ def stage_eval_split(persons, chunk_size=8):
                       f"R={row['recall']:.3f} FPR={row['healthy_trial_fpr']:.2f} "
                       f"alarms/10min={row['alarms_per_10min']:.2f}", flush=True)
         harness.dump(f"runs/drift_synth/eval_synth_prior_split{TAG}_{pid}.json",
-                     {"metric": "G", "person": pid, "arms": {k: list(v) for k, v in FADE_ARMS.items()},
+                     {"metric": "G", "person": pid, "unit": "sessions",
+                      "arms": {k: list(v) for k, v in FADE_ARMS.items()},
                       "results": out})
+
+
+def _unit(pattern):
+    """Training-size unit of the results files: "sessions", or "days" for files written before
+    the switch to session counts (the base variant at f590c55)."""
+    files = sorted(Path("runs/drift_synth").glob(pattern))
+    return json.loads(files[0].read_text()).get("unit", "days") if files else "sessions"
 
 
 def summarize_split():
     import numpy as np
+    unit = _unit(f"eval_synth_prior_split{TAG}_p*.json")
     rows = {}
     for f in sorted(Path("runs/drift_synth").glob(f"eval_synth_prior_split{TAG}_p*.json")):
         for n, arms in json.loads(f.read_text())["results"].items():
             for arm, r in arms.items():
                 rows.setdefault((int(n), arm), []).append(r)
     print("\n### Split alpha (transition channels picked separately), mean over persons, test "
-          "days, metric G (Hindsight)\n")
-    print("| train days | arm | persons | F1 | precision | recall | alarms / 10 min | healthy-trial FPR "
+          f"{unit}, metric G (Hindsight)\n")
+    print(f"| train {unit} | arm | persons | F1 | precision | recall | alarms / 10 min | healthy-trial FPR "
           "| subst. | aband. | omission | transp. | repet. |")
     print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     order = [x for a in FADE_ARMS for x in (a + " (single alpha)", a)]
@@ -330,14 +347,15 @@ def summarize_split():
 
 def summarize():
     import numpy as np
+    unit = _unit(f"eval_synth_prior{TAG}_p*.json")
     rows = {}
     for f in sorted(Path("runs/drift_synth").glob(f"eval_synth_prior{TAG}_p*.json")):
         res = json.loads(f.read_text())["results"]
         for n, arms in res.items():
             for arm, r in arms.items():
                 rows.setdefault((int(n), arm), []).append(r)
-    print("\n### Global prior + fine-tune, mean over persons, test days, metric G (Hindsight)\n")
-    print("| train days | arm | persons | F1 | precision | recall | alarms / 10 min | healthy-trial FPR "
+    print(f"\n### Global prior + fine-tune, mean over persons, test {unit}, metric G (Hindsight)\n")
+    print(f"| train {unit} | arm | persons | F1 | precision | recall | alarms / 10 min | healthy-trial FPR "
           "| subst. | aband. | omission | transp. | repet. |")
     print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for (n, arm), rs in sorted(rows.items(), key=lambda kv: (kv[0][0], list(rows).index(kv[0]))):
@@ -350,7 +368,7 @@ def summarize():
 
 
 def plot(path=None):
-    """Cold-start curves: F1, healthy-trial FPR and recall vs training days, per person (thin)
+    """Cold-start curves: F1, healthy-trial FPR and recall vs training sessions, per person (thin)
     and mean (thick), for person-only, + prior (lambda = 1) and global-only."""
     import matplotlib
     matplotlib.use("Agg")
@@ -359,9 +377,10 @@ def plot(path=None):
     arms = [("lambda=0", "person only", "#2a78d6"), ("lambda=1", "+ global prior (λ = 1)", "#eb6834"),
             ("global only", "global only", "#1baf7a")]
     path = path or f"runs/drift_synth/reports/prior_curves{TAG}.png"
+    unit = _unit(f"eval_synth_prior{TAG}_p*.json")
     res = {f.stem.split("_")[-1]: json.loads(f.read_text())["results"]
            for f in sorted(Path("runs/drift_synth").glob(f"eval_synth_prior{TAG}_p*.json"))}
-    days = list(TRAIN_DAYS)
+    sizes = sorted(int(n) for n in next(iter(res.values())))
     ink, ink2, grid = "#1a1a19", "#5f5e58", "#e4e3dd"
     panels = [("f1", "F1 (injected errors)"), ("healthy_trial_fpr", "healthy-trial FPR"),
               ("recall", "recall")]
@@ -372,16 +391,16 @@ def plot(path=None):
         for sp in ("top", "right"):
             ax.spines[sp].set_visible(False)
         for arm, label, color in arms:
-            per = np.array([[res[p][str(n)][arm][key] for n in days] for p in sorted(res)])
+            per = np.array([[res[p][str(n)][arm][key] for n in sizes] for p in sorted(res)])
             for row in per:
-                ax.plot(days, row, color=color, linewidth=0.8, alpha=0.35)
-            ax.plot(days, per.mean(axis=0), color=color, linewidth=2.2, marker="o", markersize=5,
+                ax.plot(sizes, row, color=color, linewidth=0.8, alpha=0.35)
+            ax.plot(sizes, per.mean(axis=0), color=color, linewidth=2.2, marker="o", markersize=5,
                     label=label)
         ax.set_xscale("log")
-        ax.set_xticks(days, [f"{n}\n(~{round(n * 1.3)} sess.)" for n in days])
+        ax.set_xticks(sizes, [str(n) for n in sizes])
         ax.tick_params(colors=ink2, labelsize=8)
         ax.set_title(title, color=ink, fontsize=10, loc="left")
-        ax.set_xlabel("person's own training days", color=ink2, fontsize=9)
+        ax.set_xlabel(f"person's own training {unit}", color=ink2, fontsize=9)
     axes[0].legend(frameon=False, fontsize=8, labelcolor=ink)
     # per person: F1(+prior) - F1(person only); hollow = the prior arm's validation pick left
     # the strict end of the alpha grid (alpha > 1e-7)
@@ -393,45 +412,46 @@ def plot(path=None):
     ax.axhline(0, color=ink2, linewidth=1)
     colors = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"]
     for color, pid in zip(colors, sorted(res)):
-        delta = [res[pid][str(n)]["lambda=1"]["f1"] - res[pid][str(n)]["lambda=0"]["f1"] for n in days]
-        loose = [res[pid][str(n)]["lambda=1"]["alpha"] > 1e-7 for n in days]
-        ax.plot(days, delta, color=color, linewidth=1.6)
-        for x, y, l in zip(days, delta, loose):
+        delta = [res[pid][str(n)]["lambda=1"]["f1"] - res[pid][str(n)]["lambda=0"]["f1"] for n in sizes]
+        loose = [res[pid][str(n)]["lambda=1"]["alpha"] > 1e-7 for n in sizes]
+        ax.plot(sizes, delta, color=color, linewidth=1.6)
+        for x, y, l in zip(sizes, delta, loose):
             ax.plot(x, y, marker="o", markersize=7, color=color, markerfacecolor="white" if l else color,
                     markeredgewidth=2)
-        ax.text(days[-1] * 1.08, delta[-1], pid, color=ink2, fontsize=8, va="center")
+        ax.text(sizes[-1] * 1.08, delta[-1], pid, color=ink2, fontsize=8, va="center")
     ax.plot([], [], marker="o", color=ink2, linestyle="none", markerfacecolor="white",
             label="prior arm picked a loose α (> 1e-7)")
     ax.plot([], [], marker="o", color=ink2, linestyle="none", label="picked α ≤ 1e-7")
     ax.legend(frameon=False, fontsize=8, labelcolor=ink, loc="lower left")
     ax.set_xscale("log")
-    ax.set_xticks(days, [str(n) for n in days])
-    ax.set_xlim(days[0] * 0.8, days[-1] * 1.5)
+    ax.set_xticks(sizes, [str(n) for n in sizes])
+    ax.set_xlim(sizes[0] * 0.8, sizes[-1] * 1.5)
     ax.tick_params(colors=ink2, labelsize=8)
     ax.set_title("F1 change from the prior, per person", color=ink, fontsize=10, loc="left")
-    ax.set_xlabel("person's own training days", color=ink2, fontsize=9)
+    ax.set_xlabel(f"person's own training {unit}", color=ink2, fontsize=9)
     fig.suptitle(f"Global prior + fine-tune, {len(res)} synthetic persons (thin) and mean (thick); "
-                 "Hindsight, test days, metric G", color=ink, fontsize=11, x=0.01, ha="left")
+                 f"Hindsight, test {unit}, metric G", color=ink, fontsize=11, x=0.01, ha="left")
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=130)
     print(f"wrote {path}")
 
 
 def plot_split(path=None):
-    """Mean over persons vs training days for the split-alpha arms (and person-only, single alpha)."""
+    """Mean over persons vs training sessions for the split-alpha arms (and person-only, single alpha)."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import numpy as np
     path = path or f"runs/drift_synth/reports/prior_split_curves{TAG}.png"
+    unit = _unit(f"eval_synth_prior_split{TAG}_p*.json")
     res = {f.stem.split("_")[-1]: json.loads(f.read_text())["results"]
            for f in sorted(Path("runs/drift_synth").glob(f"eval_synth_prior_split{TAG}_p*.json"))}
     if not res:
         raise SystemExit("no split results")
-    days = sorted(int(n) for n in next(iter(res.values())))
+    sizes = sorted(int(n) for n in next(iter(res.values())))
     palette = ["#5f5e58", "#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"]
     arms = [a for a in ["person only (single alpha)", *FADE_ARMS]
-            if all(a in res[p][str(n)] for p in res for n in days)]
+            if all(a in res[p][str(n)] for p in res for n in sizes)]
     ink, ink2, grid = "#1a1a19", "#5f5e58", "#e4e3dd"
     panels = [("f1", "F1 (injected errors)"), ("healthy_trial_fpr", "healthy-trial FPR"), ("recall", "recall")]
     fig, axes = plt.subplots(1, 3, figsize=(14, 4.3), constrained_layout=True)
@@ -441,18 +461,18 @@ def plot_split(path=None):
         for sp in ("top", "right"):
             ax.spines[sp].set_visible(False)
         for color, arm in zip(palette, arms):
-            m = [np.mean([res[p][str(n)][arm][key] for p in res]) for n in days]
-            ax.plot(days, m, color=color, linewidth=2.2 if "single" not in arm else 1.4,
+            m = [np.mean([res[p][str(n)][arm][key] for p in res]) for n in sizes]
+            ax.plot(sizes, m, color=color, linewidth=2.2 if "single" not in arm else 1.4,
                     linestyle="--" if "single" in arm else "-", marker="o", markersize=5,
                     label=arm + ("" if "single" in arm else ", split alpha"))
         ax.set_xscale("log")
-        ax.set_xticks(days, [str(n) for n in days])
+        ax.set_xticks(sizes, [str(n) for n in sizes])
         ax.tick_params(colors=ink2, labelsize=8)
         ax.set_title(title, color=ink, fontsize=10, loc="left")
-        ax.set_xlabel("person's own training days", color=ink2, fontsize=9)
+        ax.set_xlabel(f"person's own training {unit}", color=ink2, fontsize=9)
     axes[0].legend(frameon=False, fontsize=7.5, labelcolor=ink)
     fig.suptitle(f"Fading prior + split alpha, mean of {len(res)} persons{' (CC4D-calibrated)' if TAG else ''}; "
-                 "Hindsight, test days, metric G", color=ink, fontsize=11, x=0.01, ha="left")
+                 f"Hindsight, test {unit}, metric G", color=ink, fontsize=11, x=0.01, ha="left")
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=130)
     print(f"wrote {path}")
@@ -465,7 +485,7 @@ def main():
                                         "eval-split", "summary-split", "plot-split"],
                     required=True)
     ap.add_argument("--person", type=int, action="append")
-    ap.add_argument("--days", type=int, action="append")
+    ap.add_argument("--sessions", type=int, action="append")
     ap.add_argument("--variant", choices=["base", "cal"], default="base")
     a = ap.parse_args()
     set_variant(a.variant)
@@ -475,7 +495,7 @@ def main():
     elif a.stage == "persons":
         stage_persons()
     elif a.stage == "train":
-        stage_train(persons, a.days or TRAIN_DAYS)
+        stage_train(persons, a.sessions or TRAIN_SESSIONS)
     elif a.stage == "eval":
         stage_eval(persons)
         summarize()

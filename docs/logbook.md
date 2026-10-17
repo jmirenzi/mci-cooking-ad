@@ -5,6 +5,12 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-17 — training size counted in sessions; calibrated rerun started
+
+`eval_synth_prior.py` splits by session index, not day: train on the first N sessions, validate on
+250–324, test on 325–399 (same 150 held-out sessions per person). The CC4D-calibrated overnight
+run (`overnight_cal.sh`, N = 10 / 30 / 250 sessions) was launched on this split.
+
 ## 2026-10-16 — split transition α and a fading prior (metric G)
 
 Split α turns the fixed prior's 100–200-day loss into a gain or tie (mean F1 0.382 / 0.394 against

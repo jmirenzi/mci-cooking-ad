@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The CC4D-calibrated rerun of the global-prior experiment (docs/drift_synth.md §9.2-9.3):
 # population -> 4 test persons -> 12 person fits (2 workers) -> split-alpha eval (2 workers) ->
-# summary + plot. ~8 h on one GPU. Logs in runs/drift_synth/overnight_cal/.
+# summary + plot, training sizes in sessions (10 / 30 / 250). ~8 h on one GPU. Logs in runs/drift_synth/overnight_cal/.
 #
 #   nohup scripts/drift_synth/overnight_cal.sh > runs/drift_synth/overnight_cal/run.log 2>&1 &
 set -euo pipefail

@@ -349,7 +349,10 @@ All runs use the same person, Hindsight at its validation-picked α; live L=0 ag
 **The test persons:** seed 0, persons 0–3, habit 2, capability U(0.4, 0.6), 1.3 sessions a day.
 Each is trained on its first 10, 30, 100 or 200 days, validated on days 200–259 (injected errors,
 α picked by G-F1) and tested on days 260–319. Every arm and N uses the same pools, placed by the
-person's N = 200 model.
+person's N = 200 model. The tables in this section count training size in days (mean 13 / 38 / 132 / 261
+sessions). `eval_synth_prior.py` now counts **sessions** instead, in cooking order: the first
+10 / 30 / 100 / 250 sessions train, sessions 250–324 validate and 325–399 test, so every person has
+the same 75 + 75 held-out sessions. The day-based numbers below were measured at f590c55.
 
 **Mean over the 4 persons, Hindsight, test days, metric G:**
 
@@ -452,8 +455,8 @@ The real data are CC4D recordings with no Order Error or Missing Step tag: 5–1
     - Calibrated sessions: median 807 s against CC4D's 716 s of step time.
     - Enable with `generator.yaml: durations.step_scale` and `max_event_s`.
   - **The calibrated rerun** (`scripts/drift_synth/overnight_cal.sh`, `eval_synth_prior.py --variant cal`)
-    uses 1 s ticks, d_max 300 (`configs/drift_synth/hsmm_cal.yaml`), training sizes 10 / 30 / 200
-    days and 20 soft-EM iterations, to fit in a night. After iteration 20 the objective moved less
+    uses 1 s ticks, d_max 300 (`configs/drift_synth/hsmm_cal.yaml`), training sizes 10 / 30 / 250
+    sessions and 20 soft-EM iterations, to fit in a night. After iteration 20 the objective moved less
     than 0.2% in 13 of 16 uncalibrated fits.
 
 ## 10. Code
