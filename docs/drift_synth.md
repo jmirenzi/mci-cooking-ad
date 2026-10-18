@@ -646,14 +646,16 @@ HSMM α values. The empirical duration channel brings it back.)
 (`skip_idle.population_prior`) and added as W pseudo-observations per row. All three channels on,
 prior λ = 1, metric G (F1 / healthy-trial FPR):
 
-| train sessions | W = 0 | W = 3 | W = 10 |
-|---|---|---|---|
-| 10 | 0.292 / 0.94 | 0.328 / 0.87 | **0.354** / 0.80 |
-| 30 | 0.444 / 0.66 | 0.489 / 0.54 | **0.561** / 0.36 |
-| 250 | 0.727 / 0.26 | 0.732 / 0.26 | **0.767** / 0.20 |
+| train sessions | W = 0 | W = 3 | W = 10 | W = 30 |
+|---|---|---|---|---|
+| 10 | 0.292 / 0.94 | 0.328 / 0.87 | 0.354 / 0.80 | **0.371** / 0.78 |
+| 30 | 0.444 / 0.66 | 0.489 / 0.54 | 0.561 / 0.36 | **0.576** / 0.36 |
+| 250 | 0.727 / 0.26 | 0.732 / 0.26 | 0.767 / 0.20 | **0.794** / 0.14 |
 
-Per type at W = 10, 250 sessions: substitution 0.99, abandonment 0.68, omission 0.89, transposition
-0.88, repetition 0.86.
+Per type at W = 30, 250 sessions: substitution 0.99, abandonment 0.56, omission 0.93,
+transposition 0.93, repetition 0.90. **Caveat:** W is compared here on the TEST sessions. Every α
+and channel level is picked on validation, but W is not yet. Pick it on validation before quoting
+a W-specific number.
 
 **Not tuned to its own injectors.** The same three channels (W = 3) on §9.6's pool: the tick-level
 Breakfast injectors, oracle-confirmed anomalies only. Prior λ = 1, metric G, F1 without → with:
