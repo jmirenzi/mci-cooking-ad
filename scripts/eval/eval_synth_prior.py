@@ -58,6 +58,7 @@ STRUCT = set()    # --count-channel / --skip-idle: structural channels on one mo
 COUNT_LEVELS = (0.0, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1)   # their shared p levels; 0 = off
 DUR_SPLIT = False  # --dur-split: duration channels on their own alpha axis (harness.DUR_ALPHAS)
 EMP_DUR = False    # --emp-dur: detectors/empirical_duration.py on its own axis
+STRUCT_PRIOR = 0.0  # --struct-prior W: the prior arms' skip-idle channel gets W population pseudo-counts per row
 EMP_LEVELS = (0.0, 0.002, 0.005, 0.01, 0.02)
 
 
@@ -248,6 +249,20 @@ FADE_ARMS = {  # arm -> (lam, n0); every arm picks the transition alpha separate
 
 _GRAPHS = {}
 GEN_CONFIRMED = {}
+_POP = []
+
+
+def _population():
+    """(sequences, recipe names) of the prior's population (stage_population's export)."""
+    if not _POP:
+        seqs, recs = [], []
+        for d in sorted((ROOT / "population").iterdir()):
+            lab = {e["trial_id"]: e["recipe_label"] for e in json.loads((d / "labels.json").read_text())}
+            for s in json.loads((d / "sequences.json").read_text()):
+                seqs.append(s)
+                recs.append(lab[s["trial_id"]])
+        _POP.extend([seqs, recs])
+    return _POP[0], _POP[1]
 
 
 def gen_pool(person_idx, part, labels, support):
@@ -391,8 +406,20 @@ def stage_eval_split(persons, chunk_size=8):
                                        int(r_), (), "healthy") for s_, r_ in zip(train, tr_dish)]
                     tr_traces = det.traces(tr_trials)
                     if STRUCT:
-                        axes.append(("struct", [{"count": CountChannel, "skip": SkipIdleTransitions}[c].fit(
-                            tr_traces, ignore=idle) for c in sorted(STRUCT)], COUNT_LEVELS))
+                        chans = []
+                        for c in sorted(STRUCT):
+                            if c == "skip" and STRUCT_PRIOR and lam > 0:
+                                from cook_ad.detectors.skip_idle import population_prior
+                                from cook_ad.hsmm.train.global_prior import state_pairs
+                                pop_s, pop_r = _population()
+                                pri = population_prior(pop_s, pop_r, state_pairs(p), names,
+                                                       (vocab_["verbs"]["stall"], vocab_["nouns"]["idle"]))
+                                chans.append(SkipIdleTransitions.fit(tr_traces, ignore=idle, prior=pri,
+                                                                     prior_weight=STRUCT_PRIOR))
+                            else:
+                                chans.append({"count": CountChannel, "skip": SkipIdleTransitions}[c].fit(
+                                    tr_traces, ignore=idle))
+                        axes.append(("struct", chans, COUNT_LEVELS))
                     if EMP_DUR:
                         axes.append(("empdur", [EmpiricalShortDuration.fit(tr_traces, ignore=idle)], EMP_LEVELS))
 
@@ -632,6 +659,8 @@ def main():
                          "anomalies (real), or the step-level injectors (gen); real/gen run 2 arms")
     ap.add_argument("--dur-split", action="store_true",
                     help="eval-split: duration channels on their own alpha axis")
+    ap.add_argument("--struct-prior", type=float, default=0.0,
+                    help="eval-split: population pseudo-counts per row for the prior arms' skip-idle channel")
     ap.add_argument("--emp-dur", action="store_true",
                     help="eval-split: also the empirical short-duration channel, on its own axis")
     ap.add_argument("--skip-idle", action="store_true",
@@ -640,7 +669,7 @@ def main():
                     help="eval-split: also the visit-count channel (detectors/count_channel.py)")
     a = ap.parse_args()
     set_variant(a.variant)
-    global POOL, TAG, STRUCT, DUR_SPLIT, EMP_DUR
+    global POOL, TAG, STRUCT, DUR_SPLIT, EMP_DUR, STRUCT_PRIOR
     POOL = a.pool
     TAG += "" if POOL == "all" else f"_{POOL}"
     STRUCT = ({"count"} if a.count_channel else set()) | ({"skip"} if a.skip_idle else set())
@@ -649,6 +678,8 @@ def main():
     TAG += "_dur" if DUR_SPLIT else ""
     EMP_DUR = a.emp_dur
     TAG += "_empdur" if EMP_DUR else ""
+    STRUCT_PRIOR = a.struct_prior
+    TAG += f"_sp{STRUCT_PRIOR:g}" if STRUCT_PRIOR else ""
     persons = a.person or PERSONS
     if a.stage == "population":
         stage_population()

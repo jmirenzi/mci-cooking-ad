@@ -45,3 +45,16 @@ def test_empirical_short_duration():
     ok = ch.flags(SimpleNamespace(r_hat=0, segments=[(1, 20), (9, 2), (2, 5)]), [0.02])
     cut = ch.flags(SimpleNamespace(r_hat=0, segments=[(1, 3), (9, 2), (2, 5)]), [0.02])
     assert not ok.any() and np.flatnonzero(cut[:, 0]).tolist() == [2]
+
+
+def test_skip_idle_population_prior_softens_a_cold_start():
+    from cook_ad.detectors.skip_idle import BOS, EOS, SkipIdleTransitions
+    train = [_tr([1, 9, 2, 9, 3])]                                  # one session: 1 2 3
+    prior = {0: {(BOS, 1): 1.0, (1, 3): 0.5, (1, 2): 0.5, (3, 2): 1.0, (2, EOS): 0.5, (2, 3): 0.5,
+                 (3, EOS): 0.0}}
+    bare = SkipIdleTransitions.fit(train, ignore={9})
+    warm = SkipIdleTransitions.fit(train, ignore={9}, prior=prior, prior_weight=5.0)
+    odd = _tr([1, 9, 3, 9, 2])                                      # legal for the population
+    p_bare = dict(bare.pvalues(odd))
+    p_warm = dict(warm.pvalues(odd))
+    assert p_warm[6] > p_bare[6]                                     # 1 -> 3 is no longer rare
