@@ -397,8 +397,9 @@ def test_step_time_scale_stretches_only_its_step():
     owners = step_owners([e[4] for e in plain.meta["clean_events"]])
     for p, q, owner in zip(plain.meta["clean_events"], scaled.meta["clean_events"], owners):
         assert p[2:] == q[2:]                      # same tokens, same draws
-        ratio = (q[1] - q[0]) / (p[1] - p[0])      # logistics follow the step that owns them
-        assert ratio == pytest.approx(3.0 if owner == "2" else 1.0, rel=1e-2)  # ms rounding
+        ratio = (q[1] - q[0]) / (p[1] - p[0])      # take/put/wash keep their EPIC time
+        want = 3.0 if owner == "2" and p[4] is not None else 1.0
+        assert ratio == pytest.approx(want, rel=1e-2)  # ms rounding
 
 
 def test_no_put_back_right_after_the_recipes_own_put_and_no_fetching_dishes():

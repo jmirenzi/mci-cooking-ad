@@ -101,8 +101,9 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
             repeats.append(len(final) - 1)
 
     slow = K.slow_multiplier(theta, kn)
-    # CC4D step-time calibration (calibrate_cc4d.py --write-scales): every event's duration and
-    # following gap times its step's scale. Absent = 1, the uncalibrated generator.
+    # CC4D step-time calibration (calibrate_cc4d.py --write-scales): every recipe action's
+    # duration and following gap times its step's scale. Fetching and putting away take as long
+    # wherever they happen, so take/put/wash (step None) keep their EPIC time. Absent = 1.
     scale = (getattr(assets, "step_scale", None) or {}).get(recipe.recipe_id, {})
     cap = (gen.get("durations") or {}).get("max_event_s")   # None = uncapped
     k_sigma = (gen.get("durations") or {}).get("sigma_scale", 1.0)
@@ -112,7 +113,7 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
     t = 0.0
     clean = []
     for i, tok in enumerate(final):
-        m = scale.get(owner[i], scale.get("_recipe", 1.0)) if scale else 1.0
+        m = scale.get(owner[i], scale.get("_recipe", 1.0)) if scale and final_step[i] is not None else 1.0
         d = sample_duration(assets.durations, tok,
                             m * speed * slow * K.token_multiplier(tok, theta, kn, tags), rng, k_sigma)
         d = min(d, cap) if cap else d

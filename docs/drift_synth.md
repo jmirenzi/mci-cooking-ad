@@ -484,7 +484,8 @@ The real data are CC4D recordings with no Order Error or Missing Step tag: 5–1
     `configs/drift_synth/step_time_scale.json`, where each step's scale is the CC4D median step
     time divided by the uncalibrated generator's median.
     - Scales run from 2.8× (banana pancakes) to 9.1× (sautéed mushrooms), with a 4.15× global median.
-    - The sampler multiplies every event's duration and following gap by its step's scale; logistics take their owning step's (`sampler.step_owners`). Single events are capped at 600 s.
+    - The sampler multiplies each recipe action's duration and following gap by its step's scale. Take/put/wash keep their EPIC time (median 1.7 s, p90 3.4 s), since fetching takes as long wherever it happens. Single events are capped at 600 s.
+    - Since 2026-10-18 the scale is (CC4D median step time − the step's mean take/put/wash time) / the mean time of its own actions and gaps (`calibrate_cc4d.py`, `core_scale`). Before, logistics were scaled with their step (`sampler.step_owners`), so a `take salt` next to a 14× step lasted 36 s. On the 8 recipes the calibrated session medians are within 6% of the summed CC4D step medians (190–907 s); global median scale 4.51.
     - Calibrated sessions: median 807 s against CC4D's 716 s of step time.
     - Enable with `generator.yaml: durations.step_scale` and `max_event_s`.
   - **The calibrated rerun** (`scripts/drift_synth/overnight_cal.sh`, `eval_synth_prior.py --variant cal`)

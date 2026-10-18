@@ -5,6 +5,12 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-18 — take/put/wash no longer stretch with the CC4D step scale
+
+Logistics inherited their step's scale (a `take salt` next to a 14× step lasted 36 s). Now they keep
+EPIC time (median 1.7 s) and the scales are refit on the step's own actions: global median 4.51,
+session medians within 6% of CC4D on all 8 recipes. `calibrate_cc4d.py --write-scales`.
+
 ## 2026-10-18 — rollout fixes: no doubled actions, no fetched dishes, narrower durations
 
 3-person rollouts (`rollout_examples.py`) had 153 back-to-back identical actions in 480 sessions

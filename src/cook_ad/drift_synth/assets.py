@@ -48,8 +48,9 @@ def load_expansions(path):
     return {k: expansion_from_json(k, d) for k, d in json.loads(Path(path).read_text()).items()}
 
 
-def load_assets(gen_path="configs/drift_synth/generator.yaml"):
-    """The real assets. Needs reviewed tags and built expansions (Stages 2-3)."""
+def load_assets(gen_path="configs/drift_synth/generator.yaml", require_reviewed_affinity=True):
+    """The real assets. Needs reviewed tags and built expansions (Stages 2-3), and a reviewed
+    affinity.yaml unless require_reviewed_affinity=False (previews and calibration only)."""
     from cook_ad.drift_synth.durations import DurationModel, fit_duration_priors
     from cook_ad.drift_synth.graphs import load_phased
     from cook_ad.drift_synth.knobs import load_knobs
@@ -74,7 +75,7 @@ def load_assets(gen_path="configs/drift_synth/generator.yaml"):
         vocab=json.loads(Path(p["vocab"]).read_text()),
         gen=gen,
         step_scale=load_step_scale(gen),
-        affinity=load_affinity(p["affinity"], recipes),
+        affinity=load_affinity(p["affinity"], recipes, require_reviewed_affinity),
     )
 
 

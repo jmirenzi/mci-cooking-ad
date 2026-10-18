@@ -137,7 +137,7 @@ def main():
                     help="write per-step time scales (CC4D median / generator median) here, e.g. "
                          "configs/drift_synth/step_time_scale.json")
     args = ap.parse_args()
-    assets = load_assets()
+    assets = load_assets(require_reviewed_affinity=False)   # theta 0.5 below: no flavour inserts
     assets.step_scale = None   # measure the UNcalibrated generator
     graphs = assets.graphs
     beta = assets.knobs["mise_en_place"]["beta"]
@@ -209,7 +209,7 @@ def main():
         recs = [x for x in real.get(r, []) if x["normal"]]
         if not recs:
             continue
-        step_sim = {}
+        step_sim, step_core, step_log = {}, {}, {}
         tot_sim = []
         for i in range(args.sims):
             s = sample_session(graphs[r], assets.expansions[r], theta, 1.0, assets, off, rng_for(7, 77, i))
@@ -217,13 +217,17 @@ def main():
             tot_sim.append(ev[-1][1] - ev[0][0] if ev else 0.0)
             # each event's time (to the next event's start) goes to its step, by the sampler's own
             # ownership rule, so the scales written below are the ones the generator applies
+            # ownership rule; take/put/wash (e[4] None) are not scaled, so they are kept apart
             owner = step_owners([e[4] for e in ev])
-            acc = {}
+            core, logi = {}, {}
             for k, e in enumerate(ev):
                 end = ev[k + 1][0] if k + 1 < len(ev) else e[1]
+                acc = logi if e[4] is None else core
                 acc[owner[k]] = acc.get(owner[k], 0.0) + (end - e[0])
-            for st, v in acc.items():
-                step_sim.setdefault(st, []).append(v)
+            for st in set(core) | set(logi):
+                step_core.setdefault(st, []).append(core.get(st, 0.0))
+                step_log.setdefault(st, []).append(logi.get(st, 0.0))
+                step_sim.setdefault(st, []).append(core.get(st, 0.0) + logi.get(st, 0.0))
         sess_sim.append(float(np.median(tot_sim)))
         sess_real.append(float(np.median([sum(x["durations"].values()) for x in recs])))
         has_wait = {k: any(v in WAIT_VERBS for v, _ in e.tokens) for k, e in assets.expansions[r].items()}
@@ -232,8 +236,13 @@ def main():
             if not real_d or k not in step_sim:
                 continue
             rd, sd = statistics.median(real_d), statistics.median(step_sim[k])
+            sc, sl = statistics.mean(step_core[k]), statistics.mean(step_log[k])
             rows.append({"recipe": r, "step": k, "description": step.description[:60], "real_s": rd,
-                         "sim_s": sd, "ratio": rd / sd if sd else None, "wait": has_wait.get(k, False)})
+                         "sim_s": sd, "ratio": rd / sd if sd else None, "wait": has_wait.get(k, False),
+                         # the scale on the step's own actions that brings its total to rd, with
+                         # its take/put/wash left at EPIC time
+                         "sim_core_s": sc, "sim_logistics_s": sl,
+                         "core_scale": (rd - sl) / sc if sc else None})
             (ratio_wait if has_wait.get(k) else ratio_core).append(rd / sd)
     report["durations"] = {
         "steps": rows,
@@ -263,8 +272,8 @@ def write_scales(rows, recipes, path):
     clip = lambda x: float(min(max(x, SCALE_CLIP[0]), SCALE_CLIP[1]))  # noqa: E731
     by_r = {}
     for row in rows:
-        if row["ratio"]:
-            by_r.setdefault(row["recipe"], {})[row["step"]] = clip(row["ratio"])
+        if row.get("core_scale"):
+            by_r.setdefault(row["recipe"], {})[row["step"]] = clip(row["core_scale"])
     glob = float(np.median([v for d in by_r.values() for v in d.values()]))
     scales = {}
     for r in recipes:
@@ -272,8 +281,9 @@ def write_scales(rows, recipes, path):
         scales[r] = dict(d, _recipe=float(np.median(list(d.values()))) if d else glob)
     Path(path).write_text(json.dumps(
         {"source": "scripts/drift_synth/calibrate_cc4d.py --write-scales: CC4D normal-recording "
-                   "median step time / the uncalibrated generator's median (noise off, theta 0.5, "
-                   "speed 1); applied to each step's event durations and gaps", "clip": SCALE_CLIP,
+                   "median step time minus the step's mean take/put/wash time, over the mean time "
+                   "of its own actions and their gaps, in the uncalibrated generator (noise off, "
+                   "theta 0.5, speed 1); applied to those actions and gaps only", "clip": SCALE_CLIP,
          "global_median": glob, "scales": scales}, indent=1, sort_keys=True) + "\n")
     print(f"wrote {path} (global median scale {glob:.2f})")
 

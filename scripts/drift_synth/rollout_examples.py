@@ -30,10 +30,7 @@ PEOPLE = {   # name -> (who, theta); fine_motor below its hinge for all (healthy
 
 def load(unreviewed):
     import cook_ad.drift_synth.assets as A
-    if unreviewed:
-        orig = A.load_affinity
-        A.load_affinity = lambda p, r, require_reviewed=True: orig(p, r, False)
-    a = A.load_assets()
+    a = A.load_assets(require_reviewed_affinity=not unreviewed)
     a.gen["durations"] = dict(a.gen["durations"], step_scale="configs/drift_synth/step_time_scale.json",
                               max_event_s=600.0)
     a.step_scale = A.load_step_scale(a.gen)
