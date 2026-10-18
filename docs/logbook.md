@@ -5,6 +5,13 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-18 — step-level injectors; idle-skipping, count and empirical-duration channels (metric G)
+
+Step-level pools (`inject.py`): the HSMM alone scores 0.409 at 250 sessions (transposition 0.08,
+repetition 0.00): idle gaps hide first-order context. + skip-idle + count: 0.706; + empirical short
+duration: 0.727 (omission 0.88, transposition 0.84, repetition 0.86, abandonment 0.68), healthy
+FPR 0.26. Cold start (10 / 30 sessions) 0.29 / 0.44. drift_synth.md §9.7.
+
 ## 2026-10-18 — re-scored on oracle-confirmed anomalies (metric G)
 
 Same models, non-anomalous injections dropped from val and test: F1 at 250 sessions 0.393 -> 0.687

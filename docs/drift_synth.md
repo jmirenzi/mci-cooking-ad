@@ -585,6 +585,62 @@ On the full pool (§9.4) the same models scored 0.393 at 250 sessions. Transposi
 detected (0.67–0.71) once the gap and take/put/wash swaps are gone. Omission (0.19–0.23),
 abandonment (0.01–0.08) and repetition (0.05–0.13) stay low on real ones.
 
+### 9.7 Step-level injections, and channels that see them
+
+**Step-level injectors** (`drift_synth/inject.py`, `eval_synth_prior.py --pool gen`). They edit one
+real error into a held-out session's clean events, using the generator's step labels. Every other
+event keeps its duration and gap. The table below defines each error and its metric G span:
+
+| error | edit | span |
+|---|---|---|
+| omission | all recipe actions of one step dropped (its fetches stay) | from the step's old place to the next step's first action |
+| transposition | a step, with its fetches and put-backs, moved to before a step it depends on in the task graph | the moved step's first action, and the jumped step's first action |
+| repetition | a step's actions done again after the next step | the repeat's first action |
+| abandonment | an action of ≥ 8 s cut to 5–20% (≥ 1.5 s) and the rest of its step skipped | the cut action |
+| substitution | an action's verb or noun replaced by one the person never uses in that recipe | that action |
+
+The §9.5 oracle confirms 71–84% of abandonments, 80–93% of omissions and 84–95% of repetitions,
+and 100% of substitutions. Transpositions are 27–60% by its local checks and 89–97% with an order
+check (an action first seen before one it never precedes in healthy data).
+
+**Why the HSMM missed them: idle gaps.** Two actions in three are separated by an idle run, so
+the model's transitions go A → idle → B. Every action follows idle somewhere, so a repeated, moved
+or skipped step leaves no unusual transition. A bigram over non-idle runs alone sees 91–95% of
+omissions, all transpositions and 87–91% of repetitions, at 3–8% of healthy sessions. Breakfast
+has no gaps between actions, which is why this never showed there.
+
+**Three add-on channels** for the hindsight HSMM, each fitted from the model's own Viterbi decodes of
+the person's training sessions:
+- `skip_idle.SkipIdleTransitions`: P(next non-idle state | previous non-idle state), per recipe.
+- `count_channel.CountChannel`: a state the recipe almost always visits that is missing, flagged where its usual successor starts; or a visit beyond the training counts.
+- `empirical_duration.EmpiricalShortDuration`: P(a segment this short) from the training durations themselves, instead of the negative binomial's fat left tail.
+
+Their p-values are smoothed frequencies. The first two share one extra axis of the validation
+grid, and the duration channel has its own. Level 0 (off) is always available, so validation
+can decline them.
+
+**Mean over 4 persons, step-level pools, Hindsight, test sessions, metric G (F1 / healthy-trial FPR):**
+
+| train sessions | arm | HSMM (split α) | + skip-idle + count | + empirical duration |
+|---|---|---|---|---|
+| 10 | person only | 0.178 / 0.99 | 0.219 / 0.99 | 0.220 / 0.99 |
+| 10 | prior λ = 1 | 0.218 / 0.79 | 0.291 / 0.94 | 0.292 / 0.94 |
+| 30 | person only | 0.226 / 0.85 | 0.330 / 0.89 | 0.330 / 0.89 |
+| 30 | prior λ = 1 | 0.274 / 0.57 | 0.445 / 0.65 | 0.444 / 0.66 |
+| 250 | person only | 0.379 / 0.42 | 0.652 / 0.35 | 0.675 / 0.41 |
+| 250 | prior λ = 1 | 0.409 / 0.23 | 0.706 / 0.19 | **0.727** / 0.26 |
+
+**Recall per type at 250 sessions, prior λ = 1 (metric G):**
+
+| | subst. | aband. | omission | transp. | repet. |
+|---|---|---|---|---|---|
+| HSMM | 0.99 | 0.37 | 0.40 | 0.08 | 0.00 |
+| + skip-idle + count | 0.99 | 0.13 | 0.89 | 0.86 | 0.89 |
+| + empirical duration | 0.99 | 0.68 | 0.88 | 0.84 | 0.86 |
+
+(The HSMM's abandonment recall falls with the channels on because validation then picks stricter
+HSMM α values. The empirical duration channel brings it back.)
+
 ## 10. Code
 
 | Concept | Where |
@@ -614,6 +670,8 @@ abandonment (0.01–0.08) and repetition (0.05–0.13) stay low on real ones.
 | example rollouts (hand-set people × every recipe, for reading) | `scripts/drift_synth/rollout_examples.py` → `runs/drift_synth/reports/rollout_examples.md` |
 | global prior + fine-tune (§9.2) | `hsmm/train/global_prior.py:count_global`, `apply_global_prior` (fixed or fading: `person_counts`, `n0`), `state_pairs`; `eval_synth_prior.py --stage eval-split`; `scripts/eval/eval_synth_prior.py`; `harness.hindsight_split_grid`, `split_op` |
 | overnight rerun of everything on the revised generator | `scripts/drift_synth/overnight_v2.sh` |
+| step-level injectors, healthy-support oracle (§9.6–9.7) | `drift_synth/inject.py`; `eval/synth_oracle.py:HealthySupport`, `person_support`; `eval_synth_prior.py --pool all\|real\|gen`; `harness.trials_from_groups` |
+| add-on channels for the hindsight HSMM (§9.7) | `detectors/skip_idle.py:SkipIdleTransitions`, `population_prior`; `detectors/count_channel.py:CountChannel`; `detectors/empirical_duration.py:EmpiricalShortDuration`; `eval_synth_prior.py --skip-idle --count-channel --emp-dur --struct-prior` |
 | injection and duration diagnostics (§9.5) | `scripts/eval/diagnose_synth_injections.py`, `scripts/eval/diagnose_synth_durations.py` |
 | CC4D calibration (§9.3) | `scripts/drift_synth/calibrate_cc4d.py` (`--write-scales`); `sampler.step_owners`; `assets.load_step_scale`; `configs/drift_synth/step_time_scale.json`; `scripts/drift_synth/overnight_cal.sh` |
 | anomaly detector on synthetic pools (§9) | `scripts/eval/eval_synth_ad.py` (`--train-days`, `--habit`, `--noise-scale`; injected errors only by default, `--capability-pools` adds the trait-change pools, `levels`: slow + Δ, fine_motor raised to 0.6 / 0.75 / 0.9); `configs/drift_synth/hsmm.yaml`; repetition spans from `sampler.sample_session` (`meta.repeats`); `export.step_labels` |
