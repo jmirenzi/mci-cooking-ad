@@ -54,6 +54,8 @@ TAG = ""          # results-file suffix
 VARIANT = "base"
 POOL = "all"      # eval-split pools: all | real (oracle-confirmed only) | gen (step-level injectors)
 POOL_ARMS = ("person only", "prior lambda=1")   # the arms run on the real / gen pools
+COUNT = False     # --count-channel: add detectors/count_channel.py on a third grid axis
+COUNT_LEVELS = (0.0, 0.01, 0.02, 0.05, 0.1, 0.2)   # 0 = off
 
 
 def set_variant(name):
@@ -372,13 +374,44 @@ def stage_eval_split(persons, chunk_size=8):
                 bad = BadSets(hsmm, harness.ALPHAS)
                 det = HindsightHSMMDetector(hsmm, bad, OperatingPoint(0.005), chunk_size=chunk_size)
 
+                count = None
+                if COUNT:
+                    from cook_ad.core import Trial
+                    from cook_ad.detectors.count_channel import CountChannel
+                    vocab_ = json.loads((d / "null" / "vocab.json").read_text())
+                    idle = set(np.flatnonzero(np.argmax(np.asarray(hsmm.tables.log_emit_v), axis=-1)
+                                              == vocab_["verbs"]["stall"]).tolist())
+                    tr_dish = recipe_label_assignment(train, labels)[0]
+                    tr_trials = [Trial(s_["trial_id"], np.asarray(s_["verb_ids"]), np.asarray(s_["noun_ids"]),
+                                       int(r_), (), "healthy") for s_, r_ in zip(train, tr_dish)]
+                    count = CountChannel.fit(det.traces(tr_trials), ignore=idle)
+
                 def grid(trials):
                     m = []
                     for group in dict.fromkeys(g for g, _ in trials):
                         ts = [t for g, t in trials if g == group]
-                        m += [harness.hindsight_split_grid(det, tr, harness.ALPHAS) for tr in det.traces(ts)]
+                        for tr in det.traces(ts):
+                            g2 = harness.hindsight_split_grid(det, tr, harness.ALPHAS)
+                            if count is not None:
+                                g2 = g2[..., None] | count.flags(tr, COUNT_LEVELS)[:, None, None, :]
+                            m.append(g2)
                     return harness.sweep(m, trials, TICK)
                 gv, gt = grid(val), grid(test)
+                if count is not None:
+                    # the pick with the count channel, then the same grid with it off (level 0)
+                    idx = harness.pick(gv)
+                    row = harness.at(gt, idx)
+                    row.update(alpha_transition=harness.ALPHAS[idx[0]], alpha_rest=harness.ALPHAS[idx[1]],
+                               count_level=COUNT_LEVELS[idx[2]])
+                    out[n][arm + " +count"] = row
+                    gv = {k: (np.asarray(v)[..., 0] if k != "per_type_recall" else
+                              {t: np.asarray(x)[..., 0] for t, x in v.items()}) for k, v in gv.items()}
+                    gt = {k: (np.asarray(v)[..., 0] if k != "per_type_recall" else
+                              {t: np.asarray(x)[..., 0] for t, x in v.items()}) for k, v in gt.items()}
+                    print(f"{pid} N={n:3d} {arm + ' +count':22s} level={row['count_level']:<5g} "
+                          f"F1={row['f1']:.3f} P={row['precision']:.3f} R={row['recall']:.3f} "
+                          f"FPR={row['healthy_trial_fpr']:.2f} per type "
+                          + " ".join(f"{k[:5]} {v:.2f}" for k, v in row["per_type"].items()), flush=True)
                 idx = harness.pick(gv)
                 row = harness.at(gt, idx)
                 row["alpha_transition"] = harness.ALPHAS[idx[0]]
@@ -576,11 +609,15 @@ def main():
     ap.add_argument("--pool", choices=["all", "real", "gen"], default="all",
                     help="eval-split pools: the Breakfast injectors (all), only their oracle-confirmed "
                          "anomalies (real), or the step-level injectors (gen); real/gen run 2 arms")
+    ap.add_argument("--count-channel", action="store_true",
+                    help="eval-split: also the visit-count channel (detectors/count_channel.py)")
     a = ap.parse_args()
     set_variant(a.variant)
-    global POOL, TAG
+    global POOL, TAG, COUNT
     POOL = a.pool
     TAG += "" if POOL == "all" else f"_{POOL}"
+    COUNT = a.count_channel
+    TAG += "_count" if COUNT else ""
     persons = a.person or PERSONS
     if a.stage == "population":
         stage_population()
