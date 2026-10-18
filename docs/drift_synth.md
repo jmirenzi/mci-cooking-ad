@@ -646,14 +646,16 @@ HSMM α values. The empirical duration channel brings it back.)
 (`skip_idle.population_prior`) and added as W pseudo-observations per row. All three channels on,
 prior λ = 1, metric G (F1 / healthy-trial FPR):
 
-| train sessions | W = 0 | W = 3 | W = 10 | W = 30 |
-|---|---|---|---|---|
-| 10 | 0.292 / 0.94 | 0.328 / 0.87 | 0.354 / 0.80 | **0.371** / 0.78 |
-| 30 | 0.444 / 0.66 | 0.489 / 0.54 | 0.561 / 0.36 | **0.576** / 0.36 |
-| 250 | 0.727 / 0.26 | 0.732 / 0.26 | 0.767 / 0.20 | **0.794** / 0.14 |
+| train sessions | W = 0 | W = 3 | W = 10 | W = 30 | W = 100 |
+|---|---|---|---|---|---|
+| 10 | 0.292 / 0.94 | 0.328 / 0.87 | 0.354 / 0.80 | **0.371** / 0.78 | **0.371** / 0.78 |
+| 30 | 0.444 / 0.66 | 0.489 / 0.54 | 0.561 / 0.36 | 0.576 / 0.36 | **0.578** / 0.34 |
+| 250 | 0.727 / 0.26 | 0.732 / 0.26 | 0.767 / 0.20 | 0.794 / 0.14 | **0.827** / 0.11 |
 
-Per type at W = 30, 250 sessions: substitution 0.99, abandonment 0.56, omission 0.93,
-transposition 0.93, repetition 0.90. **Caveat:** W is compared here on the TEST sessions. Every α
+Cold start levels off by W = 30. At 250 sessions F1 is still rising at W = 100, where healthy FPR
+is 0.11 and recall per type is substitution 0.99, abandonment 0.56, omission 0.91, transposition
+0.94, repetition 0.84. A strong population prior on non-idle transitions mostly suppresses the
+person's rare-but-healthy orders. **Caveat:** W is compared here on the TEST sessions. Every α
 and channel level is picked on validation, but W is not yet. Pick it on validation before quoting
 a W-specific number.
 

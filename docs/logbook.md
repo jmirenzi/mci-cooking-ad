@@ -5,6 +5,11 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-18 — skip-idle population prior swept to W = 100 (metric G)
+
+W = 30 / 100: 0.371 / 0.371 (10 sessions), 0.576 / 0.578 (30), 0.794 / 0.827 (250; healthy FPR
+0.11). Cold start levels off by W = 30. W was compared on test, not picked on validation yet.
+
 ## 2026-10-18 — population prior for the skip-idle channel (metric G)
 
 W population pseudo-counts per row (prior arm): W = 10 gives 0.354 / 0.561 / 0.767 F1 at 10 / 30 / 250
