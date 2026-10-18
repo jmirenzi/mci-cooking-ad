@@ -399,3 +399,45 @@ def test_step_time_scale_stretches_only_its_step():
         assert p[2:] == q[2:]                      # same tokens, same draws
         ratio = (q[1] - q[0]) / (p[1] - p[0])      # logistics follow the step that owns them
         assert ratio == pytest.approx(3.0 if owner == "2" else 1.0, rel=1e-2)  # ms rounding
+
+
+def test_no_put_back_right_after_the_recipes_own_put_and_no_fetching_dishes():
+    tags = {"nouns": {"bowl": ["container"], "pancake": ["ingredient"], "egg": ["ingredient"]}}
+    toks = [("mix", "egg"), ("put", "bowl"), ("cook", "pancake")]
+    out, _ = insert_logistics(toks, tags, 1.0, 0.0, np.random.default_rng(0))
+    assert Counter(out)[("put", "bowl")] == 1                         # the recipe's own
+    assert not any(n == "pancake" for v, n in out if v in ("take", "put"))
+    assert ("take", "egg") in out and ("put", "egg") in out
+    washed, _ = insert_logistics(toks, tags, 1.0, 1.0, np.random.default_rng(0))
+    i = washed.index(("put", "bowl"))       # washed in between, so putting it away is kept
+    assert washed[i:i + 3] == [("put", "bowl"), ("wash", "bowl"), ("put", "bowl")]
+
+
+def test_space_inserts_moves_a_same_ingredient_addition_off_its_twin():
+    from cook_ad.drift_synth.knobs import space_inserts
+    salt, lime = ("add", "salt"), ("add", "lime")
+    blocks = [["1", [("core", ("cut", "tomato"), None)], []],
+              ["2", [("core", salt, None)], [("ins", salt, "salty")]],
+              ["3", [("core", lime, None)], [("ins", lime, "sour")]],
+              ["4", [("core", ("mix", "tomato"), None)], []]]
+    space_inserts(blocks)
+    flat = [x[1] for _, core, ins in blocks for x in core + ins]
+    assert all(a != b for a, b in zip(flat, flat[1:])), flat
+    assert flat.count(salt) == 2 and flat.count(lime) == 2
+
+
+def test_back_to_back_identical_actions_are_one_event():
+    from cook_ad.drift_synth.sampler import sample_session
+    for seed in range(5):
+        s = sample_session(OMELET, ASSETS.expansions["omelet"], theta(), 1.0, ASSETS,
+                           NoiseCfg().off(), rng_for(seed, 2))
+        ev = s.meta["clean_events"]
+        assert all(a[2:4] != b[2:4] for a, b in zip(ev, ev[1:]))
+    assert s.meta["merged"] >= 1     # omelet step 2 is "cut tomato, cut tomato"
+
+
+def test_narrowed_keeps_the_mean():
+    from cook_ad.drift_synth.durations import narrowed
+    mu, sigma = narrowed(1.0, 0.8, 0.5)
+    assert sigma == pytest.approx(0.4)
+    assert math.exp(mu + sigma ** 2 / 2) == pytest.approx(math.exp(1.0 + 0.8 ** 2 / 2))

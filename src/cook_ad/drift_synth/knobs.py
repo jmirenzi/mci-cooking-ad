@@ -97,6 +97,64 @@ def apply_variants(exp, theta, knobs, rng, affinity=None, chosen_inserts=None):
     return out + inserts, applied
 
 
+def variant_layout(exp, used):
+    """The step's tokens as apply_variants built them from the applied variants `used`, with
+    provenance: [(kind, token, knob)], kind core / sub / ins / removed (removed tokens are not
+    emitted; they are kept for the record)."""
+    replaced, inserts = {}, []
+    for i in used:
+        v = exp.variants[i]
+        if v.kind in INSERT_KINDS:
+            inserts += [("ins", t, v.knob) for t in v.tokens]
+            continue
+        idx = list(v.replaces or [])
+        for j in idx:
+            replaced[j] = [("removed", exp.tokens[j], v.knob)]
+        if v.kind == "substitute" and idx:
+            replaced[idx[0]] += [("sub", t, v.knob) for t in v.tokens]
+    out = []
+    for j, tok in enumerate(exp.tokens):
+        out += replaced.get(j, [("core", tok, None)])
+    return out + inserts
+
+
+def space_inserts(blocks):
+    """blocks: [[step, [items], [insert items]]] in cooking order (items as variant_layout).
+    An addition next to the same action (more salt right after, or right before, the recipe's own
+    salt) would show as one action twice. It moves to the end of the nearest step, later ones
+    first, where neither neighbour is the same action: a second addition, later in the cook. One
+    with nowhere to go stays (the export then merges the pair)."""
+    def seq():
+        return [(b, kind, x) for b, (_, core, ins) in enumerate(blocks)
+                for kind, x in [("core", x) for x in core] + [("ins", x) for x in ins]]
+
+    def clash_at_end(tok, t):
+        f = seq()
+        upto = [i for i, (b, _, _) in enumerate(f) if b <= t]
+        before = f[upto[-1]][2][1] if upto else None
+        nxt = upto[-1] + 1 if upto else 0
+        after = f[nxt][2][1] if nxt < len(f) else None
+        return tok in (before, after)
+
+    stuck = 0
+    for _ in range(4 * sum(len(ins) for _, _, ins in blocks)):
+        f = seq()
+        bad = [i for i, (_, kind, x) in enumerate(f) if kind == "ins" and
+               ((i > 0 and f[i - 1][2][1] == x[1]) or (i + 1 < len(f) and f[i + 1][2][1] == x[1]))]
+        if len(bad) <= stuck:
+            break
+        b, _, item = f[bad[stuck]]
+        blocks[b][2].remove(item)
+        cands = list(range(b + 1, len(blocks))) + list(range(b - 1, -1, -1))
+        target = next((t for t in cands if not clash_at_end(item[1], t)), None)
+        if target is None:
+            blocks[b][2].append(item)
+            stuck += 1
+        else:
+            blocks[target][2].append(item)
+    return blocks
+
+
 # ---- ordering --------------------------------------------------------------------------------
 
 _COUNTERS = {}

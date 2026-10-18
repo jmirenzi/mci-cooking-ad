@@ -24,6 +24,7 @@ durations:
   source: epic               # cc4d_fine is not public; cc4d_step not built
   step_scale: null           # or configs/drift_synth/step_time_scale.json (CC4D step-time calibration)
   max_event_s: null          # cap on one event's duration (the calibrated variant uses 600)
+  sigma_scale: 0.5           # log-sd of every duration and gap x this, mean kept (durations.narrowed)
 
 person:
   repertoire: [6, 10]        # recipes per person, inclusive

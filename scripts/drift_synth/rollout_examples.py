@@ -40,54 +40,29 @@ def load(unreviewed):
     return a
 
 
-def labelled(exp, used):
-    """The step's tokens as apply_variants built them, with display-only removals:
-    [(kind, token, knob)], kind in core / sub / ins / removed."""
-    replaced, inserts = {}, []
-    for i in used:
-        v = exp.variants[i]
-        if v.kind == "insert":
-            inserts += [("ins", t, v.knob) for t in v.tokens]
-            continue
-        idx = list(v.replaces or [])
-        for j in idx:
-            replaced[j] = [("removed", exp.tokens[j], v.knob)]
-        if v.kind == "substitute" and idx:
-            replaced[idx[0]] += [("sub", t, v.knob) for t in v.tokens]
-    out = []
-    for j, tok in enumerate(exp.tokens):
-        out += replaced.get(j, [("core", tok, None)])
-    return out + inserts
-
-
-def render(session, assets):
-    exps = assets.expansions[session.recipe_id]
-    queues = {s: labelled(exps[s], session.meta["variants_applied"].get(s, []))
-              for s in session.meta["order"] if s in exps}
+def render(session):
+    """The clean stream with logistics in italics, additions bold, removals struck through."""
     parts, changes = [], []
-
-    def fmt(kind, tok, knob, dur=None):
-        txt = f"{tok[0]} {tok[1]}" + (f" ({dur:.0f}s)" if dur is not None else "")
-        if kind == "removed":
-            changes.append(f"−{knob} {tok[0]} {tok[1]}")
-            return f"~~{tok[0]} {tok[1]}~~ (−{knob})"
-        if kind in ("ins", "sub"):
-            changes.append(f"+{knob} {tok[0]} {tok[1]}")
-            return f"**{txt} (+{knob})**"
-        return txt
-
-    for t0, t1, verb, noun, step in session.meta["clean_events"]:
-        if step is None:
-            parts.append(f"*{verb} {noun} ({t1 - t0:.0f}s)*")
-            continue
-        q = queues[step]
-        while q and q[0][0] == "removed":
-            parts.append(fmt(*q.pop(0)))
-        kind, tok, knob = q.pop(0)
-        assert tok == (verb, noun), (session.recipe_id, step, tok, verb, noun)
-        parts.append(fmt(kind, tok, knob, t1 - t0))
-    for s, q in queues.items():           # a step whose every token was removed
-        parts += [fmt(*x) for x in q if x[0] == "removed"]
+    gone = {}
+    for step, verb, noun, knob in session.meta["removed"]:
+        gone.setdefault(step, []).append(f"~~{verb} {noun}~~ (−{knob})")
+        changes.append(f"−{knob} {verb} {noun}")
+    shown = set()
+    for (t0, t1, verb, noun, step), kind in zip(session.meta["clean_events"], session.meta["kinds"]):
+        if step is not None and step not in shown:
+            parts += gone.get(step, [])
+            shown.add(step)
+        txt = f"{verb} {noun} ({t1 - t0:.0f}s)"
+        if kind == "logistics":
+            parts.append(f"*{txt}*")
+        elif kind == "core":
+            parts.append(txt)
+        else:
+            parts.append(f"**{txt} ({kind})**")
+            changes.append(f"{kind} {verb} {noun}")
+    for step, items in gone.items():       # a step whose every token was removed
+        if step not in shown:
+            parts += items
     return parts, changes
 
 
@@ -113,7 +88,7 @@ def main():
         for k, (_, th) in PEOPLE.items():
             s = sample_session(assets.graphs[r], assets.expansions[r], th, 1.0, assets, noise,
                                rng_for(a.seed, 7, ord(k), sorted(assets.graphs).index(r)), k)
-            parts, changes = render(s, assets)
+            parts, changes = render(s)
             ev = s.meta["clean_events"]
             mins = (ev[-1][1] - ev[0][0]) / 60
             lines += [f"**{k}** — {len(ev)} events, {mins:.1f} min, step order "

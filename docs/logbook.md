@@ -5,6 +5,13 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-18 — rollout fixes: no doubled actions, no fetched dishes, narrower durations
+
+3-person rollouts (`rollout_examples.py`) had 153 back-to-back identical actions in 480 sessions
+(put-backs after the recipe's own put, same-ingredient additions, aliased sauces), `take pancake` in
+every pancake session, and 13× spreads on one person's `take banana`. Now 0 doubled actions in 1200
+sessions, 0 fetched dishes, durations log-sd × 0.5 (mean kept).
+
 ## 2026-10-17 — generator revision: 8 recipes, no healthy repeats, two-sided flavour knobs
 
 18-recipe sessions were 40 runs (Breakfast 6), 32 pairs per recipe (8), all unique; cut to 8 simple

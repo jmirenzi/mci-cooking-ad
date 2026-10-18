@@ -82,15 +82,22 @@ def fit_duration_priors(source, root, min_verb=20, min_pair=20):
     return fit_from_intervals(videos, min_verb, min_pair, source=source)
 
 
-def sample_duration(model, token, scale, rng):
-    mu, sigma = model.params(token)
+def narrowed(mu, sigma, k):
+    """Log-normal (mu, sigma) with its spread times k and the same mean. EPIC's spread mixes many
+    people, objects and kitchens; one person repeating an action varies less (k < 1)."""
+    return mu + 0.5 * sigma ** 2 * (1.0 - k ** 2), k * sigma
+
+
+def sample_duration(model, token, scale, rng, sigma_scale=1.0):
+    mu, sigma = narrowed(*model.params(token), sigma_scale)
     lo, hi = model.clip
     return float(np.clip(math.exp(mu + sigma * rng.standard_normal()) * scale, lo * scale, hi * scale))
 
 
-def sample_gap(model, scale, rng):
+def sample_gap(model, scale, rng, sigma_scale=1.0):
     zero = rng.random() < model.gap_zero
     z = rng.standard_normal()   # drawn either way: a fixed number of draws per gap
     if zero:
         return 0.0
-    return float(min(math.exp(model.gap[0] + model.gap[1] * z), model.gap_clip) * scale)
+    mu, sigma = narrowed(model.gap[0], model.gap[1], sigma_scale)
+    return float(min(math.exp(mu + sigma * z), model.gap_clip) * scale)

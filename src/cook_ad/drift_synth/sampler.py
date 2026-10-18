@@ -53,32 +53,51 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
                                        rng, preferred, habit)
 
     chosen = K.pick_inserts(expansions, theta, kn, rng, affinity)
-    tokens, steps, applied, skipped = [], [], {}, []
+    blocks, applied, skipped, removed = [], {}, [], []
     for s in order:
         exp = expansions.get(s)
         if exp is None:
             skipped.append(s)
             continue
-        toks, used = K.apply_variants(exp, theta, kn, rng, affinity, chosen.get(s, set()))
-        tokens += toks
-        steps += [s] * len(toks)
+        _, used = K.apply_variants(exp, theta, kn, rng, affinity, chosen.get(s, set()))
+        items = K.variant_layout(exp, used)
+        removed += [[s, t[0], t[1], knob] for kind, t, knob in items if kind == "removed"]
+        blocks.append([s, [x for x in items if x[0] not in ("ins", "removed")],
+                       [x for x in items if x[0] == "ins"]])
         if used:
             applied[s] = used
+    K.space_inserts(blocks)
+    tokens, steps, kinds = [], [], []
+    for s, core, ins in blocks:
+        for kind, tok, knob in core + ins:
+            tokens.append(tok)
+            steps.append(s)
+            kinds.append("core" if kind == "core" else f"+{knob}")
 
     put_p, wash_p = K.tidy_rates(theta, kn)
     with_log, prov = insert_logistics(tokens, tags, put_p, wash_p, rng, gen["logistics_verbs"])
-    it = iter(steps)
+    it, ik = iter(steps), iter(kinds)
     step_of = [next(it) if p == "core" else None for p in prov]
+    kind_of = [next(ik) if p == "core" else "logistics" for p in prov]
+    # Two identical actions back to back (two sauces that are both EPIC "sauce") are one run to a
+    # camera: emit one event. Repetitions are added after this, on purpose.
+    keep = [i for i in range(len(with_log)) if i == 0 or with_log[i] != with_log[i - 1]]
+    merged = len(with_log) - len(keep)
+    with_log = [with_log[i] for i in keep]
+    step_of = [step_of[i] for i in keep]
+    kind_of = [kind_of[i] for i in keep]
 
-    final, final_step = [], []
+    final, final_step, final_kind = [], [], []
     repeats = []   # clean-event indices that are fine_motor repetitions (ground-truth spans)
-    for tok, s in zip(with_log, step_of):
+    for tok, s, kd in zip(with_log, step_of, kind_of):
         u = rng.random()
         final.append(tok)
         final_step.append(s)
+        final_kind.append(kd)
         if u < K.repetition_prob(tok, theta, kn, tags):
             final.append(tok)
             final_step.append(s)
+            final_kind.append("repeat")
             repeats.append(len(final) - 1)
 
     slow = K.slow_multiplier(theta, kn)
@@ -86,6 +105,7 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
     # following gap times its step's scale. Absent = 1, the uncalibrated generator.
     scale = (getattr(assets, "step_scale", None) or {}).get(recipe.recipe_id, {})
     cap = (gen.get("durations") or {}).get("max_event_s")   # None = uncapped
+    k_sigma = (gen.get("durations") or {}).get("sigma_scale", 1.0)
     owner = step_owners(final_step)
     rep_next = {i - 1 for i in repeats}          # events followed by their own repeat
     rep_gap = kn["fine_motor"].get("repeat_gap_s", 0.0)
@@ -94,9 +114,9 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
     for i, tok in enumerate(final):
         m = scale.get(owner[i], scale.get("_recipe", 1.0)) if scale else 1.0
         d = sample_duration(assets.durations, tok,
-                            m * speed * slow * K.token_multiplier(tok, theta, kn, tags), rng)
+                            m * speed * slow * K.token_multiplier(tok, theta, kn, tags), rng, k_sigma)
         d = min(d, cap) if cap else d
-        gap = sample_gap(assets.durations, m * speed * slow, rng)
+        gap = sample_gap(assets.durations, m * speed * slow, rng, k_sigma)
         if i in rep_next:
             gap = max(gap, rep_gap)
         clean.append(Event(round(t, 3), round(t + d, 3), tok[0], tok[1]))
@@ -109,6 +129,7 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
         events=events, theta_day=dict(theta),
         meta={"order": order, "variants_applied": applied, "skipped_steps": skipped,
               "repetitions": len(repeats), "repeats": repeats, "speed": round(speed, 6), "noise": counts,
+              "removed": removed, "merged": merged, "kinds": final_kind,
               "clean_events": [[e.t_start, e.t_end, e.verb, e.noun, s] for e, s in zip(clean, final_step)]},
     )
 

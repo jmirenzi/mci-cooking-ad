@@ -48,12 +48,12 @@ in (§8). Open for Jack: the duration scale a, β and the day-noise σ, and whet
 | 1 graphs | load and validate task graphs; LLM labels each step prep/cook/serve/cleanup | none (LLM, cached) |
 | 2 tags | LLM proposes tags per vocab item (`sour`, `fat`, `sweet`, `salty` (salt only, by hand), `fine_motor`, `heat`, `cleaning`, `ingredient`, `tool`, `container`); Jack reviews | none |
 | 3 expansion | LLM expands each step into core tokens (pass 1), then a lower-fat variant for steps whose tokens use a fat noun (pass 2), then one call per recipe for ≤ 2 sour sites; the flavour pass adds 1–2 sweet / salty / fatty insert sites per recipe (LLM) and an omit for each core token with the knob's nouns (code); validated, retried 3×, cached | none |
-| 4 kitchen state | `take` before first use, `put` after last use, `wash`/`dry` after cleaning-relevant uses (rates from `tidy`) | seeded |
-| 5 durations | log-normal per verb, (verb, noun) backoff below 20 samples, from EPIC-100; gap distribution | seeded |
+| 4 kitchen state | `take` before first use, `put` after last use, `wash`/`dry` after cleaning-relevant uses (rates from `tidy`); never for food made in the session (`kitchen_state.PREPARED`), and no put-back straight after the recipe's own `put` | seeded |
+| 5 durations | log-normal per verb, (verb, noun) backoff below 20 samples, from EPIC-100; gap distribution; log-sd × 0.5 with the mean kept (`durations.narrowed`, `generator.yaml: durations.sigma_scale`) | seeded |
 | 6 knobs | θ ∈ [0, 1] per knob drives variants, step order, logistics and duration scales | seeded |
 | 7 nuisance | day-level θ noise (logit space), AR(1) speed, recognizer noise, recipe schedule and mix shift | seeded |
 | 8 drift | θ(day) under none / sudden / incremental / gradual / recurring | seeded |
-| 9 sample, export | one session = order → variants → logistics → repetition → durations → noise | seeded |
+| 9 sample, export | one session = order → variants (additions spaced off their twins, `knobs.space_inserts`) → logistics → back-to-back identical actions merged into one → repetition → durations → noise | seeded |
 | 10 ground truth | Monte Carlo observable statistics at θ0 and θ1; JS and W1 per recipe | seeded |
 
 **Knobs.**
@@ -82,7 +82,16 @@ insert sites picked uniformly (`knobs.pick_inserts`). Below it, each `substitute
 with P = 2(0.5 − θ). At 0.5 the recipe is cooked as written. Affinity
 (`configs/drift_synth/affinity.yaml`: rare 0.1, sometimes 0.4, common 1.0) is the chance that a
 flavour-lover (θ = 1) changes this dish in a session, so lime in hot chocolate stays possible but
-rare. Every addition is `add <ingredient>`, and so is the recipe's own salt. Removal ignores
+rare. Every addition is `add <ingredient>`, and so is the recipe's own salt. An addition that would land next to
+the same action (more salt straight after the recipe's salt) moves to the end of the nearest step
+where it does not, so it reads as a second addition, never as one action twice.
+
+**No action appears twice in a row** in a clean stream except a `fine_motor` repetition. Besides
+spacing additions: a put-back right after the recipe's own `put` of the same thing is dropped, and
+any remaining identical pair is emitted as one event (`meta.merged`; in practice the burritos'
+two sauces, which are both EPIC `sauce`, in about 57% of sessions). EPIC durations are narrowed
+(log-sd × 0.5, same mean): their spread mixes people, objects and kitchens, and at full width one
+person's `take banana` varied 13× between sessions. Removal ignores
 affinity: an ingredient the recipe has can always be left out.
 
 **Step order.** A softmax over the steps available at each point is *not* uniform over
@@ -519,9 +528,9 @@ The real data are CC4D recordings with no Order Error or Missing Step tag: 5–1
 | flavour pass and affinity | `drift_synth/expand.py:add_flavour_variants`, `flavour_sites`, `code_omits`, `propose_affinity`; `build_assets.py --stage flavour\|affinity`; `assets.load_affinity` (refuses unreviewed); `configs/drift_synth/affinity.yaml`; `runs/drift_synth/reports/flavour_review.md` |
 | assets bundle, expansion I/O | `drift_synth/assets.py:Assets`, `load_assets`, `save_expansions`, `load_expansions` |
 | person routine (habit) | `drift_synth/sampler.py:make_person` (`habit_orders`), `knobs.sample_topological_order(preferred, habit)`; `generator.yaml: person.habit` |
-| knobs: variants, step order, duration scales, repetition, tidy rates | `drift_synth/knobs.py:variant_prob`, `pick_inserts`, `apply_variants`, `sample_topological_order`, `slow_multiplier`, `token_multiplier`, `repetition_prob`, `keep_side_of_hinge`, `tidy_rates`; `configs/drift_synth/knobs.yaml` |
-| take / put / wash | `drift_synth/kitchen_state.py:insert_logistics` |
-| durations and gaps | `drift_synth/durations.py:fit_duration_priors`, `fit_from_intervals`, `sample_duration`, `sample_gap` |
+| knobs: variants, step order, duration scales, repetition, tidy rates | `drift_synth/knobs.py:variant_prob`, `pick_inserts`, `apply_variants`, `variant_layout`, `space_inserts`, `sample_topological_order`, `slow_multiplier`, `token_multiplier`, `repetition_prob`, `keep_side_of_hinge`, `tidy_rates`; `configs/drift_synth/knobs.yaml` |
+| take / put / wash | `drift_synth/kitchen_state.py:insert_logistics`, `PREPARED` |
+| durations and gaps | `drift_synth/durations.py:fit_duration_priors`, `fit_from_intervals`, `narrowed`, `sample_duration`, `sample_gap` |
 | day noise, speed, recognizer noise | `drift_synth/noise.py:theta_for_day`, `day_speed_factor`, `recognizer_noise` |
 | recipe schedule, mix shift, regimes | `drift_synth/schedule.py:recipes_for_day`, `mix_weights`, `theta_at` |
 | one session, one person | `drift_synth/sampler.py:sample_session`, `make_person`, `generate_person` |
