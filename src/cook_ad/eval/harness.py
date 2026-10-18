@@ -86,6 +86,23 @@ def hindsight_split_grid(det, trace, alphas, split=TRANSITION_CHANNELS):
     return sp[:, :, None] | rest[:, None, :]
 
 
+DURATION_CHANNELS = ("s_temporal", "s_dur_two")
+DUR_ALPHAS = [0.1, 0.05, 0.02, 0.01, 5e-3, 2e-3, 1e-3, 1e-4, 1e-7]
+
+
+def hindsight_split3_grid(det, trace, alphas, dur_alphas=DUR_ALPHAS):
+    """(T, A, A, D) bool: transition channels at alphas[i] OR emission channels at alphas[j] OR
+    the duration channels at dur_alphas[k]. A truncated or stretched run reaches only moderate
+    duration p-values, which the emission channels' strict alpha would never let through."""
+    em = [c for c in CHANNELS if c not in TRANSITION_CHANNELS + DURATION_CHANNELS]
+    per = {a: det.flags(trace, OperatingPoint(a)) for a in sorted(set(alphas) | set(dur_alphas))}
+
+    def stack(chans, grid):
+        return np.stack([np.any(np.stack([per[a][c] for c in chans]), axis=0) for a in grid], axis=1)
+    tr, emi, du = stack(TRANSITION_CHANNELS, alphas), stack(em, alphas), stack(DURATION_CHANNELS, dur_alphas)
+    return tr[:, :, None, None] | emi[:, None, :, None] | du[:, None, None, :]
+
+
 def split_op(alphas, idx, split=TRANSITION_CHANNELS):
     """The per-channel OperatingPoint at a hindsight_split_grid index."""
     a_split, a_rest = alphas[idx[0]], alphas[idx[1]]

@@ -56,6 +56,7 @@ POOL = "all"      # eval-split pools: all | real (oracle-confirmed only) | gen (
 POOL_ARMS = ("person only", "prior lambda=1")   # the arms run on the real / gen pools
 COUNT = False     # --count-channel: add detectors/count_channel.py on a third grid axis
 COUNT_LEVELS = (0.0, 0.01, 0.02, 0.05, 0.1, 0.2)   # 0 = off
+DUR_SPLIT = False  # --dur-split: duration channels on their own alpha axis (harness.DUR_ALPHAS)
 
 
 def set_variant(name):
@@ -387,16 +388,35 @@ def stage_eval_split(persons, chunk_size=8):
                     count = CountChannel.fit(det.traces(tr_trials), ignore=idle)
 
                 def grid(trials):
-                    m = []
+                    from cook_ad.eval import metric_g
+                    score = metric_g.GridScore(TICK)     # accumulated per trial: grids get large
                     for group in dict.fromkeys(g for g, _ in trials):
                         ts = [t for g, t in trials if g == group]
-                        for tr in det.traces(ts):
-                            g2 = harness.hindsight_split_grid(det, tr, harness.ALPHAS)
+                        for t_, tr in zip(ts, det.traces(ts)):
+                            if DUR_SPLIT:
+                                g2 = harness.hindsight_split3_grid(det, tr, harness.ALPHAS)
+                            else:
+                                g2 = harness.hindsight_split_grid(det, tr, harness.ALPHAS)
                             if count is not None:
-                                g2 = g2[..., None] | count.flags(tr, COUNT_LEVELS)[:, None, None, :]
-                            m.append(g2)
-                    return harness.sweep(m, trials, TICK)
+                                c_ = count.flags(tr, COUNT_LEVELS)
+                                g2 = g2[..., None] | c_.reshape((c_.shape[0],) + (1,) * (g2.ndim - 1) + (c_.shape[1],))
+                            score.add(group, g2, list(t_.spans), t_.verbs, t_.nouns)
+                    return score.result()
                 gv, gt = grid(val), grid(test)
+                if DUR_SPLIT:
+                    # the pick with the duration channels on their own alpha (and count, if on)
+                    idx = harness.pick(gv)
+                    row = harness.at(gt, idx)
+                    row.update(alpha_transition=harness.ALPHAS[idx[0]], alpha_rest=harness.ALPHAS[idx[1]],
+                               alpha_duration=harness.DUR_ALPHAS[idx[2]])
+                    if count is not None:
+                        row["count_level"] = COUNT_LEVELS[idx[3]]
+                    out[n][arm + " +dur" + (" +count" if count is not None else "")] = row
+                    print(f"{pid} N={n:3d} {arm + ' +dur':22s} a_dur={row['alpha_duration']:<6g} "
+                          f"F1={row['f1']:.3f} P={row['precision']:.3f} R={row['recall']:.3f} "
+                          f"FPR={row['healthy_trial_fpr']:.2f} per type "
+                          + " ".join(f"{k[:5]} {v:.2f}" for k, v in row["per_type"].items()), flush=True)
+                    continue    # the plain rows come from the runs without --dur-split
                 if count is not None:
                     # the pick with the count channel, then the same grid with it off (level 0)
                     idx = harness.pick(gv)
@@ -609,15 +629,19 @@ def main():
     ap.add_argument("--pool", choices=["all", "real", "gen"], default="all",
                     help="eval-split pools: the Breakfast injectors (all), only their oracle-confirmed "
                          "anomalies (real), or the step-level injectors (gen); real/gen run 2 arms")
+    ap.add_argument("--dur-split", action="store_true",
+                    help="eval-split: duration channels on their own alpha axis")
     ap.add_argument("--count-channel", action="store_true",
                     help="eval-split: also the visit-count channel (detectors/count_channel.py)")
     a = ap.parse_args()
     set_variant(a.variant)
-    global POOL, TAG, COUNT
+    global POOL, TAG, COUNT, DUR_SPLIT
     POOL = a.pool
     TAG += "" if POOL == "all" else f"_{POOL}"
     COUNT = a.count_channel
     TAG += "_count" if COUNT else ""
+    DUR_SPLIT = a.dur_split
+    TAG += "_dur" if DUR_SPLIT else ""
     persons = a.person or PERSONS
     if a.stage == "population":
         stage_population()
