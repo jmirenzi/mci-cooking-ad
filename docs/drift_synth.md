@@ -652,6 +652,12 @@ prior λ = 1, metric G (F1 / healthy-trial FPR):
 | 30 | 0.444 / 0.66 | **0.489** / 0.54 |
 | 250 | 0.727 / 0.26 | **0.732** / 0.26 |
 
+**Not tuned to its own injectors.** The same three channels (W = 3) on §9.6's pool: the tick-level
+Breakfast injectors, oracle-confirmed anomalies only. Prior λ = 1, metric G, F1 without → with:
+0.273 → 0.279 (10 sessions), 0.359 → 0.432 (30), 0.687 → **0.744** (250), with healthy FPR 0.05 →
+0.11 at 250. Omission recall 0.19 → 0.52, abandonment 0.01 → 0.44. Repetition stays at 0.05: those
+copies merge in place into one longer run.
+
 ## 10. Code
 
 | Concept | Where |
