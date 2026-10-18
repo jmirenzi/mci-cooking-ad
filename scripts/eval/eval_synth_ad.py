@@ -1,7 +1,8 @@
 """Does the HSMM anomaly detector work on the synthetic drift data (docs/drift_synth.md §10)?
 
 One normal person (seed 0, person 6; fine_motor below its repetition hinge, so no healthy
-repeats) cooks for 320 days.
+repeats) cooks for 320 days. Capability pools: slow + 0.2 / 0.4 / 0.55; fine_motor raised TO
+0.6 / 0.75 / 0.9 (6 / 15 / 24% of fine-motor actions repeated).
 The HSMM is fitted on days 0-199 only (dish preset: recipe = the CC4D recipe). Then:
 
 - injected errors: the five Breakfast injectors on held-out normal days, placed in the fitted
@@ -37,13 +38,26 @@ HABIT = 0.0         # person routine strength (configs/drift_synth/generator.yam
 CONFIG = "configs/drift_synth/hsmm.yaml"
 SEED, PERSON = 0, 6
 N_DAYS, TRAIN_END, VAL_END = 320, 200, 260
-LEVELS = (0.2, 0.4, 0.55)
+LEVELS = {"slow": ("+", (0.2, 0.4, 0.55)),          # theta0 + delta
+          "fine_motor": ("to", (0.6, 0.75, 0.9))}  # theta1 itself: healthy theta0 < 0.5 is below
+                                                    # the repetition hinge (knobs.yaml)
 KNOBS = ("slow", "fine_motor")
 TICK_S = 0.5
 
 
 def cond_name(knob, delta):
     return f"{knob}_{delta:g}"
+
+
+def levels(theta0):
+    """-> [(knob, delta, label)] for the capability pools of a person with this theta0."""
+    out = []
+    for k in KNOBS:
+        how, vals = LEVELS[k]
+        for v in vals:
+            d = round(v - theta0[k], 6) if how == "to" else v
+            out.append((k, d, f"{k} {'+' if how == '+' else 'to '}{v:g}"))
+    return out
 
 
 # ---- data --------------------------------------------------------------------------------------
@@ -58,9 +72,10 @@ def stage_data():
     assets.gen["recognizer"] = {k: (v if k == "min_event_s" else v * NOISE_SCALE)
                                 for k, v in assets.gen["recognizer"].items()}
     assets.gen["person"]["habit"] = HABIT
+    from cook_ad.drift_synth.sampler import make_person
     conds = [ConditionCfg("null", n_persons=1, n_days=N_DAYS)]
     conds += [ConditionCfg(cond_name(k, d), DriftRegime("sudden", TRAIN_END), {k: d}, n_persons=1,
-                           n_days=N_DAYS) for k in KNOBS for d in LEVELS]
+                           n_days=N_DAYS) for k, d, _ in levels(make_person(SEED, PERSON, assets).theta0)]
     for cond in conds:
         person, sessions, gt = generate_person(PERSON, cond, SEED, assets)
         for k, d in gt["delta"].items():
@@ -234,11 +249,11 @@ def stage_eval(out_path, chunk_size):
     test_null = _days(null_seqs, null_labels, VAL_END, N_DAYS)
     ids = [s["trial_id"] for s in test_null]
     cap = {"healthy (twins)": ("null", test_null)}
-    for k in KNOBS:
-        for dlt in LEVELS:
-            seqs, labels = _load(cond_name(k, dlt))
-            by_id = {s["trial_id"]: s for s in seqs}
-            cap[f"{k} +{dlt:g}"] = (cond_name(k, dlt), [by_id[i] for i in ids])
+    theta0 = json.loads((ROOT / "null" / "ground_truth.json").read_text())["theta0"]
+    for k, dlt, label in levels(theta0):
+        seqs, labels = _load(cond_name(k, dlt))
+        by_id = {s["trial_id"]: s for s in seqs}
+        cap[label] = (cond_name(k, dlt), [by_id[i] for i in ids])
     rec = dish(test_null)
     cap_rows = {}
     for arm in detectors:

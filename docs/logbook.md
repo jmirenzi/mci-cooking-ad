@@ -5,6 +5,12 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-18 — overnight rerun on the revised generator started
+
+`overnight_v2.sh`: all 37 conditions, sanity plots, synthetic AD eval (noise on/off), calibrated prior
+experiment. fine_motor pools now target θ 0.6 / 0.75 / 0.9 (0.6 / 1.1 / 1.7 repeats per session);
++0.2 / 0.4 from a healthy θ0 would have stayed below the hinge. 18-recipe outputs archived.
+
 ## 2026-10-18 — take/put/wash no longer stretch with the CC4D step scale
 
 Logistics inherited their step's scale (a `take salt` next to a 14× step lasted 36 s). Now they keep

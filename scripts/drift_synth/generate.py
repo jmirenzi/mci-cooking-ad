@@ -30,7 +30,8 @@ def conditions(path):
         out[name] = make(name, c["regime"], c["moving"], c.get("mix_shift", False))
     for knob in cfg["knobs"]:
         for regime in cfg["regimes"]:
-            out[f"{knob}_{regime}"] = make(f"{knob}_{regime}", regime, {knob: d["delta"]})
+            delta = (d.get("delta_by_knob") or {}).get(knob, d["delta"])
+            out[f"{knob}_{regime}"] = make(f"{knob}_{regime}", regime, {knob: delta})
     for knob in cfg["sweep"]["knobs"]:
         for delta in cfg["sweep"]["deltas"]:
             name = f"{knob}_sweep_{delta:g}"

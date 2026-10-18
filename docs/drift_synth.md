@@ -14,7 +14,7 @@ under `dataset/processed/drift_synth/` (about 22k sessions, 470 MB, 70 s), and t
 in (§8). Open for Jack: the duration scale a, β and the day-noise σ, and whether to lengthen waits
 (sessions run 2.8 min against CC4D's 15.7). No detector has been run on the data.
 
-**Revision (2026-10-17), not yet regenerated** (§§5–9 below describe the 18-recipe generator):
+**Revision (2026-10-17/18), regenerating overnight 2026-10-18** (`scripts/drift_synth/overnight_v2.sh`; §§5–9 below still describe the 18-recipe generator, whose outputs are archived under `dataset/processed/archive_18recipes/` and `runs/drift_synth/archive_18recipes/`):
 - **8 recipes, not 18** (`recipes.yaml`): ≤ 14 steps, ≤ 10^2.5 orders, ≤ a third of tokens aliased.
   The 18-recipe sessions were 6× Breakfast's length (40 runs against 6), with 32 distinct pairs per
   recipe against 8, and no two sessions alike.
@@ -194,7 +194,7 @@ The full report is `runs/drift_synth/reports/precheck.md`, written by `scripts/d
 into 37 conditions (31 before the 2026-10-17 knob revision) × 3 seeds × 8 persons × 70 days, with onset at day 28 and ramps of 21 days:
 
 - `null` and `mix_shift_only`;
-- every knob × {sudden, incremental, gradual}, with |Δθ| = 0.4;
+- every knob × {sudden, incremental, gradual}, with |Δθ| = 0.4 (`fine_motor` + 0.6, so every healthy θ0 < 0.4 ends above its 0.5 repetition hinge);
 - `pref_plus_capability` (sour and slow together);
 - `sour` and `slow` sweeps at |Δθ| ∈ {0.05, 0.1, 0.2, 0.3, 0.45}, sudden.
 
@@ -543,6 +543,7 @@ The real data are CC4D recordings with no Order Error or Missing Step tag: 5–1
 | sanity plots | `scripts/drift_synth/sanity_plots.py` |
 | example rollouts (hand-set people × every recipe, for reading) | `scripts/drift_synth/rollout_examples.py` → `runs/drift_synth/reports/rollout_examples.md` |
 | global prior + fine-tune (§9.2) | `hsmm/train/global_prior.py:count_global`, `apply_global_prior` (fixed or fading: `person_counts`, `n0`), `state_pairs`; `eval_synth_prior.py --stage eval-split`; `scripts/eval/eval_synth_prior.py`; `harness.hindsight_split_grid`, `split_op` |
+| overnight rerun of everything on the revised generator | `scripts/drift_synth/overnight_v2.sh` |
 | CC4D calibration (§9.3) | `scripts/drift_synth/calibrate_cc4d.py` (`--write-scales`); `sampler.step_owners`; `assets.load_step_scale`; `configs/drift_synth/step_time_scale.json`; `scripts/drift_synth/overnight_cal.sh` |
-| anomaly detector on synthetic pools (§9) | `scripts/eval/eval_synth_ad.py` (`--train-days`, `--habit`, `--noise-scale`); `configs/drift_synth/hsmm.yaml`; repetition spans from `sampler.sample_session` (`meta.repeats`); `export.step_labels` |
+| anomaly detector on synthetic pools (§9) | `scripts/eval/eval_synth_ad.py` (`--train-days`, `--habit`, `--noise-scale`; `levels`: slow + Δ, fine_motor raised to 0.6 / 0.75 / 0.9); `configs/drift_synth/hsmm.yaml`; repetition spans from `sampler.sample_session` (`meta.repeats`); `export.step_labels` |
 | tests | `tests/test_drift_synth_graphs.py`, `tests/test_drift_synth_generator.py`, `tests/test_drift_synth_expand.py`, `tests/_drift_fixtures.py` |
