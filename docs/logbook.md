@@ -5,6 +5,13 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-18 — diagnosis: two thirds of structural injections are not anomalies
+
+Oracle against 3,400 extra healthy sessions per person: only 34% of abandonment/omission/
+transposition/repetition injections are outside healthy behaviour (gaps and take/put/wash are hit
+uniformly; repetitions merge in place). HSMM hits 9–69% of the real ones; omissions need counting
+(74% count-only). NB durations: right width, fat left tail. `diagnose_synth_injections.py`, §9.5.
+
 ## 2026-10-18 — calibrated prior experiment on the revised generator (metric G)
 
 Mean F1 person only → prior (split α) at 10 / 30 / 250 sessions: 0.161 → 0.180, 0.210 → 0.228,

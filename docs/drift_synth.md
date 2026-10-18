@@ -536,6 +536,32 @@ with §9.3.
 - Recall at 250 sessions (prior): substitution 0.97, transposition 0.24, omission 0.09, abandonment 0.04, repetition 0.04. Removing healthy repeats did not make injected repetitions visible.
 - The 30-session gain shrank (+0.12 → +0.02), while cold start (10) and 250 improved for both arms. Fading again ties the fixed prior.
 
+### 9.5 Why structural errors are missed: most are not errors
+
+`scripts/eval/diagnose_synth_injections.py` rebuilds each person's test pool (calibrated, N = 250,
+prior λ = 1, the operating point §9.4 picked) and asks of every injected trial: is it outside what
+this person ever does? The reference is ~3,400 more healthy sessions of the same person (days the
+pool never saw). Three oracles: a run bigram never seen; a per-recipe run count outside its healthy
+range; a run duration outside the healthy 0.2–99.8% range. "Hit" = an HSMM alarm in the span or
+≤ 10 ticks after it (close to metric G recall).
+
+**All 4 persons, 75 test trials each per type:**
+
+| type | target is a gap | target is take/put/wash | truly anomalous | HSMM hit | hit, anomalous only | hit, not anomalous |
+|---|---|---|---|---|---|---|
+| substitution | 0.35 | 0.30 | 1.00 | 0.97 | 0.97 | — |
+| abandonment | 0.30 | 0.31 | 0.39 | 0.04 | 0.09 | 0.01 |
+| omission | 0.40 | 0.27 | 0.40 | 0.09 | 0.19 | 0.02 |
+| transposition | 0.73* | 0.63* | 0.36 | 0.25 | 0.69 | 0.00 |
+| repetition | 0.35 | 0.35 | 0.20 | 0.04 | 0.13 | 0.02 |
+
+\* either of the two swapped segments.
+
+- **Two thirds of the structural injections are not anomalies.** The injectors (built for Breakfast, whose segments are steps) pick a segment of the model's segmentation uniformly. Here 30–40% are idle gaps: removing, shortening, copying or moving a pause is normal. Another ~30% are take/put/wash: put-backs are optional (`tidy`), and a 2-tick fetch cannot be visibly truncated. A repetition copies its segment in place, so the copy merges into one longer run, and only 20% leave the healthy duration range.
+- **Where they are anomalous, a first-order model cannot see most omissions.** 82% of omitted recipe actions are anomalous, but only 21% leave an unseen bigram. 74% are visible only by counting (an action that is always there is missing). The HSMM catches 17%.
+- **Durations are not too smooth overall but have fat left tails** (`scripts/eval/diagnose_synth_durations.py`, p00). The fitted negative binomial matches each cell's spread (sd ratio median 1.00, p90 1.34). But it puts a median 9.8% of mass below the cell's empirical 1% point (3.6% for recipe actions; 41% for 2-tick take/put/wash). So a run cut to 12.5% of its median reaches P ≤ 0.001 in only 56% of recipe-action cells and in no logistics or gap cell.
+- **Transposition and substitution work** where the error is real (0.69, 0.97).
+
 ## 10. Code
 
 | Concept | Where |
@@ -565,6 +591,7 @@ with §9.3.
 | example rollouts (hand-set people × every recipe, for reading) | `scripts/drift_synth/rollout_examples.py` → `runs/drift_synth/reports/rollout_examples.md` |
 | global prior + fine-tune (§9.2) | `hsmm/train/global_prior.py:count_global`, `apply_global_prior` (fixed or fading: `person_counts`, `n0`), `state_pairs`; `eval_synth_prior.py --stage eval-split`; `scripts/eval/eval_synth_prior.py`; `harness.hindsight_split_grid`, `split_op` |
 | overnight rerun of everything on the revised generator | `scripts/drift_synth/overnight_v2.sh` |
+| injection and duration diagnostics (§9.5) | `scripts/eval/diagnose_synth_injections.py`, `scripts/eval/diagnose_synth_durations.py` |
 | CC4D calibration (§9.3) | `scripts/drift_synth/calibrate_cc4d.py` (`--write-scales`); `sampler.step_owners`; `assets.load_step_scale`; `configs/drift_synth/step_time_scale.json`; `scripts/drift_synth/overnight_cal.sh` |
 | anomaly detector on synthetic pools (§9) | `scripts/eval/eval_synth_ad.py` (`--train-days`, `--habit`, `--noise-scale`; injected errors only by default, `--capability-pools` adds the trait-change pools, `levels`: slow + Δ, fine_motor raised to 0.6 / 0.75 / 0.9); `configs/drift_synth/hsmm.yaml`; repetition spans from `sampler.sample_session` (`meta.repeats`); `export.step_labels` |
 | tests | `tests/test_drift_synth_graphs.py`, `tests/test_drift_synth_generator.py`, `tests/test_drift_synth_expand.py`, `tests/_drift_fixtures.py` |
