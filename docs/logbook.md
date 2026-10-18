@@ -5,6 +5,12 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-18 — calibrated prior experiment on the revised generator (metric G)
+
+Mean F1 person only → prior (split α) at 10 / 30 / 250 sessions: 0.161 → 0.180, 0.210 → 0.228,
+0.362 → 0.393 (healthy FPR 0.35 → 0.12 at 250). Old generator: 0.117 → 0.147, 0.185 → 0.301,
+0.353 → 0.373. Injected repetition recall still 0.04–0.08. docs/drift_synth.md §9.4.
+
 ## 2026-10-18 — overnight rerun on the revised generator started
 
 `overnight_v2.sh`: all 37 conditions, sanity plots, synthetic AD eval (noise on/off), calibrated prior

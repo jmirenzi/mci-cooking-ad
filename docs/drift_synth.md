@@ -515,6 +515,27 @@ The real data are CC4D recordings with no Order Error or Missing Step tag: 5–1
   iterations (20 against 60) and the split unit all changed. Alarms per 10 minutes fall mainly
   because calibrated sessions are about 5 times longer.
 
+### 9.4 Rerun on the revised generator (2026-10-18)
+
+The same calibrated experiment (`overnight_v2.sh` → `overnight_cal.sh`, 2 h) on the 8-recipe
+generator: no healthy repeats, two-sided flavour knobs with affinity, narrower durations,
+unscaled logistics. Same protocol, but new people and recipes, so it is not paired cell for cell
+with §9.3.
+
+**Mean over the 4 persons, Hindsight, test sessions 325–399, metric G (F1 / healthy-trial FPR), split α:**
+
+| train sessions | person only | prior λ = 1 | fade (λ₀ 10, n₀ 3) | §9.3 person only → prior |
+|---|---|---|---|---|
+| 10 | 0.161 / 0.98 | **0.180** / 0.80 | **0.180** / 0.84 | 0.117 → 0.147 |
+| 30 | 0.210 / 0.80 | **0.228** / 0.69 | 0.223 / 0.70 | 0.185 → 0.301 |
+| 250 | 0.362 / 0.35 | 0.393 / 0.12 | **0.398** / 0.12 | 0.353 → 0.373 |
+
+![revised-generator split-alpha curves](figures/drift_synth_prior_split_curves_cal_v2.png)
+
+- The prior still wins on average at every size, and at 250 sessions for every person (+0.01 to +0.05). At 10 and 30 sessions it loses for one person each (p01 at 10, p00 and p03 at 30).
+- Recall at 250 sessions (prior): substitution 0.97, transposition 0.24, omission 0.09, abandonment 0.04, repetition 0.04. Removing healthy repeats did not make injected repetitions visible.
+- The 30-session gain shrank (+0.12 → +0.02), while cold start (10) and 250 improved for both arms. Fading again ties the fixed prior.
+
 ## 10. Code
 
 | Concept | Where |
