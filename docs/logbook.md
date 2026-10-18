@@ -5,6 +5,12 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-18 — population prior for the skip-idle channel (metric G)
+
+W population pseudo-counts per row (prior arm): W = 10 gives 0.354 / 0.561 / 0.767 F1 at 10 / 30 / 250
+sessions (healthy FPR 0.80 / 0.36 / 0.20), against 0.292 / 0.444 / 0.727 without. On the re-scored
+Breakfast-injector pool the channels also help: 0.687 -> 0.744 at 250. `--struct-prior`, §9.7.
+
 ## 2026-10-18 — step-level injectors; idle-skipping, count and empirical-duration channels (metric G)
 
 Step-level pools (`inject.py`): the HSMM alone scores 0.409 at 250 sessions (transposition 0.08,
