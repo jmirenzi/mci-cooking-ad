@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from scipy.stats import chi2, chisquare, ks_2samp, norm
 
-from _drift_fixtures import OMELET, SALAD, TAGS, VOCAB, theta, toy_assets
+from _drift_fixtures import OMELET, SALAD, TAGS, VOCAB, V, theta, toy_assets
 from cook_ad.drift_synth import ground_truth as GT
 from cook_ad.drift_synth.durations import fit_from_intervals
 from cook_ad.drift_synth.export import export, to_ticks
@@ -262,6 +262,21 @@ def test_affinity_scales_inserts_only():
     assert rate(theta(sour=1.0), {"sour": 0.1}, ("pour", "vinegar")) == pytest.approx(0.1, abs=0.02)
     assert rate(theta(sour=0.75), {"sour": 1.0}, ("pour", "vinegar")) == pytest.approx(0.5, abs=0.03)
     assert rate(theta(fatty=0.0), {"fatty": 0.1}, ("pour", "oil")) == 0.0   # the omit ignores it
+
+
+def test_flavour_insert_is_one_draw_per_recipe():
+    """Two sour sites: the dish gets sour at most once a session, with P = 2 (theta - 0.5) * affinity."""
+    from cook_ad.drift_synth.knobs import pick_inserts
+    from cook_ad.drift_synth.types import StepExpansion
+    exps = {"1": StepExpansion("1", [("cut", "tomato")], [V("sour", "insert", "1", [("add", "lemon")], None)]),
+            "2": StepExpansion("2", [("mix", "tomato")], [V("sour", "insert", "2", [("add", "vinegar")], None)])}
+    rng = np.random.default_rng(0)
+    picks = [pick_inserts(exps, theta(sour=0.75), ASSETS.knobs, rng, {"sour": 0.4}) for _ in range(5000)]
+    n_sites = [sum(len(v) for v in p.values()) for p in picks]
+    assert max(n_sites) == 1
+    assert np.mean(n_sites) == pytest.approx(0.2, abs=0.02)
+    assert np.mean([("1" in p) for p in picks if p]) == pytest.approx(0.5, abs=0.05)
+    assert pick_inserts(exps, theta(sour=0.4), ASSETS.knobs, rng, {"sour": 1.0}) == {}
 
 
 def test_healthy_fine_motor_never_repeats():

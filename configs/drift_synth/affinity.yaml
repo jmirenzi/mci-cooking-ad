@@ -2,7 +2,7 @@
 # --stage affinity). P(flavour insert) = 2 (theta - 0.5) * affinity. Levels: rare 0.1,
 # sometimes 0.4, common 1.0. Edit the numbers, then set reviewed: true; the generator
 # refuses this file until then.
-reviewed: false
+reviewed: true
 affinity:
   tomatomozzarellasalad:
     sour: 0.4   # sometimes: Tomatoes benefit from a touch of acidity, but it's not standard for this simple salad. Balsamic glaze is common, but lemon/lime/vinegar are less so.
@@ -20,7 +20,7 @@ affinity:
     salty: 1.0   # common: Salt is a common seasoning for pasta-like dishes, and zoodles are no exception. The recipe already includes salt.
     fatty: 0.4   # sometimes: Butter and parmesan are already in the recipe, and zoodles benefit from a little fat to coat them. Adding more is plausible, but not essential.
   microwavefrenchtoast:
-    sour: 0.1   # rare: French toast is usually served with something tart like fruit, but adding lemon/lime/vinegar directly to the egg mixture is unusual.
+    sour: 0.01   # rare: French toast is usually served with something tart like fruit, but adding lemon/lime/vinegar directly to the egg mixture is unusual.
     sweet: 0.4   # sometimes: Syrup is a very common topping for French toast, and sugar/syrup in the egg mixture itself is plausible to enhance sweetness.
     salty: 1.0   # common: A tiny pinch of salt in the egg mixture is common practice to balance the sweetness and enhance flavour, but excessive salt would be odd.
     fatty: 0.4   # sometimes: Butter is *already* in the recipe, and French toast is often cooked in butter. Adding extra fat (cheese, cream, oil) is plausible but not standard.
@@ -30,7 +30,7 @@ affinity:
     salty: 1.0   # common: Eggs and cheese benefit from salt, and it's a standard addition to breakfast foods.
     fatty: 0.4   # sometimes: Cheese is already present, and breakfast burritos often include fat like bacon or avocado. Adding more (butter, cream) isn't typical but not unheard of.
   spicedhotchocolate:
-    sour: 0.1   # rare: Hot chocolate is sweet, but adding sourness is very unusual and clashes with the flavour profile.
+    sour: 0.01   # rare: Hot chocolate is sweet, but adding sourness is very unusual and clashes with the flavour profile.
     sweet: 0.4   # sometimes: Sugar is already in the recipe, and hot chocolate is generally a sweet drink. Adding more is plausible, but not essential.
     salty: 0.1   # rare: A tiny pinch of salt can enhance chocolate flavour, but it's not a common addition to hot chocolate.
     fatty: 0.4   # sometimes: Adding cream or butter to hot chocolate is a common way to make it richer and more decadent.
@@ -40,7 +40,7 @@ affinity:
     salty: 1.0   # common: Cheese and pimiento are savory, salt is a common addition to enhance flavor.
     fatty: 0.4   # sometimes: Butter and cheese are already present, adding more fat (like extra cheese or cream) is plausible for richness.
   blenderbananapancakes:
-    sour: 0.1   # rare: Pancakes are generally sweet, so sour additions are unusual, but a squeeze of lemon *could* brighten the strawberries.
+    sour: 0.01   # rare: Pancakes are generally sweet, so sour additions are unusual, but a squeeze of lemon *could* brighten the strawberries.
     sweet: 1.0   # common: Maple syrup is already used, and pancakes are a classic sweet dish. Adding extra sugar or syrup is very common.
     salty: 0.4   # sometimes: A tiny pinch of salt in pancake batter is common to enhance the sweetness, but adding more is unusual.
     fatty: 0.4   # sometimes: Butter is already used in the recipe, and pancakes benefit from fat for texture and flavour. Adding more (cheese, cream) is plausible but not standard.

@@ -41,18 +41,44 @@ def variant_prob(knob, kind, theta, knobs, affinity=None):
     return 0.0
 
 
-def apply_variants(exp, theta, knobs, rng, affinity=None):
-    """One step's tokens after its knob variants. Each variant is drawn independently with
-    P = variant_prob (affinity: this recipe's {knob: affinity}, None = 1). Substitute/omit act
-    on base-token indices; a variant whose indices another applied variant already took is
-    skipped. Inserts go after the step's last token. Returns (tokens, [applied variant indices]).
+def pick_inserts(expansions, theta, knobs, rng, affinity=None):
+    """The session's flavour additions, decided once per recipe: for each flavour knob, with
+    P = variant_prob(insert) the dish gets that flavour added, at ONE of its insert sites picked
+    uniformly. So affinity is the chance a flavour-lover (theta = 1) changes this dish in a session,
+    whatever the number of sites. -> {step_id: {variant index}}. Two draws per knob, always."""
+    from cook_ad.drift_synth.graphs import _id_key
+    sites = {}
+    for sid in sorted(expansions, key=_id_key):
+        for i, v in enumerate(expansions[sid].variants):
+            if v.kind in INSERT_KINDS:
+                sites.setdefault(v.knob, []).append((sid, i))
+    chosen = {}
+    for knob in FLAVOUR:
+        u, pick = rng.random(), rng.random()
+        opts = sites.get(knob, [])
+        if opts and u < variant_prob(knob, "insert", theta, knobs, affinity):
+            sid, i = opts[int(pick * len(opts))]
+            chosen.setdefault(sid, set()).add(i)
+    return chosen
+
+
+def apply_variants(exp, theta, knobs, rng, affinity=None, chosen_inserts=None):
+    """One step's tokens after its knob variants. Each substitute/omit is drawn independently
+    with P = variant_prob. Inserts: the ones in `chosen_inserts` (this step's share of
+    pick_inserts); None = each insert drawn on its own with P = variant_prob (affinity: this
+    recipe's {knob: affinity}, None = 1). Substitute/omit act on base-token indices; a variant
+    whose indices another applied variant already took is skipped. Inserts go after the step's
+    last token. Returns (tokens, [applied variant indices]).
     """
     replaced = {}      # base index -> replacement tokens ([] for omit)
     inserts = []
     applied = []
     for i, v in enumerate(exp.variants):
         draw = rng.random()  # always drawn, so later draws do not depend on which knobs moved
-        if draw >= variant_prob(v.knob, v.kind, theta, knobs, affinity):
+        if v.kind in INSERT_KINDS and chosen_inserts is not None:
+            if i not in chosen_inserts:
+                continue
+        elif draw >= variant_prob(v.knob, v.kind, theta, knobs, affinity):
             continue
         if v.kind == "insert":
             inserts.extend(v.tokens)

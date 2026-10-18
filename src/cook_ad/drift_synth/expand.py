@@ -32,6 +32,7 @@ VARIANT_KNOBS = {           # knob -> (allowed kinds, the noun tag its tokens mu
     "fatty": (("insert", "substitute", "omit"), "fat"),
 }
 AFFINITY_LEVELS = {"rare": 0.1, "sometimes": 0.4, "common": 1.0}
+FLAVOUR_VERB = "add"        # the verb of every flavour addition, and of the recipe's own salt
 # A pair with one of these verbs moves an ingredient, so its noun must be one (not the pan).
 ADDING_VERBS = ("add", "pour", "sprinkle", "squeeze", "season", "scoop")
 # Ingredient nouns a step may use without the recipe naming them: generic stuff and the dish
@@ -402,7 +403,12 @@ def add_flavour_variants(recipe, expansions, knobs, vocab, tags, llm_cfg):
     rename = {"calorie_conscious": "fatty"}
     out = {}
     for k, e in expansions.items():
-        keep = [Variant(rename.get(v.knob, v.knob), v.kind, v.anchor_step, v.tokens, v.replaces)
+        # Every flavour addition is "add <ingredient>" (Jack, 2026-10-17), the recipe's own salt too.
+        e = StepExpansion(e.step_id, [(FLAVOUR_VERB, n) if n == "salt" else (v, n) for v, n in e.tokens],
+                          e.variants)
+        keep = [Variant(rename.get(v.knob, v.knob), v.kind, v.anchor_step,
+                        [(FLAVOUR_VERB, n) for _, n in v.tokens] if v.kind == "insert" else v.tokens,
+                        v.replaces)
                 for v in e.variants]
         keep = [v for v in keep if (v.knob, v.kind) in
                 {("sour", "insert"), ("fatty", "substitute"), ("fatty", "omit")}]
@@ -417,6 +423,7 @@ def add_flavour_variants(recipe, expansions, knobs, vocab, tags, llm_cfg):
             failures[knob] = hist
         for k, var in (sites or {}).items():
             e = out[k]
+            var = Variant(var.knob, var.kind, var.anchor_step, [(FLAVOUR_VERB, n) for _, n in var.tokens], None)
             out[k] = StepExpansion(e.step_id, e.tokens, e.variants + [var])
     return out, failures
 

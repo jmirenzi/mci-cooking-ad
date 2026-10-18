@@ -76,11 +76,13 @@ P = 0.6·max(0, θ − 0.5), after a pause of at least 2 s, and day noise never 
 0.5, so a healthy person (θ0 < 0.5) never repeats. `mise_en_place` uses β = 4. A capability
 knob's high θ is the impaired end.
 
-**Flavour knobs are two-sided around θ = 0.5** (`knobs.variant_prob`). Above it, each of the knob's
-`insert` variants applies with P = 2(θ − 0.5)·affinity[recipe][knob]; below it, each `substitute`
-or `omit` applies with P = 2(0.5 − θ); at 0.5 the recipe is cooked as written. Affinity
-(`configs/drift_synth/affinity.yaml`: rare 0.1, sometimes 0.4, common 1.0) says how natural the
-addition is for the dish, so lime in hot chocolate stays possible but rare. Removal ignores
+**Flavour knobs are two-sided around θ = 0.5** (`knobs.variant_prob`). Above it, the dish gets the
+flavour added with P = 2(θ − 0.5)·affinity[recipe][knob], once per session, at one of its 1–2
+insert sites picked uniformly (`knobs.pick_inserts`). Below it, each `substitute` or `omit` applies
+with P = 2(0.5 − θ). At 0.5 the recipe is cooked as written. Affinity
+(`configs/drift_synth/affinity.yaml`: rare 0.1, sometimes 0.4, common 1.0) is the chance that a
+flavour-lover (θ = 1) changes this dish in a session, so lime in hot chocolate stays possible but
+rare. Every addition is `add <ingredient>`, and so is the recipe's own salt. Removal ignores
 affinity: an ingredient the recipe has can always be left out.
 
 **Step order.** A softmax over the steps available at each point is *not* uniform over
@@ -517,7 +519,7 @@ The real data are CC4D recordings with no Order Error or Missing Step tag: 5–1
 | flavour pass and affinity | `drift_synth/expand.py:add_flavour_variants`, `flavour_sites`, `code_omits`, `propose_affinity`; `build_assets.py --stage flavour\|affinity`; `assets.load_affinity` (refuses unreviewed); `configs/drift_synth/affinity.yaml`; `runs/drift_synth/reports/flavour_review.md` |
 | assets bundle, expansion I/O | `drift_synth/assets.py:Assets`, `load_assets`, `save_expansions`, `load_expansions` |
 | person routine (habit) | `drift_synth/sampler.py:make_person` (`habit_orders`), `knobs.sample_topological_order(preferred, habit)`; `generator.yaml: person.habit` |
-| knobs: variants, step order, duration scales, repetition, tidy rates | `drift_synth/knobs.py:variant_prob`, `apply_variants`, `sample_topological_order`, `slow_multiplier`, `token_multiplier`, `repetition_prob`, `keep_side_of_hinge`, `tidy_rates`; `configs/drift_synth/knobs.yaml` |
+| knobs: variants, step order, duration scales, repetition, tidy rates | `drift_synth/knobs.py:variant_prob`, `pick_inserts`, `apply_variants`, `sample_topological_order`, `slow_multiplier`, `token_multiplier`, `repetition_prob`, `keep_side_of_hinge`, `tidy_rates`; `configs/drift_synth/knobs.yaml` |
 | take / put / wash | `drift_synth/kitchen_state.py:insert_logistics` |
 | durations and gaps | `drift_synth/durations.py:fit_duration_priors`, `fit_from_intervals`, `sample_duration`, `sample_gap` |
 | day noise, speed, recognizer noise | `drift_synth/noise.py:theta_for_day`, `day_speed_factor`, `recognizer_noise` |
@@ -529,6 +531,7 @@ The real data are CC4D recordings with no Order Error or Missing Step tag: 5–1
 | offline assets (stages 1–3) | `scripts/drift_synth/build_assets.py --stage phases\|tags\|expansions\|flavour\|affinity` |
 | generation (stages 4–9) | `scripts/drift_synth/generate.py`; `configs/drift_synth/generator.yaml`, `conditions.yaml` |
 | sanity plots | `scripts/drift_synth/sanity_plots.py` |
+| example rollouts (hand-set people × every recipe, for reading) | `scripts/drift_synth/rollout_examples.py` → `runs/drift_synth/reports/rollout_examples.md` |
 | global prior + fine-tune (§9.2) | `hsmm/train/global_prior.py:count_global`, `apply_global_prior` (fixed or fading: `person_counts`, `n0`), `state_pairs`; `eval_synth_prior.py --stage eval-split`; `scripts/eval/eval_synth_prior.py`; `harness.hindsight_split_grid`, `split_op` |
 | CC4D calibration (§9.3) | `scripts/drift_synth/calibrate_cc4d.py` (`--write-scales`); `sampler.step_owners`; `assets.load_step_scale`; `configs/drift_synth/step_time_scale.json`; `scripts/drift_synth/overnight_cal.sh` |
 | anomaly detector on synthetic pools (§9) | `scripts/eval/eval_synth_ad.py` (`--train-days`, `--habit`, `--noise-scale`); `configs/drift_synth/hsmm.yaml`; repetition spans from `sampler.sample_session` (`meta.repeats`); `export.step_labels` |

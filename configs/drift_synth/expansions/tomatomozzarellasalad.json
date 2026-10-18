@@ -40,7 +40,7 @@
     "anchor_step": "3",
     "tokens": [
      [
-      "pour",
+      "add",
       "syrup"
      ]
     ],
@@ -52,7 +52,7 @@
     "anchor_step": "3",
     "tokens": [
      [
-      "pour",
+      "add",
       "oil"
      ]
     ],
@@ -72,8 +72,8 @@
  "5": {
   "tokens": [
    [
-    "season",
-    "tomato"
+    "add",
+    "salt"
    ]
   ],
   "variants": [
@@ -83,11 +83,20 @@
     "anchor_step": "5",
     "tokens": [
      [
-      "squeeze",
+      "add",
       "lemon"
      ]
     ],
     "replaces": null
+   },
+   {
+    "knob": "salty",
+    "kind": "omit",
+    "anchor_step": "5",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
    },
    {
     "knob": "sweet",
@@ -107,7 +116,7 @@
     "anchor_step": "5",
     "tokens": [
      [
-      "season",
+      "add",
       "salt"
      ]
     ],
@@ -138,7 +147,7 @@
     "anchor_step": "6",
     "tokens": [
      [
-      "sprinkle",
+      "add",
       "cheese"
      ]
     ],
@@ -169,7 +178,7 @@
     "anchor_step": "8",
     "tokens": [
      [
-      "season",
+      "add",
       "salt"
      ]
     ],

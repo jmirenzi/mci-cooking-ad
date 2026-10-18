@@ -52,13 +52,14 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
     order = K.sample_topological_order(recipe, theta["mise_en_place"], kn["mise_en_place"]["beta"],
                                        rng, preferred, habit)
 
+    chosen = K.pick_inserts(expansions, theta, kn, rng, affinity)
     tokens, steps, applied, skipped = [], [], {}, []
     for s in order:
         exp = expansions.get(s)
         if exp is None:
             skipped.append(s)
             continue
-        toks, used = K.apply_variants(exp, theta, kn, rng, affinity)
+        toks, used = K.apply_variants(exp, theta, kn, rng, affinity, chosen.get(s, set()))
         tokens += toks
         steps += [s] * len(toks)
         if used:
