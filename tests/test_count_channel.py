@@ -25,3 +25,12 @@ def test_missing_state_is_flagged_where_it_belonged_and_an_extra_visit_too():
 def test_an_unknown_recipe_says_nothing():
     ch = CountChannel.fit([_tr([1, 2])], ignore=())
     assert not ch.flags(_tr([5, 6], r=3), [0.5]).any()
+
+
+def test_skip_idle_sees_through_gaps():
+    from cook_ad.detectors.skip_idle import SkipIdleTransitions
+    train = [_tr([1, 9, 2, 9, 3, 9, 4]) for _ in range(50)]
+    ch = SkipIdleTransitions.fit(train, ignore={9})
+    assert not ch.flags(_tr([1, 9, 2, 9, 3, 9, 4]), [0.02]).any()
+    rep = ch.flags(_tr([1, 9, 2, 9, 3, 9, 2, 9, 4]), [0.02])     # 2 again after 3, through idle
+    assert np.flatnonzero(rep[:, 0]).tolist() == [18, 24]        # 3 -> 2 and 2 -> 4

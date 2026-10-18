@@ -54,8 +54,8 @@ TAG = ""          # results-file suffix
 VARIANT = "base"
 POOL = "all"      # eval-split pools: all | real (oracle-confirmed only) | gen (step-level injectors)
 POOL_ARMS = ("person only", "prior lambda=1")   # the arms run on the real / gen pools
-COUNT = False     # --count-channel: add detectors/count_channel.py on a third grid axis
-COUNT_LEVELS = (0.0, 0.01, 0.02, 0.05, 0.1, 0.2)   # 0 = off
+STRUCT = set()    # --count-channel / --skip-idle: structural channels on one more grid axis
+COUNT_LEVELS = (0.0, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1)   # their shared p levels; 0 = off
 DUR_SPLIT = False  # --dur-split: duration channels on their own alpha axis (harness.DUR_ALPHAS)
 
 
@@ -376,16 +376,19 @@ def stage_eval_split(persons, chunk_size=8):
                 det = HindsightHSMMDetector(hsmm, bad, OperatingPoint(0.005), chunk_size=chunk_size)
 
                 count = None
-                if COUNT:
+                if STRUCT:
                     from cook_ad.core import Trial
                     from cook_ad.detectors.count_channel import CountChannel
+                    from cook_ad.detectors.skip_idle import SkipIdleTransitions
                     vocab_ = json.loads((d / "null" / "vocab.json").read_text())
                     idle = set(np.flatnonzero(np.argmax(np.asarray(hsmm.tables.log_emit_v), axis=-1)
                                               == vocab_["verbs"]["stall"]).tolist())
                     tr_dish = recipe_label_assignment(train, labels)[0]
                     tr_trials = [Trial(s_["trial_id"], np.asarray(s_["verb_ids"]), np.asarray(s_["noun_ids"]),
                                        int(r_), (), "healthy") for s_, r_ in zip(train, tr_dish)]
-                    count = CountChannel.fit(det.traces(tr_trials), ignore=idle)
+                    tr_traces = det.traces(tr_trials)
+                    count = [{"count": CountChannel, "skip": SkipIdleTransitions}[c].fit(tr_traces, ignore=idle)
+                             for c in sorted(STRUCT)]
 
                 def grid(trials):
                     from cook_ad.eval import metric_g
@@ -398,7 +401,7 @@ def stage_eval_split(persons, chunk_size=8):
                             else:
                                 g2 = harness.hindsight_split_grid(det, tr, harness.ALPHAS)
                             if count is not None:
-                                c_ = count.flags(tr, COUNT_LEVELS)
+                                c_ = np.any(np.stack([c.flags(tr, COUNT_LEVELS) for c in count]), axis=0)
                                 g2 = g2[..., None] | c_.reshape((c_.shape[0],) + (1,) * (g2.ndim - 1) + (c_.shape[1],))
                             score.add(group, g2, list(t_.spans), t_.verbs, t_.nouns)
                     return score.result()
@@ -411,7 +414,7 @@ def stage_eval_split(persons, chunk_size=8):
                                alpha_duration=harness.DUR_ALPHAS[idx[2]])
                     if count is not None:
                         row["count_level"] = COUNT_LEVELS[idx[3]]
-                    out[n][arm + " +dur" + (" +count" if count is not None else "")] = row
+                    out[n][arm + " +dur" + ("".join(f" +{c}" for c in sorted(STRUCT)))] = row
                     print(f"{pid} N={n:3d} {arm + ' +dur':22s} a_dur={row['alpha_duration']:<6g} "
                           f"F1={row['f1']:.3f} P={row['precision']:.3f} R={row['recall']:.3f} "
                           f"FPR={row['healthy_trial_fpr']:.2f} per type "
@@ -423,12 +426,12 @@ def stage_eval_split(persons, chunk_size=8):
                     row = harness.at(gt, idx)
                     row.update(alpha_transition=harness.ALPHAS[idx[0]], alpha_rest=harness.ALPHAS[idx[1]],
                                count_level=COUNT_LEVELS[idx[2]])
-                    out[n][arm + " +count"] = row
+                    out[n][arm + "".join(f" +{c}" for c in sorted(STRUCT))] = row
                     gv = {k: (np.asarray(v)[..., 0] if k != "per_type_recall" else
                               {t: np.asarray(x)[..., 0] for t, x in v.items()}) for k, v in gv.items()}
                     gt = {k: (np.asarray(v)[..., 0] if k != "per_type_recall" else
                               {t: np.asarray(x)[..., 0] for t, x in v.items()}) for k, v in gt.items()}
-                    print(f"{pid} N={n:3d} {arm + ' +count':22s} level={row['count_level']:<5g} "
+                    print(f"{pid} N={n:3d} {arm + ' +struct':22s} level={row['count_level']:<5g} "
                           f"F1={row['f1']:.3f} P={row['precision']:.3f} R={row['recall']:.3f} "
                           f"FPR={row['healthy_trial_fpr']:.2f} per type "
                           + " ".join(f"{k[:5]} {v:.2f}" for k, v in row["per_type"].items()), flush=True)
@@ -631,15 +634,17 @@ def main():
                          "anomalies (real), or the step-level injectors (gen); real/gen run 2 arms")
     ap.add_argument("--dur-split", action="store_true",
                     help="eval-split: duration channels on their own alpha axis")
+    ap.add_argument("--skip-idle", action="store_true",
+                    help="eval-split: also the idle-skipping transition channel (detectors/skip_idle.py)")
     ap.add_argument("--count-channel", action="store_true",
                     help="eval-split: also the visit-count channel (detectors/count_channel.py)")
     a = ap.parse_args()
     set_variant(a.variant)
-    global POOL, TAG, COUNT, DUR_SPLIT
+    global POOL, TAG, STRUCT, DUR_SPLIT
     POOL = a.pool
     TAG += "" if POOL == "all" else f"_{POOL}"
-    COUNT = a.count_channel
-    TAG += "_count" if COUNT else ""
+    STRUCT = ({"count"} if a.count_channel else set()) | ({"skip"} if a.skip_idle else set())
+    TAG += "".join(f"_{c}" for c in sorted(STRUCT))
     DUR_SPLIT = a.dur_split
     TAG += "_dur" if DUR_SPLIT else ""
     persons = a.person or PERSONS

@@ -32,7 +32,8 @@ def test_each_error_is_what_it_says(seed):
     rng = np.random.default_rng(seed)
 
     ev, marked = inject("omission", sess, OMELET, rng)
-    assert len(ev) < len(items) and len(marked) == 1
+    assert len(ev) < len(items) and {m[1] for m in marked} == {1}
+    assert [m[0] for m in marked] == list(range(marked[0][0], marked[-1][0] + 1))   # one stretch
 
     ev, marked = inject("repetition", sess, OMELET, rng)
     assert len(ev) > len(items)
@@ -59,8 +60,9 @@ def test_transposition_breaks_a_precedence():
         sess = _session(seed)
         out = transposition(items_from_session(sess), sess["meta"]["order"], OMELET,
                             np.random.default_rng(seed))
-        b = next(it.step for it in out if it.mark == 1)
-        a = next(it.step for it in out if it.mark == 2)
+        b = next(it.step for it in out if it.mark == 1 and it.step is not None)
+        a = next(it.step for it in out if it.mark == 2 and it.step is not None)
+        assert all(it.step is None for it in out if it.mark and it.step not in (a, b))
         assert a in par[b]                                     # a is required before b ...
         first = {}
         for k, it in enumerate(out):

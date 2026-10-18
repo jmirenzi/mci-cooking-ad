@@ -17,11 +17,12 @@ the gap after it; later events shift in time, no gap is created or removed.
                  recipe
 
 `inject` returns the edited events and the anomalous events, or None when the session has no
-valid place for that error. Each span is ONE event, where the error starts (the successor of an
-omitted step; the first action of the moved step and of the step it jumped; the first action of
-the repeat; the cut action; the substituted action), as the tick injectors' one-segment spans:
-metric G counts a span found from its start to DEADLINE ticks after its end, so a whole-step span
-would be far easier to hit.
+valid place for that error. A span runs from where the stream first breaks to the first action
+of the step concerned, never further (the successor of an omitted step, from the omitted step's
+place; the moved step's fetches to its first action, and the jumped step's fetches to its first
+action; the repeat's first action; the cut action; the substituted action), as the tick
+injectors' one-segment spans: metric G counts a span found from its start to DEADLINE ticks after
+its end, so a whole-step span would be far easier to hit.
 """
 from dataclasses import dataclass
 
@@ -87,6 +88,21 @@ def _copy(it, **kw):
     return Item(**d)
 
 
+def _with_logistics(items, first, last):
+    """[lo, hi]: the actions first..last widened by the take/put/wash right before and after."""
+    lo, hi = first, last
+    while lo > 0 and items[lo - 1].step is None:
+        lo -= 1
+    while hi + 1 < len(items) and items[hi + 1].step is None:
+        hi += 1
+    return lo, hi
+
+
+def _mark(items, lo, hi, span_id):
+    for it in items[lo:hi + 1]:
+        it.mark = span_id
+
+
 def omission(items, order, graph, rng, **_):
     blocks = _blocks(items, order)
     steps = list(blocks)[:-1]                       # the last step has no successor to point at
@@ -97,7 +113,8 @@ def omission(items, order, graph, rng, **_):
     out = [_copy(it) for i, it in enumerate(items) if i not in drop]
     nxt = min(blocks[list(blocks)[list(blocks).index(s) + 1]])     # the successor step's first action
     succ = nxt - sum(1 for j in drop if j < nxt)
-    out[succ].mark = 1                              # the step that now runs in its place
+    # the span runs from where the step was (its fetches, a gap) to the step that now follows
+    _mark(out, min(drop), succ, 1)
     return out
 
 
@@ -110,15 +127,17 @@ def transposition(items, order, graph, rng, **_):
     if not pairs:
         return None
     a, b = pairs[int(rng.integers(len(pairs)))]
-    moved = [_copy(items[i]) for i in blocks[b]]
-    moved[0].mark = 1                               # B begins where A was required
+    # b moves with its own fetches and put-backs, to before a's fetches
+    b_lo, b_hi = _with_logistics(items, min(blocks[b]), max(blocks[b]))
+    a_lo, _ = _with_logistics(items, min(blocks[a]), max(blocks[a]))
+    moved = [_copy(it) for it in items[b_lo:b_hi + 1]]
+    _mark(moved, 0, min(blocks[b]) - b_lo, 1)       # B begins where A was required
     moved[-1].gap = max(moved[-1].gap, MIN_GAP_S)
-    rest = [_copy(it) for i, it in enumerate(items) if i not in set(blocks[b])]
-    a_first = min(blocks[a]) - sum(1 for j in blocks[b] if j < min(blocks[a]))
-    rest[a_first].mark = 2                          # A begins after B
-    if a_first > 0:
-        rest[a_first - 1].gap = max(rest[a_first - 1].gap, MIN_GAP_S)
-    return rest[:a_first] + moved + rest[a_first:]
+    rest = [_copy(it) for it in items[:b_lo] + items[b_hi + 1:]]
+    _mark(rest, a_lo, min(blocks[a]), 2)            # ... and A begins after it
+    if a_lo > 0:
+        rest[a_lo - 1].gap = max(rest[a_lo - 1].gap, MIN_GAP_S)
+    return rest[:a_lo] + moved + rest[a_lo:]
 
 
 def repetition(items, order, graph, rng, **_):
