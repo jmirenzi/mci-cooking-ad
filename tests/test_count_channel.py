@@ -34,3 +34,14 @@ def test_skip_idle_sees_through_gaps():
     assert not ch.flags(_tr([1, 9, 2, 9, 3, 9, 4]), [0.02]).any()
     rep = ch.flags(_tr([1, 9, 2, 9, 3, 9, 2, 9, 4]), [0.02])     # 2 again after 3, through idle
     assert np.flatnonzero(rep[:, 0]).tolist() == [18, 24]        # 3 -> 2 and 2 -> 4
+
+
+def test_empirical_short_duration():
+    from cook_ad.detectors.empirical_duration import EmpiricalShortDuration
+    rng = np.random.default_rng(0)
+    train = [SimpleNamespace(r_hat=0, segments=[(1, int(rng.integers(18, 23))), (9, 2), (2, 5)])
+             for _ in range(100)]
+    ch = EmpiricalShortDuration.fit(train, ignore={9})
+    ok = ch.flags(SimpleNamespace(r_hat=0, segments=[(1, 20), (9, 2), (2, 5)]), [0.02])
+    cut = ch.flags(SimpleNamespace(r_hat=0, segments=[(1, 3), (9, 2), (2, 5)]), [0.02])
+    assert not ok.any() and np.flatnonzero(cut[:, 0]).tolist() == [2]

@@ -57,6 +57,8 @@ POOL_ARMS = ("person only", "prior lambda=1")   # the arms run on the real / gen
 STRUCT = set()    # --count-channel / --skip-idle: structural channels on one more grid axis
 COUNT_LEVELS = (0.0, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1)   # their shared p levels; 0 = off
 DUR_SPLIT = False  # --dur-split: duration channels on their own alpha axis (harness.DUR_ALPHAS)
+EMP_DUR = False    # --emp-dur: detectors/empirical_duration.py on its own axis
+EMP_LEVELS = (0.0, 0.002, 0.005, 0.01, 0.02)
 
 
 def set_variant(name):
@@ -375,10 +377,11 @@ def stage_eval_split(persons, chunk_size=8):
                 bad = BadSets(hsmm, harness.ALPHAS)
                 det = HindsightHSMMDetector(hsmm, bad, OperatingPoint(0.005), chunk_size=chunk_size)
 
-                count = None
-                if STRUCT:
+                axes = []           # [(name, [channels], levels)]: one more grid axis each
+                if STRUCT or EMP_DUR:
                     from cook_ad.core import Trial
                     from cook_ad.detectors.count_channel import CountChannel
+                    from cook_ad.detectors.empirical_duration import EmpiricalShortDuration
                     from cook_ad.detectors.skip_idle import SkipIdleTransitions
                     vocab_ = json.loads((d / "null" / "vocab.json").read_text())
                     idle = set(np.flatnonzero(np.argmax(np.asarray(hsmm.tables.log_emit_v), axis=-1)
@@ -387,8 +390,11 @@ def stage_eval_split(persons, chunk_size=8):
                     tr_trials = [Trial(s_["trial_id"], np.asarray(s_["verb_ids"]), np.asarray(s_["noun_ids"]),
                                        int(r_), (), "healthy") for s_, r_ in zip(train, tr_dish)]
                     tr_traces = det.traces(tr_trials)
-                    count = [{"count": CountChannel, "skip": SkipIdleTransitions}[c].fit(tr_traces, ignore=idle)
-                             for c in sorted(STRUCT)]
+                    if STRUCT:
+                        axes.append(("struct", [{"count": CountChannel, "skip": SkipIdleTransitions}[c].fit(
+                            tr_traces, ignore=idle) for c in sorted(STRUCT)], COUNT_LEVELS))
+                    if EMP_DUR:
+                        axes.append(("empdur", [EmpiricalShortDuration.fit(tr_traces, ignore=idle)], EMP_LEVELS))
 
                 def grid(trials):
                     from cook_ad.eval import metric_g
@@ -400,41 +406,33 @@ def stage_eval_split(persons, chunk_size=8):
                                 g2 = harness.hindsight_split3_grid(det, tr, harness.ALPHAS)
                             else:
                                 g2 = harness.hindsight_split_grid(det, tr, harness.ALPHAS)
-                            if count is not None:
-                                c_ = np.any(np.stack([c.flags(tr, COUNT_LEVELS) for c in count]), axis=0)
+                            for _, chans, lv in axes:
+                                c_ = np.any(np.stack([c.flags(tr, lv) for c in chans]), axis=0)
                                 g2 = g2[..., None] | c_.reshape((c_.shape[0],) + (1,) * (g2.ndim - 1) + (c_.shape[1],))
                             score.add(group, g2, list(t_.spans), t_.verbs, t_.nouns)
                     return score.result()
                 gv, gt = grid(val), grid(test)
-                if DUR_SPLIT:
-                    # the pick with the duration channels on their own alpha (and count, if on)
+                if DUR_SPLIT or axes:
+                    # one pick over every axis; the plain rows come from runs without these options
                     idx = harness.pick(gv)
                     row = harness.at(gt, idx)
-                    row.update(alpha_transition=harness.ALPHAS[idx[0]], alpha_rest=harness.ALPHAS[idx[1]],
-                               alpha_duration=harness.DUR_ALPHAS[idx[2]])
-                    if count is not None:
-                        row["count_level"] = COUNT_LEVELS[idx[3]]
-                    out[n][arm + " +dur" + ("".join(f" +{c}" for c in sorted(STRUCT)))] = row
-                    print(f"{pid} N={n:3d} {arm + ' +dur':22s} a_dur={row['alpha_duration']:<6g} "
-                          f"F1={row['f1']:.3f} P={row['precision']:.3f} R={row['recall']:.3f} "
-                          f"FPR={row['healthy_trial_fpr']:.2f} per type "
-                          + " ".join(f"{k[:5]} {v:.2f}" for k, v in row["per_type"].items()), flush=True)
-                    continue    # the plain rows come from the runs without --dur-split
-                if count is not None:
-                    # the pick with the count channel, then the same grid with it off (level 0)
-                    idx = harness.pick(gv)
-                    row = harness.at(gt, idx)
-                    row.update(alpha_transition=harness.ALPHAS[idx[0]], alpha_rest=harness.ALPHAS[idx[1]],
-                               count_level=COUNT_LEVELS[idx[2]])
-                    out[n][arm + "".join(f" +{c}" for c in sorted(STRUCT))] = row
-                    gv = {k: (np.asarray(v)[..., 0] if k != "per_type_recall" else
-                              {t: np.asarray(x)[..., 0] for t, x in v.items()}) for k, v in gv.items()}
-                    gt = {k: (np.asarray(v)[..., 0] if k != "per_type_recall" else
-                              {t: np.asarray(x)[..., 0] for t, x in v.items()}) for k, v in gt.items()}
-                    print(f"{pid} N={n:3d} {arm + ' +struct':22s} level={row['count_level']:<5g} "
-                          f"F1={row['f1']:.3f} P={row['precision']:.3f} R={row['recall']:.3f} "
-                          f"FPR={row['healthy_trial_fpr']:.2f} per type "
-                          + " ".join(f"{k[:5]} {v:.2f}" for k, v in row["per_type"].items()), flush=True)
+                    row.update(alpha_transition=harness.ALPHAS[idx[0]], alpha_rest=harness.ALPHAS[idx[1]])
+                    k = 2
+                    if DUR_SPLIT:
+                        row["alpha_duration"] = harness.DUR_ALPHAS[idx[2]]
+                        k = 3
+                    for name, _, lv in axes:
+                        row[f"{name}_level"] = lv[idx[k]]
+                        k += 1
+                    label = arm + (" +dur" if DUR_SPLIT else "") + "".join(f" +{c}" for c in sorted(STRUCT)) \
+                        + (" +empdur" if EMP_DUR else "")
+                    out[n][label] = row
+                    print(f"{pid} N={n:3d} {label:34s} F1={row['f1']:.3f} P={row['precision']:.3f} "
+                          f"R={row['recall']:.3f} FPR={row['healthy_trial_fpr']:.2f} levels "
+                          + " ".join(f"{k_}={v}" for k_, v in row.items() if k_.endswith(("_level", "alpha_duration")))
+                          + " | per type " + " ".join(f"{k_[:5]} {v:.2f}" for k_, v in row["per_type"].items()),
+                          flush=True)
+                    continue
                 idx = harness.pick(gv)
                 row = harness.at(gt, idx)
                 row["alpha_transition"] = harness.ALPHAS[idx[0]]
@@ -634,19 +632,23 @@ def main():
                          "anomalies (real), or the step-level injectors (gen); real/gen run 2 arms")
     ap.add_argument("--dur-split", action="store_true",
                     help="eval-split: duration channels on their own alpha axis")
+    ap.add_argument("--emp-dur", action="store_true",
+                    help="eval-split: also the empirical short-duration channel, on its own axis")
     ap.add_argument("--skip-idle", action="store_true",
                     help="eval-split: also the idle-skipping transition channel (detectors/skip_idle.py)")
     ap.add_argument("--count-channel", action="store_true",
                     help="eval-split: also the visit-count channel (detectors/count_channel.py)")
     a = ap.parse_args()
     set_variant(a.variant)
-    global POOL, TAG, STRUCT, DUR_SPLIT
+    global POOL, TAG, STRUCT, DUR_SPLIT, EMP_DUR
     POOL = a.pool
     TAG += "" if POOL == "all" else f"_{POOL}"
     STRUCT = ({"count"} if a.count_channel else set()) | ({"skip"} if a.skip_idle else set())
     TAG += "".join(f"_{c}" for c in sorted(STRUCT))
     DUR_SPLIT = a.dur_split
     TAG += "_dur" if DUR_SPLIT else ""
+    EMP_DUR = a.emp_dur
+    TAG += "_empdur" if EMP_DUR else ""
     persons = a.person or PERSONS
     if a.stage == "population":
         stage_population()
