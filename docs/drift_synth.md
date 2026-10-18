@@ -641,6 +641,17 @@ can decline them.
 (The HSMM's abandonment recall falls with the channels on because validation then picks stricter
 HSMM α values. The empirical duration channel brings it back.)
 
+**Population prior for the skip-idle channel** (`--struct-prior W`, prior λ = 1 arm only). The
+60-person population's non-idle bigrams are mapped onto the person's states
+(`skip_idle.population_prior`) and added as W pseudo-observations per row. All three channels on,
+prior λ = 1, metric G (F1 / healthy-trial FPR):
+
+| train sessions | W = 0 | W = 3 |
+|---|---|---|
+| 10 | 0.292 / 0.94 | **0.328** / 0.87 |
+| 30 | 0.444 / 0.66 | **0.489** / 0.54 |
+| 250 | 0.727 / 0.26 | **0.732** / 0.26 |
+
 ## 10. Code
 
 | Concept | Where |
