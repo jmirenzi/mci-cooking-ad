@@ -1,14 +1,15 @@
 """Does the HSMM anomaly detector work on the synthetic drift data (docs/drift_synth.md §10)?
 
 One normal person (seed 0, person 6; fine_motor below its repetition hinge, so no healthy
-repeats) cooks for 320 days. Capability pools: slow + 0.2 / 0.4 / 0.55; fine_motor raised TO
-0.6 / 0.75 / 0.9 (6 / 15 / 24% of fine-motor actions repeated).
+repeats) cooks for 320 days. Capability pools (opt-in): slow + 0.2 / 0.4 / 0.55; fine_motor
+raised TO 0.6 / 0.75 / 0.9 (6 / 15 / 24% of fine-motor actions repeated).
 The HSMM is fitted on days 0-199 only (dish preset: recipe = the CC4D recipe). Then:
 
 - injected errors: the five Breakfast injectors on held-out normal days, placed in the fitted
   model's segmentation (docs/data.md §6). Operating points picked on days 200-259 by best G-F1,
   reported on days 260-319, metric G.
-- slow / fine_motor: the SAME held-out days re-sampled with that capability knob raised by delta
+- (only with --capability-pools; off by default, the anomalies scored are the injected errors)
+  slow / fine_motor: the SAME held-out days re-sampled with that capability knob raised by delta
   (common random numbers: each anomalous trial has a normal twin that differs only in theta).
   slow has no span (the whole trial is slower), so it is scored by alarm rate against the twins;
   fine_motor's repetitions are logged by the generator and scored as metric G spans.
@@ -42,6 +43,7 @@ LEVELS = {"slow": ("+", (0.2, 0.4, 0.55)),          # theta0 + delta
           "fine_motor": ("to", (0.6, 0.75, 0.9))}  # theta1 itself: healthy theta0 < 0.5 is below
                                                     # the repetition hinge (knobs.yaml)
 KNOBS = ("slow", "fine_motor")
+CAPABILITY_POOLS = False   # --capability-pools: also score trait-change pools (slow, fine_motor)
 TICK_S = 0.5
 
 
@@ -74,7 +76,7 @@ def stage_data():
     assets.gen["person"]["habit"] = HABIT
     from cook_ad.drift_synth.sampler import make_person
     conds = [ConditionCfg("null", n_persons=1, n_days=N_DAYS)]
-    conds += [ConditionCfg(cond_name(k, d), DriftRegime("sudden", TRAIN_END), {k: d}, n_persons=1,
+    conds += [] if not CAPABILITY_POOLS else [ConditionCfg(cond_name(k, d), DriftRegime("sudden", TRAIN_END), {k: d}, n_persons=1,
                            n_days=N_DAYS) for k, d, _ in levels(make_person(SEED, PERSON, assets).theta0)]
     for cond in conds:
         person, sessions, gt = generate_person(PERSON, cond, SEED, assets)
@@ -245,63 +247,66 @@ def stage_eval(out_path, chunk_size):
     harness.table(rows, f"Synthetic person p06 (train days {TRAIN_END}, habit {HABIT:g}, noise x{NOISE_SCALE:g}), injected errors, test days {VAL_END}-{N_DAYS - 1} "
                         f"({len(streams['healthy'])} trials per group)")
 
-    # 3. capability pools vs their normal twins (the same test days)
-    test_null = _days(null_seqs, null_labels, VAL_END, N_DAYS)
-    ids = [s["trial_id"] for s in test_null]
-    cap = {"healthy (twins)": ("null", test_null)}
-    theta0 = json.loads((ROOT / "null" / "ground_truth.json").read_text())["theta0"]
-    for k, dlt, label in levels(theta0):
-        seqs, labels = _load(cond_name(k, dlt))
-        by_id = {s["trial_id"]: s for s in seqs}
-        cap[label] = (cond_name(k, dlt), [by_id[i] for i in ids])
-    rec = dish(test_null)
+    # 3. (opt-in, --capability-pools) capability pools vs their normal twins (same test days).
+    # Off by default: the anomalies scored are the injected errors only (Jack, 2026-10-18).
     cap_rows = {}
-    for arm in detectors:
-        twin_alarms, twin_trials, twin_masks = None, None, None
-        for name, (cond, seqs) in cap.items():
-            group = "healthy" if name.startswith("healthy") else name
-            trials = [(group, Trial(f"{cond}/{s['trial_id']}", np.asarray(s["verb_ids"]),
-                                    np.asarray(s["noun_ids"]), int(r),
-                                    tuple(repeat_spans(cond, s["trial_id"], len(s["verb_ids"])))
-                                    if cond.startswith("fine_motor") else (), group))
-                      for s, r in zip(seqs, rec)]
-            dets = detect(arm, trials)
-            masks = [harness.alarm_mask(d, len(t.verbs)) for d, (_, t) in zip(dets, trials)]
-            # metric G's alarm: the first flag inside a run, so count flagged runs per trial
-            n_alarms = np.array([_flagged_runs(m, t) for m, (_, t) in zip(masks, trials)])
-            minutes = sum(len(t.verbs) for _, t in trials) * TICK_S / 60
-            chans = {}
-            for d in dets:
-                for a in d.alarms:
-                    chans[a.channel] = chans.get(a.channel, 0) + 1
-            row = {"trials": len(trials), "alarms_per_10min": float(n_alarms.sum() / minutes * 10),
-                   "trials_with_alarm": float(np.mean(n_alarms > 0)),
-                   "mean_minutes": float(minutes / len(trials)), "channels": chans}
-            if twin_alarms is None:
-                twin_alarms, twin_trials, twin_masks = n_alarms, trials, masks
-            else:
-                row["more_alarms_than_twin"] = float(np.mean(n_alarms > twin_alarms))
-                row["fewer_alarms_than_twin"] = float(np.mean(n_alarms < twin_alarms))
-                row["delta_alarms_per_trial"] = float(np.mean(n_alarms - twin_alarms))
-            if cond.startswith("fine_motor"):
-                # metric G needs the healthy group: score the twins and this pool together
-                g = harness.score_masks(twin_masks + masks, twin_trials + trials, TICK_S)
-                row["repeat_spans"] = int(sum(len(t.spans) for _, t in trials))
-                row["repeat_recall_G"] = g["recall"]
-            cap_rows[f"{arm} | {name}"] = row
+    if CAPABILITY_POOLS:
+        # 3. capability pools vs their normal twins (the same test days)
+        test_null = _days(null_seqs, null_labels, VAL_END, N_DAYS)
+        ids = [s["trial_id"] for s in test_null]
+        cap = {"healthy (twins)": ("null", test_null)}
+        theta0 = json.loads((ROOT / "null" / "ground_truth.json").read_text())["theta0"]
+        for k, dlt, label in levels(theta0):
+            seqs, labels = _load(cond_name(k, dlt))
+            by_id = {s["trial_id"]: s for s in seqs}
+            cap[label] = (cond_name(k, dlt), [by_id[i] for i in ids])
+        rec = dish(test_null)
+        for arm in detectors:
+            twin_alarms, twin_trials, twin_masks = None, None, None
+            for name, (cond, seqs) in cap.items():
+                group = "healthy" if name.startswith("healthy") else name
+                trials = [(group, Trial(f"{cond}/{s['trial_id']}", np.asarray(s["verb_ids"]),
+                                        np.asarray(s["noun_ids"]), int(r),
+                                        tuple(repeat_spans(cond, s["trial_id"], len(s["verb_ids"])))
+                                        if cond.startswith("fine_motor") else (), group))
+                          for s, r in zip(seqs, rec)]
+                dets = detect(arm, trials)
+                masks = [harness.alarm_mask(d, len(t.verbs)) for d, (_, t) in zip(dets, trials)]
+                # metric G's alarm: the first flag inside a run, so count flagged runs per trial
+                n_alarms = np.array([_flagged_runs(m, t) for m, (_, t) in zip(masks, trials)])
+                minutes = sum(len(t.verbs) for _, t in trials) * TICK_S / 60
+                chans = {}
+                for d in dets:
+                    for a in d.alarms:
+                        chans[a.channel] = chans.get(a.channel, 0) + 1
+                row = {"trials": len(trials), "alarms_per_10min": float(n_alarms.sum() / minutes * 10),
+                       "trials_with_alarm": float(np.mean(n_alarms > 0)),
+                       "mean_minutes": float(minutes / len(trials)), "channels": chans}
+                if twin_alarms is None:
+                    twin_alarms, twin_trials, twin_masks = n_alarms, trials, masks
+                else:
+                    row["more_alarms_than_twin"] = float(np.mean(n_alarms > twin_alarms))
+                    row["fewer_alarms_than_twin"] = float(np.mean(n_alarms < twin_alarms))
+                    row["delta_alarms_per_trial"] = float(np.mean(n_alarms - twin_alarms))
+                if cond.startswith("fine_motor"):
+                    # metric G needs the healthy group: score the twins and this pool together
+                    g = harness.score_masks(twin_masks + masks, twin_trials + trials, TICK_S)
+                    row["repeat_spans"] = int(sum(len(t.spans) for _, t in trials))
+                    row["repeat_recall_G"] = g["recall"]
+                cap_rows[f"{arm} | {name}"] = row
 
-    print(f"\n### Capability pools vs their normal twins, test days {VAL_END}-{N_DAYS - 1} "
-          f"(metric G alarm-rate columns; repetition recall is metric G)\n")
-    print("| arm, pool | trials | min / trial | alarms / 10 min | trials with alarm | more alarms than twin "
-          "| fewer | Δ alarms / trial | repetition spans | repetition recall (G) | top channels (raw flags) |")
-    print("|---|---|---|---|---|---|---|---|---|---|---|")
-    for k, r in cap_rows.items():
-        top = ", ".join(f"{c} {n}" for c, n in sorted(r["channels"].items(), key=lambda x: -x[1])[:3])
-        print(f"| {k} | {r['trials']} | {r['mean_minutes']:.1f} | {r['alarms_per_10min']:.2f} | "
-              f"{r['trials_with_alarm']:.2f} | {r.get('more_alarms_than_twin', float('nan')):.2f} | "
-              f"{r.get('fewer_alarms_than_twin', float('nan')):.2f} | "
-              f"{r.get('delta_alarms_per_trial', float('nan')):+.2f} | {r.get('repeat_spans', '')} | "
-              f"{r.get('repeat_recall_G', float('nan')):.2f} | {top} |")
+        print(f"\n### Capability pools vs their normal twins, test days {VAL_END}-{N_DAYS - 1} "
+              f"(metric G alarm-rate columns; repetition recall is metric G)\n")
+        print("| arm, pool | trials | min / trial | alarms / 10 min | trials with alarm | more alarms than twin "
+              "| fewer | Δ alarms / trial | repetition spans | repetition recall (G) | top channels (raw flags) |")
+        print("|---|---|---|---|---|---|---|---|---|---|---|")
+        for k, r in cap_rows.items():
+            top = ", ".join(f"{c} {n}" for c, n in sorted(r["channels"].items(), key=lambda x: -x[1])[:3])
+            print(f"| {k} | {r['trials']} | {r['mean_minutes']:.1f} | {r['alarms_per_10min']:.2f} | "
+                  f"{r['trials_with_alarm']:.2f} | {r.get('more_alarms_than_twin', float('nan')):.2f} | "
+                  f"{r.get('fewer_alarms_than_twin', float('nan')):.2f} | "
+                  f"{r.get('delta_alarms_per_trial', float('nan')):+.2f} | {r.get('repeat_spans', '')} | "
+                  f"{r.get('repeat_recall_G', float('nan')):.2f} | {top} |")
 
     harness.dump(out_path, {"metric": "G", "metric_g_definition": dict(metric_g.METRIC_G),
                             "person": {"seed": SEED, "person": PERSON, "habit": HABIT,
@@ -325,8 +330,11 @@ def main():
     ap.add_argument("--train-days", type=int, default=200, help="val and test are 60 days each after")
     ap.add_argument("--habit", type=float, default=0.0)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--capability-pools", action="store_true",
+                    help="also generate and score the slow / fine_motor trait-change pools")
     a = ap.parse_args()
-    global ROOT, NOISE_SCALE, HABIT, TRAIN_END, VAL_END, N_DAYS
+    global ROOT, NOISE_SCALE, HABIT, TRAIN_END, VAL_END, N_DAYS, CAPABILITY_POOLS
+    CAPABILITY_POOLS = a.capability_pools
     NOISE_SCALE = a.noise_scale if a.noise_scale is not None else (1.0 if a.noise == "on" else 0.0)
     HABIT = a.habit
     TRAIN_END, VAL_END, N_DAYS = a.train_days, a.train_days + 60, a.train_days + 120

@@ -10,6 +10,7 @@ and are recoverable at the git tag `pre-restructure`.
 `overnight_v2.sh`: all 37 conditions, sanity plots, synthetic AD eval (noise on/off), calibrated prior
 experiment. fine_motor pools now target θ 0.6 / 0.75 / 0.9 (0.6 / 1.1 / 1.7 repeats per session);
 +0.2 / 0.4 from a healthy θ0 would have stayed below the hinge. 18-recipe outputs archived.
+Then made opt-in (`--capability-pools`): for now the AD eval scores injected errors only (Jack).
 
 ## 2026-10-18 — take/put/wash no longer stretch with the CC4D step scale
 
