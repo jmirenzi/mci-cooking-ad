@@ -5,6 +5,12 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-18 — re-scored on oracle-confirmed anomalies (metric G)
+
+Same models, non-anomalous injections dropped from val and test: F1 at 250 sessions 0.393 -> 0.687
+(prior), healthy FPR 0.05. Transposition recall 0.67; omission 0.19, abandonment 0.01, repetition
+0.05 stay low. `eval_synth_prior.py --pool real`, drift_synth.md §9.6.
+
 ## 2026-10-18 — diagnosis: two thirds of structural injections are not anomalies
 
 Oracle against 3,400 extra healthy sessions per person: only 34% of abandonment/omission/

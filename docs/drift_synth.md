@@ -562,6 +562,29 @@ range; a run duration outside the healthy 0.2–99.8% range. "Hit" = an HSMM ala
 - **Durations are not too smooth overall but have fat left tails** (`scripts/eval/diagnose_synth_durations.py`, p00). The fitted negative binomial matches each cell's spread (sd ratio median 1.00, p90 1.34). But it puts a median 9.8% of mass below the cell's empirical 1% point (3.6% for recipe actions; 41% for 2-tick take/put/wash). So a run cut to 12.5% of its median reaches P ≤ 0.001 in only 56% of recipe-action cells and in no logistics or gap cell.
 - **Transposition and substitution work** where the error is real (0.69, 0.97).
 
+### 9.6 Re-scored on real anomalies only
+
+The §9.4 models and protocol, with every injected trial the §9.5 oracle (local checks) does not
+confirm dropped from both validation (where α is picked) and test
+(`eval_synth_prior.py --variant cal --pool real`). Structural groups shrink to 11–33 trials per
+person and split, substitution stays at ~75, so the pool is about half substitutions, which are
+easy. Read the F1 with that in mind, and the per-type recalls as the main result.
+
+**Mean over 4 persons, Hindsight, test sessions, metric G (split α):**
+
+| train sessions | arm | F1 | precision | recall | healthy-trial FPR | subst. | aband. | omission | transp. | repet. |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 10 | person only | 0.199 | 0.120 | 0.578 | 0.98 | 0.76 | 0.36 | 0.39 | 0.66 | 0.19 |
+| 10 | prior λ = 1 | 0.273 | 0.204 | 0.501 | 0.77 | 0.73 | 0.23 | 0.22 | 0.58 | 0.18 |
+| 30 | person only | 0.305 | 0.209 | 0.610 | 0.80 | 0.84 | 0.29 | 0.36 | 0.71 | 0.16 |
+| 30 | prior λ = 1 | 0.359 | 0.285 | 0.529 | 0.64 | 0.79 | 0.35 | 0.22 | 0.52 | 0.13 |
+| 250 | person only | 0.619 | 0.635 | 0.608 | 0.28 | 1.00 | 0.08 | 0.23 | 0.69 | 0.13 |
+| 250 | prior λ = 1 | **0.687** | 0.873 | 0.567 | **0.05** | 0.96 | 0.01 | 0.19 | 0.67 | 0.05 |
+
+On the full pool (§9.4) the same models scored 0.393 at 250 sessions. Transposition is
+detected (0.67–0.71) once the gap and take/put/wash swaps are gone. Omission (0.19–0.23),
+abandonment (0.01–0.08) and repetition (0.05–0.13) stay low on real ones.
+
 ## 10. Code
 
 | Concept | Where |
