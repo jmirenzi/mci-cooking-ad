@@ -31,6 +31,7 @@ import json
 import os
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, os.getcwd())
@@ -42,6 +43,8 @@ SEED, PERSONS = 0, (0, 1, 2, 3)
 N_DAYS = 320                                         # generated; every person has >= 402 sessions
 VAL_START, TEST_START, TEST_END = 250, 325, 400      # session indices in cooking order
 TRAIN_SESSIONS = (10, 30, 100, 250)
+ORACLE_DAYS = 3000                                   # healthy-support sample: days N_DAYS..2999
+ORACLE_VERSION = 2                                   # synth_oracle.VERSION the cache was built with
 LAMBDAS = (0.0, 1.0, 3.0, 10.0, 30.0, 100.0)
 GLOBAL_ONLY_LAMBDA = 30.0
 CAPABILITY = {"slow": [0.4, 0.6], "fine_motor": [0.0, 0.4]}   # fine_motor below its hinge: no repeats
@@ -49,6 +52,8 @@ TICK = 0.5
 SOFT_ITERS = 60
 TAG = ""          # results-file suffix
 VARIANT = "base"
+POOL = "all"      # eval-split pools: all | real (oracle-confirmed only) | gen (step-level injectors)
+POOL_ARMS = ("person only", "prior lambda=1")   # the arms run on the real / gen pools
 
 
 def set_variant(name):
@@ -236,6 +241,67 @@ FADE_ARMS = {  # arm -> (lam, n0); every arm picks the transition alpha separate
 }
 
 
+_GRAPHS = {}
+GEN_CONFIRMED = {}
+
+
+def gen_pool(person_idx, part, labels, support):
+    """Groups of (trajectory, dish) from the step-level injectors (drift_synth/inject.py): each
+    held-out session with one real error edited into its clean events, re-exported to ticks.
+    Prints the fraction the healthy-support oracle confirms."""
+    import numpy as np
+    from cook_ad.drift_synth.export import to_ticks
+    from cook_ad.drift_synth.inject import ERROR_TYPES as GEN_TYPES, event_spans, inject
+    from cook_ad.hsmm.train.lexical_init import recipe_label_assignment
+    if not _GRAPHS:
+        _GRAPHS.update(_assets({}).graphs)
+    d = ROOT / "persons" / f"p{person_idx:02d}"
+    vocab = json.loads((d / "null" / "vocab.json").read_text())
+    ex = _assets({}).gen["export"]
+    rec = {e["trial_id"]: e["recipe_label"] for e in labels}
+    dish = recipe_label_assignment(part, labels)[0]
+    iv = {i: k for k, i in vocab["verbs"].items()}
+    inn = {i: k for k, i in vocab["nouns"].items()}
+    sil = set(ex["sil"])
+    seen = {}
+    for r, rng_ in support.count_range.items():
+        toks = [t for t in rng_ if rng_[t][1] > 0]
+        seen[r] = ({iv[v] for v, _ in toks}, {inn[n] for _, n in toks})
+    rng = np.random.default_rng([SEED, person_idx, int(part[0]["day"]) if "day" in part[0] else 0, len(part)])
+    groups = {"healthy": [(s, r) for s, r in zip(part, dish)]}
+    confirmed = {}
+    for et in GEN_TYPES:
+        groups[et] = []
+        for s, r in zip(part, dish):
+            sess = json.loads((d / "null" / "sessions" / f"{s['trial_id']}.json").read_text())
+            name = rec[s["trial_id"]]
+            sv, sn = seen.get(name, (set(), set()))
+            res = inject(et, sess, _GRAPHS[name], rng,
+                         unseen_verbs=sorted(set(vocab["verbs"]) - sv - sil),
+                         unseen_nouns=sorted(set(vocab["nouns"]) - sn - sil))
+            if res is None:
+                continue
+            events, marked = res
+            v, n = to_ticks(events, vocab, ex["sil"], ex["fps"], TICK)
+            spans = [(a, min(b, len(v) - 1)) for a, b in event_spans(events, marked, TICK) if a < len(v)]
+            if not spans:
+                continue
+            groups[et].append(({"verb_ids": v, "noun_ids": n, "spans": spans}, r))
+            c = support.check(name, v, n)
+            confirmed.setdefault(et, []).append((c["anomalous"], c["anomalous_or_order"]))
+    print("  step-level injections confirmed by the oracle (local checks / + order): "
+          + ", ".join(f"{et} {np.mean([x[0] for x in c]):.2f} / {np.mean([x[1] for x in c]):.2f} (n={len(c)})"
+                      for et, c in confirmed.items()), flush=True)
+    GEN_CONFIRMED[person_idx] = {et: [float(np.mean([x[0] for x in c])), float(np.mean([x[1] for x in c]))]
+                                 for et, c in confirmed.items()}
+    return harness_trials(groups)
+
+
+def harness_trials(groups):
+    from cook_ad.eval import harness
+    return harness.trials_from_groups(groups)
+
+
 def stage_eval_split(persons, chunk_size=8):
     """Every arm with a split operating point: the transition channels' alpha picked separately
     from the other channels' (harness.hindsight_split_grid), both on validation by G-F1."""
@@ -265,21 +331,41 @@ def stage_eval_split(persons, chunk_size=8):
         _, names = recipe_label_assignment(seqs, labels)
         placement = hparams.load(str(d / f"model_s{max(TRAIN_SESSIONS)}" / "model.npz"))
 
+        support = None
+        if POOL in ("real", "gen"):
+            from cook_ad.eval.synth_oracle import person_support
+            vocab = json.loads((d / "null" / "vocab.json").read_text())
+            support = person_support(i, SEED, _assets({"theta0_by_knob": CAPABILITY, "habit": 2.0}), vocab,
+                                     N_DAYS, ORACLE_DAYS, TICK, cache=d / f"oracle_support_v{ORACLE_VERSION}.pkl")
+
         def pool(lo, hi):
             part = seqs[lo:hi]
+            if POOL == "gen":
+                return gen_pool(i, part, labels, support)
             entries, keep = pools.injected_per_trial(placement, part, d_max, seed=SEED,
                                                      chunk_size=chunk_size)
             dish = recipe_label_assignment([part[k] for k in keep], labels)[0]
-            return harness.trials_from_streams(pools.per_trial_to_streams(entries), dish)
+            names_k = [rec[part[k]["trial_id"]] for k in keep]
+            groups = {"healthy": [(h, r) for (h, _), r in zip(entries, dish)]}
+            for et in pools.ERROR_TYPES:
+                items = [(inj[et], r, nm) for (_, inj), r, nm in zip(entries, dish, names_k)]
+                if POOL == "real":
+                    items = [x for x in items
+                             if support.check(x[2], x[0]["verb_ids"], x[0]["noun_ids"])["anomalous"]]
+                groups[et] = [(t, r) for t, r, _ in items]
+            return harness.trials_from_groups(groups)
 
         val, test = pool(VAL_START, TEST_START), pool(TEST_START, TEST_END)
+        sizes = {part: dict(Counter(g for g, _ in tr)) for part, tr in (("val", val), ("test", test))}
+        print(f"{pid} pool sizes: {sizes}", flush=True)
+        arms = FADE_ARMS if POOL == "all" else {k: FADE_ARMS[k] for k in POOL_ARMS}
         out = {}
         for n in TRAIN_SESSIONS:
             base = hparams.load(str(d / f"model_s{n}" / "model.npz"))
             train = seqs[:n]
             person = count_global(train, [rec[s["trial_id"]] for s in train])
             out[n] = {}
-            for arm, (lam, n0) in FADE_ARMS.items():
+            for arm, (lam, n0) in arms.items():
                 p = apply_global_prior(base, gcounts, names, lam, person_counts=person if n0 else None,
                                        n0=n0)
                 hsmm = HSMM(p, d_max)
@@ -309,8 +395,8 @@ def stage_eval_split(persons, chunk_size=8):
                       f"R={row['recall']:.3f} FPR={row['healthy_trial_fpr']:.2f} "
                       f"alarms/10min={row['alarms_per_10min']:.2f}", flush=True)
         harness.dump(f"runs/drift_synth/eval_synth_prior_split{TAG}_{pid}.json",
-                     {"metric": "G", "person": pid, "unit": "sessions",
-                      "arms": {k: list(v) for k, v in FADE_ARMS.items()},
+                     {"metric": "G", "person": pid, "unit": "sessions", "pool": POOL,
+                      "pool_sizes": sizes, "arms": {k: list(v) for k, v in arms.items()},
                       "results": out})
 
 
@@ -487,8 +573,14 @@ def main():
     ap.add_argument("--person", type=int, action="append")
     ap.add_argument("--sessions", type=int, action="append")
     ap.add_argument("--variant", choices=["base", "cal"], default="base")
+    ap.add_argument("--pool", choices=["all", "real", "gen"], default="all",
+                    help="eval-split pools: the Breakfast injectors (all), only their oracle-confirmed "
+                         "anomalies (real), or the step-level injectors (gen); real/gen run 2 arms")
     a = ap.parse_args()
     set_variant(a.variant)
+    global POOL, TAG
+    POOL = a.pool
+    TAG += "" if POOL == "all" else f"_{POOL}"
     persons = a.person or PERSONS
     if a.stage == "population":
         stage_population()

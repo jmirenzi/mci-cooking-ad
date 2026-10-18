@@ -36,6 +36,18 @@ def trials_from_streams(streams, recipes=None):
     return out
 
 
+def trials_from_groups(groups):
+    """{group: [(trajectory, recipe or None)]} -> [(group, Trial)]: as trials_from_streams, for
+    pools whose groups hold different trials (a filtered or regenerated pool)."""
+    out = []
+    for group, items in groups.items():
+        for i, (t, r) in enumerate(items):
+            spans = tuple(tuple(map(int, s)) for s in t.get("spans", [])) if group != "healthy" else ()
+            out.append((group, Trial(f"{group}/{i}", np.asarray(t["verb_ids"]), np.asarray(t["noun_ids"]),
+                                     None if r is None else int(r), spans, group)))
+    return out
+
+
 def run(detectors, trials):
     """{name: [Detection]} -- each detector over every Trial (detect_many where batched)."""
     return {name: det.detect_many([t for _, t in trials]) for name, det in detectors.items()}
