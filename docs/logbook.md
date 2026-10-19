@@ -5,6 +5,12 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-19 — idle scrubbed before the model; overnight rerun started
+
+`data/scrub.py`: idle ticks dropped before training and scoring ("A, pause, A" merges; Jack);
+`scrub_kept.json` keeps original ticks. `eval_synth_prior.py --variant cal_scrub`,
+`overnight_scrub.sh`: same 4 persons refit, step-level pools, plain HSMM and + count channel.
+
 ## 2026-10-18 — skip-idle population prior swept to W = 100 (metric G)
 
 W = 30 / 100: 0.371 / 0.371 (10 sessions), 0.576 / 0.578 (30), 0.794 / 0.827 (250; healthy FPR
