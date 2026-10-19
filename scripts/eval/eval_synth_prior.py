@@ -65,10 +65,13 @@ EMP_LEVELS = (0.0, 0.002, 0.005, 0.01, 0.02)
 def set_variant(name):
     global ROOT, CONFIG, TICK, TRAIN_SESSIONS, SOFT_ITERS, TAG, VARIANT
     VARIANT = name
-    if name == "cal":
+    if name in ("cal", "cal_scrub"):
         ROOT = Path("dataset/processed/drift_synth_prior_cal")
         CONFIG = "configs/drift_synth/hsmm_cal.yaml"
         TICK, TRAIN_SESSIONS, SOFT_ITERS, TAG = 1.0, (10, 30, 250), 20, "_cal"
+    if name == "cal_scrub":          # idle ticks dropped before the model (data/scrub.py, §9.8)
+        ROOT = Path("dataset/processed/drift_synth_prior_cal_scrub")
+        TAG = "_calscrub"
 
 
 def _assets(person_cfg):
@@ -76,13 +79,37 @@ def _assets(person_cfg):
     a = load_assets()
     a.gen["recognizer"] = {k: (v if k == "min_event_s" else 0.0) for k, v in a.gen["recognizer"].items()}
     a.gen["person"] = dict(a.gen["person"], **person_cfg)
-    if VARIANT == "cal":
+    if VARIANT in ("cal", "cal_scrub"):
         from cook_ad.drift_synth.assets import load_step_scale
         a.gen["durations"] = dict(a.gen["durations"], step_scale="configs/drift_synth/step_time_scale.json",
                                   max_event_s=600.0)
         a.step_scale = load_step_scale(a.gen)
         a.gen["export"] = dict(a.gen["export"], tick_seconds=TICK)
     return a
+
+
+SCRUB = False      # set by the cal_scrub variant
+
+
+def _scrub_export(out, vocab, sil_names):
+    """Rewrite an export's sequences.json / labels.json without idle ticks (data/scrub.py); the
+    originals stay as *_raw.json and scrub_kept.json maps each kept tick to its original tick."""
+    from cook_ad.data.scrub import scrub_sequence
+    sil = (vocab["verbs"][sil_names[0]], vocab["nouns"][sil_names[1]])
+    seqs = json.loads((out / "sequences.json").read_text())
+    labels = json.loads((out / "labels.json").read_text())
+    lab = {e["trial_id"]: e for e in labels}
+    (out / "sequences_raw.json").write_text(json.dumps(seqs))
+    (out / "labels_raw.json").write_text(json.dumps(labels))
+    new_s, new_l, kept = [], {}, {}
+    for s in seqs:
+        s2, l2, k = scrub_sequence(s, sil, lab[s["trial_id"]])
+        new_s.append(s2)
+        new_l[s["trial_id"]] = l2
+        kept[s["trial_id"]] = k.tolist()
+    (out / "sequences.json").write_text(json.dumps(new_s))
+    (out / "labels.json").write_text(json.dumps([new_l[e["trial_id"]] for e in labels]))
+    (out / "scrub_kept.json").write_text(json.dumps(kept))
 
 
 def _in_order(seqs, labels):
@@ -103,6 +130,8 @@ def stage_population():
         person, sessions, gt = generate_person(i, cond, POP_SEED, assets)
         out = ROOT / "population" / person.person_id
         export(sessions, out, assets.vocab, gt, assets.gen["export"])
+        if SCRUB:
+            _scrub_export(out, assets.vocab, assets.gen["export"]["sil"])
         labels = {e["trial_id"]: e["recipe_label"] for e in json.loads((out / "labels.json").read_text())}
         for s in json.loads((out / "sequences.json").read_text()):
             seqs.append(s)
@@ -124,6 +153,8 @@ def stage_persons():
         person, sessions, gt = generate_person(i, cond, SEED, assets)
         d = ROOT / "persons" / person.person_id
         export(sessions, d / "null", assets.vocab, gt, assets.gen["export"])
+        if SCRUB:
+            _scrub_export(d / "null", assets.vocab, assets.gen["export"]["sil"])
         seqs = _in_order(json.loads((d / "null" / "sequences.json").read_text()),
                          json.loads((d / "null" / "labels.json").read_text()))
         assert len(seqs) >= TEST_END, (person.person_id, len(seqs))
@@ -271,6 +302,7 @@ def gen_pool(person_idx, part, labels, support):
     Prints the fraction the healthy-support oracle confirms."""
     import numpy as np
     from cook_ad.drift_synth.export import to_ticks
+    from cook_ad.data.scrub import map_spans, scrub_idle
     from cook_ad.drift_synth.inject import ERROR_TYPES as GEN_TYPES, event_spans, inject
     from cook_ad.hsmm.train.lexical_init import recipe_label_assignment
     if not _GRAPHS:
@@ -304,10 +336,13 @@ def gen_pool(person_idx, part, labels, support):
             events, marked = res
             v, n = to_ticks(events, vocab, ex["sil"], ex["fps"], TICK)
             spans = [(a, min(b, len(v) - 1)) for a, b in event_spans(events, marked, TICK) if a < len(v)]
+            c = support.check(name, v, n)              # the oracle reads the stream before scrubbing
+            if SCRUB:
+                v, n, kept = scrub_idle(v, n, (vocab["verbs"][ex["sil"][0]], vocab["nouns"][ex["sil"][1]]))
+                spans = map_spans(spans, kept)
             if not spans:
                 continue
             groups[et].append(({"verb_ids": v, "noun_ids": n, "spans": spans}, r))
-            c = support.check(name, v, n)
             confirmed.setdefault(et, []).append((c["anomalous"], c["anomalous_or_order"]))
     print("  step-level injections confirmed by the oracle (local checks / + order): "
           + ", ".join(f"{et} {np.mean([x[0] for x in c]):.2f} / {np.mean([x[1] for x in c]):.2f} (n={len(c)})"
@@ -653,7 +688,7 @@ def main():
                     required=True)
     ap.add_argument("--person", type=int, action="append")
     ap.add_argument("--sessions", type=int, action="append")
-    ap.add_argument("--variant", choices=["base", "cal"], default="base")
+    ap.add_argument("--variant", choices=["base", "cal", "cal_scrub"], default="base")
     ap.add_argument("--pool", choices=["all", "real", "gen"], default="all",
                     help="eval-split pools: the Breakfast injectors (all), only their oracle-confirmed "
                          "anomalies (real), or the step-level injectors (gen); real/gen run 2 arms")
@@ -669,7 +704,10 @@ def main():
                     help="eval-split: also the visit-count channel (detectors/count_channel.py)")
     a = ap.parse_args()
     set_variant(a.variant)
-    global POOL, TAG, STRUCT, DUR_SPLIT, EMP_DUR, STRUCT_PRIOR
+    global POOL, TAG, STRUCT, DUR_SPLIT, EMP_DUR, STRUCT_PRIOR, SCRUB
+    SCRUB = a.variant == "cal_scrub"
+    if SCRUB and a.pool == "real":
+        raise SystemExit("--pool real reads the tick injectors' streams before scrubbing; use gen")
     POOL = a.pool
     TAG += "" if POOL == "all" else f"_{POOL}"
     STRUCT = ({"count"} if a.count_channel else set()) | ({"skip"} if a.skip_idle else set())
