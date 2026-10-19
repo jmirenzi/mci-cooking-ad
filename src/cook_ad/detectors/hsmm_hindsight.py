@@ -12,6 +12,7 @@ from scipy.special import logsumexp
 from cook_ad.core import Alarm, AnomalyDetector, Detection, OperatingPoint, Trial
 from cook_ad.hsmm import batch, durations
 
+COUNT = "s_count"   # optional eighth channel (hsmm/visit_counts.py), only with fitted counts
 CHANNELS = ("s_emit", "s_verb", "s_noun", "s_temporal", "s_dur_two", "s_transition",
             "s_recipe_transition")
 EMISSION_FLAG_ATOL = 1e-6   # emission surprise must beat its threshold by more than float noise
@@ -56,8 +57,12 @@ class HindsightHSMMDetector(AnomalyDetector):
     name = "hsmm-hindsight"
     causal = False
 
-    def __init__(self, hsmm, bad_sets, op: OperatingPoint, chunk_size=8):
+    def __init__(self, hsmm, bad_sets, op: OperatingPoint, chunk_size=8, counts=None):
+        """`counts`: hsmm/visit_counts.VisitCounts fitted on the training decodes; adds the
+        s_count channel (§5.7). Without it the detector is exactly the seven-channel one."""
         self.hsmm, self.bad, self.op, self.chunk_size = hsmm, bad_sets, op, chunk_size
+        self.counts = counts
+        self.channels = CHANNELS + (COUNT,) if counts is not None else CHANNELS
 
     def reset(self, recipe=None):
         pass
@@ -114,6 +119,14 @@ class HindsightHSMMDetector(AnomalyDetector):
             return np.zeros_like(s_transition)
         return s_transition - self.transition_surprise(segments, self.hsmm.tables.log_A_marginal)[0]
 
+    def count_surprise(self, segments, r):
+        """-log p of each visit's count and of each missing subtask (§5.7), at the segment start
+        where it shows; the largest where two land on one tick."""
+        s = np.zeros(sum(d for _, d in segments))
+        for t, p in self.counts.path_pvalues(int(r), segments):
+            s[t] = max(s[t], -float(np.log(p)))
+        return s
+
     # ---- one trial's trace
 
     def assemble(self, r, segments, pi_tilde, verbs, nouns) -> HindsightTrace:
@@ -126,6 +139,8 @@ class HindsightHSMMDetector(AnomalyDetector):
                     "s_temporal": self.stall_surprise(segments, r), "s_dur_two": s_dur_two,
                     "s_transition": s_trans,
                     "s_recipe_transition": self.recipe_transition_surprise(segments, s_trans)}
+        if self.counts is not None:
+            surprise[COUNT] = self.count_surprise(segments, r)
         attribution = np.full(len(z), "none", dtype=object)
         attribution[(s_noun - s_verb) > ATTRIBUTION_MARGIN] = "item"
         attribution[(s_verb - s_noun) > ATTRIBUTION_MARGIN] = "action"
@@ -154,12 +169,14 @@ class HindsightHSMMDetector(AnomalyDetector):
             "s_transition": np.where(at_start, th["s_transition"].transition[prev], np.inf),
             "s_recipe_transition": np.where(at_start, th["s_recipe_transition"].recipe[prev],
                                             np.inf),
+            **({COUNT: np.full(len(z), -float(np.log(max(op.alpha_for(COUNT, 0.0), 1e-300))))}
+               if self.counts is not None else {}),
         }
 
     def flags(self, trace: HindsightTrace, op: OperatingPoint | None = None):
         """{channel: (T,) bool}: surprise above its threshold."""
         th = self.thresholds(trace, op)
-        out = {c: trace.surprise[c] > th[c] for c in CHANNELS}
+        out = {c: trace.surprise[c] > th[c] for c in self.channels}
         for c in ("s_emit", "s_verb", "s_noun"):
             out[c] = trace.surprise[c] > th[c] + EMISSION_FLAG_ATOL
         return out
@@ -176,7 +193,7 @@ class HindsightHSMMDetector(AnomalyDetector):
     def _detection(self, trace):
         flags, n = self.flags(trace), len(trace.z_star)
         alarms = [Alarm(int(t), c, float(trace.surprise[c][t]), n - 1)
-                  for t in range(n) for c in CHANNELS if flags[c][t]]
+                  for t in range(n) for c in self.channels if flags[c][t]]
         return Detection(alarms, trace=trace)
 
     def recipes(self, trials, verb, noun, mask):

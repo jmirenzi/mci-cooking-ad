@@ -16,6 +16,7 @@ from cook_ad.hsmm import kernels
 
 CHANNELS = ("s_emit", "s_verb", "s_noun", "s_temporal", "s_dur_two", "s_transition",
             "s_recipe_transition")
+COUNT = "s_count"         # optional event channel, only with fitted visit counts (§5.7)
 EMISSION = CHANNELS[:3]
 EVENTS = CHANNELS[3:]
 TIE_ATOL = 1e-10          # outcomes this close in log forecast probability count as tied
@@ -151,6 +152,72 @@ def events_one_tick(log_b_prev, log_b, beta, e, is_first, dyn, bins, n_alphas):
 _events_one_tick = jax.jit(events_one_tick, static_argnames=("n_alphas",))
 
 
+def entry_one_tick(log_b_prev, log_b, beta, e, is_first, dyn):
+    """((K_R', K) P(a segment of i begins at t, recipe r | o), (K_R',) P(r | o)), at one tick:
+    q_t(r, k, j, i) summed over the subtask left and its elapsed time (§5.7); at t = 0 every
+    subtask begins, so it is the posterior itself."""
+    sw = switch_terms(log_b_prev, beta, e, is_first, *dyn)
+    cells = sw.log_m[:, :, None] + dyn.log_A + sw.arrive[:, None, :] - sw.log_z
+    later = logsumexp(cells, axis=1)
+    post = log_b + beta
+    post = post - logsumexp(post)
+    first = logsumexp(post, axis=-1)
+    return jnp.exp(jnp.where(is_first, first, later)), jnp.exp(logsumexp(post, axis=(1, 2)))
+
+
+@jax.jit
+def entry_table(dyn, log_b_all, beta, loglik, mask):
+    """(T, K_R', K) entry posteriors and (T, K_R') recipe posteriors of a padded trial."""
+    log_b_prev = jnp.concatenate([log_b_all[:1], log_b_all[:-1]], axis=0)
+    is_first = jnp.arange(loglik.shape[0]) == 0
+
+    def body(xs):
+        return entry_one_tick(*xs, dyn)
+
+    ent, pr = jax.lax.map(body, (log_b_prev, log_b_all, beta, loglik, is_first))
+    return jnp.where(mask[:, None, None], ent, 0.0), pr
+
+
+_entry_one_tick = jax.jit(entry_one_tick)
+
+
+class CountState:
+    """The live count channel's running state: expected visits so far, per recipe and subtask,
+    conditional on the recipe (sum over past ticks of P(i begins at t | r, o))."""
+
+    def __init__(self, counts, recipes, k, k_recipe=None):
+        if isinstance(recipes, slice):            # the view holds every recipe (hsmm.model.View)
+            recipes = range(k_recipe)[recipes]
+        self.counts, self.recipes = counts, [int(r) for r in np.atleast_1d(recipes)]
+        self.c = np.zeros((len(self.recipes), k))
+        pm = []
+        for r in self.recipes:
+            pred = counts.predecessors(r) if counts.known(r) else {}
+            pm.append([[kk for kk in pred.get(j, []) if kk not in counts.ignore] for j in range(k)])
+        self.pred = pm
+
+    def step(self, entry, p_r, alphas):
+        """(G,) bad-event mass at this tick, then add the tick's entries to the counts."""
+        entry, p_r = np.asarray(entry, dtype=float), np.asarray(p_r, dtype=float)
+        cond = entry / np.maximum(p_r[:, None], 1e-300)
+        alphas = np.asarray(alphas, dtype=float)
+        bad = np.zeros(len(alphas))
+        for a, r in enumerate(self.recipes):
+            if not self.counts.known(r):
+                continue
+            for i in np.flatnonzero(entry[a] > 1e-12):
+                i = int(i)
+                if i in self.counts.ignore:
+                    continue
+                visit = int(np.floor(self.c[a, i] + 0.5)) + 1          # the visit this would be
+                p = self.counts.p_at_least(r, i, visit)
+                miss = [self.counts.p_zero(r, k) for k in self.pred[a][i] if self.c[a, k] < 0.5]
+                p = min([p] + miss)
+                bad += entry[a, i] * (p <= alphas)
+        self.c += cond
+        return np.minimum(bad, 1.0)
+
+
 @jax.jit
 def event_table(dyn, bins, alphas, log_b_all, beta, loglik, mask):
     """(T, G) event posteriors for a whole padded trial; padded ticks are 0."""
@@ -175,9 +242,16 @@ class LiveHSMMDetector(AnomalyDetector):
     causal = True
     L = 0
 
-    def __init__(self, hsmm, bad_sets, op: OperatingPoint):
-        self.hsmm, self.bad, self.op = hsmm, bad_sets, op
+    def __init__(self, hsmm, bad_sets, op: OperatingPoint, counts=None):
+        """`counts`: hsmm/visit_counts.VisitCounts; adds the s_count event channel (§5.7):
+        the posterior mass that a subtask beginning now is an extra visit, or follows a missing
+        one, under the expected visit counts so far. Without it: the seven-channel detector."""
+        self.hsmm, self.bad, self.op, self.counts = hsmm, bad_sets, op, counts
+        self.channels = CHANNELS + (COUNT,) if counts is not None else CHANNELS
         self._alpha_idx = {c: bad_sets.alpha_index(op.alpha_for(c)) for c in EVENTS}
+        if counts is not None:
+            a = op.alpha_for(COUNT, 0.0)
+            self._alpha_idx[COUNT] = bad_sets.alpha_index(a) if a > 0 else None
         self.reset()
 
     # ---- per-trial state
@@ -188,6 +262,8 @@ class LiveHSMMDetector(AnomalyDetector):
         b = self.bad
         self.bins = Bins(b.stall_bin[r], b.early_bin[r], b.trans_bin[r], b.recipe_bin[r])
         self.t, self._history = 0, {}   # tick -> (b_{t-1}, b_t, e_t), the last L+1 ticks only
+        self._count = (CountState(self.counts, r, self.hsmm.tables.log_emit_v.shape[0],
+                                  self.hsmm.k_recipe) if self.counts is not None else None)
 
     def step(self, verb, noun):
         forecast = self.hsmm.predict()
@@ -199,6 +275,14 @@ class LiveHSMMDetector(AnomalyDetector):
         self._history.pop(self.t - self.L - 1, None)
         alarms = self._emission_alarms(self.t, {c: float(x[0]) for c, x in p.items()})
         alarms += self._event_steps()
+        if self._count is not None:
+            ent, pr = _entry_one_tick(b_prev if b_prev is not None else self.hsmm.belief,
+                                      self.hsmm.belief, jnp.zeros_like(self.hsmm.belief), e,
+                                      self.t == 0, self._dynamics())
+            mass = self._count.step(ent, pr, self.bad.alphas)
+            g = self._alpha_idx[COUNT]
+            if g is not None and mass[g] > self.op.kappa:
+                alarms.append(Alarm(self.t, COUNT, float(mass[g]), self.t))
         self.t += 1
         return alarms
 
@@ -248,8 +332,14 @@ class LiveHSMMDetector(AnomalyDetector):
         ev = event_table(self._dynamics(), self.bins,
                          jnp.asarray(self.bad.alphas), fr.log_b, self.beta(fr), fr.loglik, fr.mask)
         n = fr.n
-        return LiveTrace({c: np.asarray(x)[:n] for c, x in p.items()},
-                         {c: np.asarray(x)[:n] for c, x in zip(EVENTS, ev)},
+        events = {c: np.asarray(x)[:n] for c, x in zip(EVENTS, ev)}
+        if self.counts is not None:
+            ent, pr = entry_table(self._dynamics(), fr.log_b, jnp.zeros_like(fr.log_b), fr.loglik,
+                                  fr.mask)
+            ent, pr = np.asarray(ent)[:n], np.asarray(pr)[:n]
+            cs = CountState(self.counts, self.hsmm.current.recipes, ent.shape[-1], self.hsmm.k_recipe)
+            events[COUNT] = np.stack([cs.step(ent[t], pr[t], self.bad.alphas) for t in range(n)])
+        return LiveTrace({c: np.asarray(x)[:n] for c, x in p.items()}, events,
                          self.bad.alphas, np.asarray(fr.log_norm)[:n], fr.occupancy)
 
     def flags(self, trace: LiveTrace, op: OperatingPoint | None = None):
@@ -259,7 +349,11 @@ class LiveHSMMDetector(AnomalyDetector):
         for c in EVENTS:
             g = self.bad.alpha_index(op.alpha_for(c))
             out[c] = trace.events[c][:, g] > op.kappa
-        return {c: out[c] for c in CHANNELS}
+        if self.counts is not None:
+            a = op.alpha_for(COUNT, 0.0)
+            out[COUNT] = (trace.events[COUNT][:, self.bad.alpha_index(a)] > op.kappa if a > 0
+                          else np.zeros(len(trace.log_norm), dtype=bool))
+        return {c: out[c] for c in self.channels}
 
     def known_at(self, channel, t, n):
         return t if channel in EMISSION else min(t + self.L, n - 1)
@@ -270,7 +364,7 @@ class LiveHSMMDetector(AnomalyDetector):
         n = len(trial.verbs)
         alarms = []
         for t in range(n):
-            for c in CHANNELS:
+            for c in self.channels:
                 if flags[c][t]:
                     score = tr.p[c][t] if c in EMISSION else tr.events[c][t, self._alpha_idx[c]]
                     alarms.append(Alarm(t, c, float(score), self.known_at(c, t, n)))

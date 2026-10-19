@@ -58,6 +58,7 @@ STRUCT = set()    # --count-channel / --skip-idle: structural channels on one mo
 COUNT_LEVELS = (0.0, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1)   # their shared p levels; 0 = off
 DUR_SPLIT = False  # --dur-split: duration channels on their own alpha axis (harness.DUR_ALPHAS)
 EMP_DUR = False    # --emp-dur: detectors/empirical_duration.py on its own axis
+CORE_COUNT = False  # --core-count: the detectors' s_count channel, in the transition alpha group
 STRUCT_PRIOR = 0.0  # --struct-prior W: the prior arms' skip-idle channel gets W population pseudo-counts per row
 EMP_LEVELS = (0.0, 0.002, 0.005, 0.01, 0.02)
 
@@ -428,7 +429,7 @@ def stage_eval_split(persons, chunk_size=8):
                 det = HindsightHSMMDetector(hsmm, bad, OperatingPoint(0.005), chunk_size=chunk_size)
 
                 axes = []           # [(name, [channels], levels)]: one more grid axis each
-                if STRUCT or EMP_DUR:
+                if STRUCT or EMP_DUR or CORE_COUNT:
                     from cook_ad.core import Trial
                     from cook_ad.detectors.count_channel import CountChannel
                     from cook_ad.detectors.empirical_duration import EmpiricalShortDuration
@@ -440,6 +441,12 @@ def stage_eval_split(persons, chunk_size=8):
                     tr_trials = [Trial(s_["trial_id"], np.asarray(s_["verb_ids"]), np.asarray(s_["noun_ids"]),
                                        int(r_), (), "healthy") for s_, r_ in zip(train, tr_dish)]
                     tr_traces = det.traces(tr_trials)
+                    if CORE_COUNT:      # the detector's own s_count channel (hsmm/visit_counts.py)
+                        from cook_ad.hsmm.visit_counts import VisitCounts
+                        vc = VisitCounts.fit([(t.r_hat, [k for k, _ in t.segments]) for t in tr_traces],
+                                             ignore=idle)
+                        det = HindsightHSMMDetector(hsmm, bad, OperatingPoint(0.005), chunk_size=chunk_size,
+                                                    counts=vc)
                     if STRUCT:
                         chans = []
                         for c in sorted(STRUCT):
@@ -499,14 +506,15 @@ def stage_eval_split(persons, chunk_size=8):
                 row = harness.at(gt, idx)
                 row["alpha_transition"] = harness.ALPHAS[idx[0]]
                 row["alpha_rest"] = harness.ALPHAS[idx[1]]
-                out[n][arm] = row
+                cc = " +s_count" if CORE_COUNT else ""
+                out[n][arm + cc] = row
                 # the single-alpha pick is the grid's diagonal (same alpha for every channel)
                 diag = [float(np.asarray(gv["f1"])[j, j]) for j in range(len(harness.ALPHAS))]
                 j = int(np.argmax(diag))
                 single = harness.at(gt, (j, j))
                 single["alpha_transition"] = single["alpha_rest"] = harness.ALPHAS[j]
-                out[n][arm + " (single alpha)"] = single
-                print(f"{pid} N={n:3d} {arm:22s} a_trans={row['alpha_transition']:<7g} "
+                out[n][arm + cc + " (single alpha)"] = single
+                print(f"{pid} N={n:3d} {arm + cc:22s} a_trans={row['alpha_transition']:<7g} "
                       f"a_rest={row['alpha_rest']:<7g} F1={row['f1']:.3f} P={row['precision']:.3f} "
                       f"R={row['recall']:.3f} FPR={row['healthy_trial_fpr']:.2f} "
                       f"alarms/10min={row['alarms_per_10min']:.2f}", flush=True)
@@ -694,6 +702,8 @@ def main():
                          "anomalies (real), or the step-level injectors (gen); real/gen run 2 arms")
     ap.add_argument("--dur-split", action="store_true",
                     help="eval-split: duration channels on their own alpha axis")
+    ap.add_argument("--core-count", action="store_true",
+                    help="eval-split: the detectors' own s_count channel (fitted on the training decodes)")
     ap.add_argument("--struct-prior", type=float, default=0.0,
                     help="eval-split: population pseudo-counts per row for the prior arms' skip-idle channel")
     ap.add_argument("--emp-dur", action="store_true",
@@ -704,7 +714,7 @@ def main():
                     help="eval-split: also the visit-count channel (detectors/count_channel.py)")
     a = ap.parse_args()
     set_variant(a.variant)
-    global POOL, TAG, STRUCT, DUR_SPLIT, EMP_DUR, STRUCT_PRIOR, SCRUB
+    global POOL, TAG, STRUCT, DUR_SPLIT, EMP_DUR, STRUCT_PRIOR, SCRUB, CORE_COUNT
     SCRUB = a.variant == "cal_scrub"
     if SCRUB and a.pool == "real":
         raise SystemExit("--pool real reads the tick injectors' streams before scrubbing; use gen")
@@ -718,6 +728,8 @@ def main():
     TAG += "_empdur" if EMP_DUR else ""
     STRUCT_PRIOR = a.struct_prior
     TAG += f"_sp{STRUCT_PRIOR:g}" if STRUCT_PRIOR else ""
+    CORE_COUNT = a.core_count
+    TAG += "_scount" if CORE_COUNT else ""
     persons = a.person or PERSONS
     if a.stage == "population":
         stage_population()

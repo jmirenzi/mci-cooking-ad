@@ -45,8 +45,13 @@ class OperatingPoint:
     alpha: float | dict[str, float]
     kappa: float | None = None
 
-    def alpha_for(self, channel: str) -> float:
-        return self.alpha[channel] if isinstance(self.alpha, dict) else self.alpha
+    def alpha_for(self, channel: str, default: float | None = None) -> float:
+        """The channel's alpha; with a per-channel dict lacking it, `default` (None: KeyError)."""
+        if not isinstance(self.alpha, dict):
+            return self.alpha
+        if channel in self.alpha or default is None:
+            return self.alpha[channel]
+        return default
 
 
 class AnomalyDetector(ABC):

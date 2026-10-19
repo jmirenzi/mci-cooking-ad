@@ -139,6 +139,12 @@ trial with the smoothed model (`synthetic/generate.trajectories_from_real_joint`
 labelled dish), histogram the segment lengths per (recipe, state), and refit (ρ, p) with the §5
 fit at κ = 0.001. Each trial's last segment is imputed as censored, as in EM.
 
+### Stage 5 (optional): visit counts
+
+`scripts/train/fit_visit_counts.py` → `hsmm/visit_counts.py:VisitCounts.fit`. The final model decodes
+the training split (as stage 4), and the per-recipe visit counts of every subtask are written as JSON
+next to the model. Only the `s_count` channel reads them (detectors.md §3.6a, §5.6).
+
 ## 5. The duration fit
 
 `hsmm/train/durations_fit.py:fit_durations_shrunk`, shared by every stage.
@@ -193,6 +199,7 @@ dev split.
 | hard EM | `hsmm/train/hard_em.py:hard_em_step`, `hard_counts` |
 | smoothing | `hsmm/train/smoothing.py:shifted_mode_counts`, `backoff_counts` |
 | duration refit | `hsmm/train/refit.py:refit_durations`, `duration_histograms` |
+| visit counts (stage 5) | `scripts/train/fit_visit_counts.py`; `hsmm/visit_counts.py:VisitCounts` |
 | NB fit, censoring, shrinkage | `hsmm/train/durations_fit.py:fit_durations_shrunk`, `impute_censored_histogram`, `newton_update_r`, `method_of_moments_r`, `update_p_given_r` |
 | clustering metrics | `hsmm/train/metrics.py:adjusted_rand`, `matched_accuracy`, `effective_k` |
 | XLA autotuning off (EPIC-scale compiles) | `xla_env.py:disable_gpu_autotuning` |

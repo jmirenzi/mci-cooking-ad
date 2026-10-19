@@ -68,11 +68,12 @@ def hindsight_grid(det, trace, alphas):
     cols = []
     for a in alphas:
         f = det.flags(trace, OperatingPoint(a))
-        cols.append(np.any(np.stack([f[c] for c in CHANNELS]), axis=0))
+        cols.append(np.any(np.stack(list(f.values())), axis=0))   # every channel the detector has
     return np.stack(cols, axis=1)
 
 
-TRANSITION_CHANNELS = ("s_transition", "s_recipe_transition")
+# The structural group: the transition channels and, when the detector has it, s_count.
+TRANSITION_CHANNELS = ("s_transition", "s_recipe_transition", "s_count")
 
 
 def hindsight_split_grid(det, trace, alphas, split=TRANSITION_CHANNELS):
@@ -80,8 +81,8 @@ def hindsight_split_grid(det, trace, alphas, split=TRANSITION_CHANNELS):
     For priors that make a transition rare rather than impossible, which needs a looser alpha
     on the transition channels than the emission and duration channels can bear."""
     per = [det.flags(trace, OperatingPoint(a)) for a in alphas]
-    sp = np.stack([np.any(np.stack([f[c] for c in split]), axis=0) for f in per], axis=1)
-    rest = np.stack([np.any(np.stack([f[c] for c in CHANNELS if c not in split]), axis=0)
+    sp = np.stack([np.any(np.stack([f[c] for c in split if c in f]), axis=0) for f in per], axis=1)
+    rest = np.stack([np.any(np.stack([f[c] for c in f if c not in split]), axis=0)
                      for f in per], axis=1)
     return sp[:, :, None] | rest[:, None, :]
 
@@ -94,10 +95,12 @@ def hindsight_split3_grid(det, trace, alphas, dur_alphas=DUR_ALPHAS):
     """(T, A, A, D) bool: transition channels at alphas[i] OR emission channels at alphas[j] OR
     the duration channels at dur_alphas[k]. A truncated or stretched run reaches only moderate
     duration p-values, which the emission channels' strict alpha would never let through."""
-    em = [c for c in CHANNELS if c not in TRANSITION_CHANNELS + DURATION_CHANNELS]
     per = {a: det.flags(trace, OperatingPoint(a)) for a in sorted(set(alphas) | set(dur_alphas))}
+    have = list(next(iter(per.values())))
+    em = [c for c in have if c not in TRANSITION_CHANNELS + DURATION_CHANNELS]
 
     def stack(chans, grid):
+        chans = [c for c in chans if c in have]
         return np.stack([np.any(np.stack([per[a][c] for c in chans]), axis=0) for a in grid], axis=1)
     tr, emi, du = stack(TRANSITION_CHANNELS, alphas), stack(em, alphas), stack(DURATION_CHANNELS, dur_alphas)
     return tr[:, :, None, None] | emi[:, None, :, None] | du[:, None, None, :]
@@ -106,7 +109,7 @@ def hindsight_split3_grid(det, trace, alphas, dur_alphas=DUR_ALPHAS):
 def split_op(alphas, idx, split=TRANSITION_CHANNELS):
     """The per-channel OperatingPoint at a hindsight_split_grid index."""
     a_split, a_rest = alphas[idx[0]], alphas[idx[1]]
-    return OperatingPoint({c: (a_split if c in split else a_rest) for c in CHANNELS})
+    return OperatingPoint({c: (a_split if c in split else a_rest) for c in CHANNELS + ("s_count",)})
 
 
 def live_grid(det, trace, alphas, kappas):
