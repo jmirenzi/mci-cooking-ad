@@ -170,3 +170,37 @@ ratio between periods).
 Out of scope for now: sequential/anytime-valid tests, the LLM interpreter's prompts, and
 sensor or recognizer health checks. The last of these is required before deployment, because a
 moved camera or a recognizer update looks exactly like emission drift.
+
+## 3. A nonparametric duration hazard (proposal, not built)
+
+**What changes.** Today every (recipe, subtask) cell's duration is a negative binomial (r, p), and
+the hazard h_ij = P(D = j | D ≥ j, z = i) that the filter, stall, early-exit and s_dur_two all read
+is derived from it. The proposal is to estimate h directly from the decoded duration histograms
+instead, one number per tick of elapsed time:
+
+$$
+\hat h_{ij} = \frac{n_{ij} + \kappa\, g_{ij}}{N_{i,\ge j} + \kappa\, G_{i,\ge j}},
+$$
+
+where n_ij is the number of training segments of i that ended at exactly j ticks, N_{i,≥j} the
+number still running at j (the "at risk" count, which handles the censored last segment exactly),
+and g, G the same counts pooled over every recipe's copy of i (the shrinkage target, as κ is now).
+That is the discrete Kaplan–Meier hazard, smoothed toward the pooled one. h_ij for j past the
+longest observed segment falls back to the pooled hazard, and to 1 at D_max as now.
+
+**Why.** The negative binomial matches each cell's spread, but its shape is wrong at the short end.
+It puts a median 9.8% of mass below a cell's empirical 1% point (drift_synth.md §9.5), so a step cut
+short rarely looks short, and so early exit and the short side of s_dur_two miss abandonment. The
+empirical short-duration add-on recovered abandonment recall 0.13 → 0.68 at 250 sessions (§9.7).
+A nonparametric h gives the same to every channel at once, live included, and needs no new channel.
+
+**Costs and choices.**
+- Training stage 4 changes: a histogram and a ratio instead of the NB Newton fit. EM's M-step can
+  keep the NB (it is only a starting point) or switch too.
+- Thin cells need the shrinkage. κ becomes "how many pooled segments a cell's own count is worth",
+  to be picked on validation like the α grids.
+- Durations at ticks never seen get only the pooled hazard, so a novel length is judged by other
+  recipes' copies of the state. That is fine for "too short" and "too long", but it should be
+  measured.
+- `durations.duration_tables` and everything downstream read (log_pmf, log_surv), so the change is
+  local to the fit: pmf_j = h_j ∏_{j'<j}(1 − h_j'), surv_j = ∏_{j'<j}(1 − h_j').
