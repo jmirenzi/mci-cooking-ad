@@ -5,6 +5,19 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-19 — metric H (any flag hits, one miss per run), delay 2
+
+Breakfast dish-given test (97/group), metric H delay 2: hindsight 0.655, live 0.656, LLM 0.35-0.40,
+null (tick) 0.301. EPIC-Tent procedural default split (9 sessions, 51 spans): hindsight 0.326, live
+0.337, LLM 0.175, null 0.169. Live alarms/10 min 9.3 vs 2.6 under G: stretches expose flicker.
+`eval/metric_h.py`, `COOK_METRIC=H`; delay sweep 0/2/5/10 on EPIC-Tent only.
+
+## 2026-10-19 — idle scrubbing beats every add-on (metric G)
+
+Same persons refit on idle-free streams: the plain HSMM scores 0.451 / 0.644 / 0.834 at 10 / 30 /
+250 sessions, with healthy FPR 0.03 at 250 (idle kept: 0.218 / 0.274 / 0.409; best add-ons 0.827 at
+FPR 0.11). s_count adds nothing on scrubbed streams. Abandonment (0.13) is what's left. §9.8.
+
 ## 2026-10-19 — idle scrubbed before the model; overnight rerun started
 
 `data/scrub.py`: idle ticks dropped before training and scoring ("A, pause, A" merges; Jack);

@@ -65,6 +65,27 @@ truth.
 
 ---
 
+## 1b. Metric H (candidate; G stays the headline until the owner switches)
+
+Written 2026-10-19 after a worked case against G: a stray flag early in a run, then a perfect
+flag on the span, is one FP and one FN under G, because the run's alarm is dated by the stray.
+
+- **Hit**: any flag in [start, end + delay]. At most one per span.
+- **Miss (FP)**: one per run that holds a flag outside every span's window, however many flags.
+- **Alarm** (for alarms per 10 minutes): a contiguous flagged stretch inside one run. Flicker is
+  charged, which G hides.
+- **Null**: flag every tick. It hits every span and misses every run, so it is NOT equal to
+  flag-every-run (that one flags only a run's first tick); both are printed.
+- **Delay** is a slider, not a constant. Run with `COOK_METRIC=H COOK_DELAY=2 ./py scripts/eval/...`;
+  the harness labels the table `H, delay 2`. Spans are unchanged from G.
+
+Measured (test pools, delay 2, `runs/H_breakfast_d2.json`, `runs/H_et_d2.json`): Breakfast
+dish given hindsight F1 0.655, live 0.656 (G: 0.659, 0.662); EPIC-Tent procedural, default split,
+hindsight 0.326, live 0.337 (G: 0.383, 0.396), where recall goes 0.18 / 0.29 / 0.29 / 0.35 at delay
+0 / 2 / 5 / 10. The ranking HSMM > LLM >= null holds at every delay.
+
+---
+
 ## 2. Metric E: PREGO's protocol
 
 Used only to compare with PREGO (CVPR'24) and TI-PREGO. It reproduces their scorer
@@ -194,6 +215,7 @@ injected errors (`pools.injected_per_trial`). Its healthy rate is not a false-al
 | Concept | Where |
 |---|---|
 | metric G | `eval/metric_g.py:score_trial`, `evaluate`, `GridScore`, `run_starts`, `alarm_onsets`, `alarm_ticks`, `DEADLINE` |
+| metric H | `eval/metric_h.py:score_dense`, `GridScore`, `evaluate`, `stretches`; selected by `harness.METRIC` (`COOK_METRIC`, `COOK_DELAY`) |
 | metric E | `eval/metric_e.py:score`, `step_extents`, `drop_truncated_under_run` |
 | sweeps, picks, tables | `eval/harness.py:hindsight_grid`, `live_grid`, `sweep`, `pick`, `at`, `null_masks`, `table`, `write_operating_points` |
 | alarms → per-tick masks | `eval/harness.py:alarm_mask` |

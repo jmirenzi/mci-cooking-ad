@@ -665,6 +665,39 @@ Breakfast injectors, oracle-confirmed anomalies only. Prior λ = 1, metric G, F1
 0.11 at 250. Omission recall 0.19 → 0.52, abandonment 0.01 → 0.44. Repetition stays at 0.05: those
 copies merge in place into one longer run.
 
+### 9.8 Idle scrubbed before the model
+
+`data/scrub.py`: every idle tick is dropped before training and scoring
+(`eval_synth_prior.py --variant cal_scrub`, `scripts/drift_synth/overnight_scrub.sh`).
+- "A, pause, A" merges into one run (Jack).
+- `scrub_kept.json` keeps each kept tick's original tick, so gap lengths and real time are recoverable.
+- Step-level pool spans move with the kept ticks (`map_spans`), and the oracle still reads the stream before scrubbing.
+
+Same 4 persons, recipes and sessions as §9.7; the models are refit on the scrubbed streams.
+
+**Mean over 4 persons, step-level pools, Hindsight, test sessions, metric G (F1 / healthy-trial FPR), prior λ = 1:**
+
+| train sessions | HSMM, idle kept (§9.7) | best add-ons, idle kept (§9.7, W = 100) | **HSMM, idle scrubbed** | scrubbed + `s_count` |
+|---|---|---|---|---|
+| 10 | 0.218 / 0.79 | 0.371 / 0.78 | **0.451 / 0.67** | 0.449 / 0.67 |
+| 30 | 0.274 / 0.57 | 0.578 / 0.34 | **0.644 / 0.31** | 0.643 / 0.31 |
+| 250 | 0.409 / 0.23 | 0.827 / 0.11 | **0.834 / 0.03** | 0.835 / 0.03 |
+
+Person only, scrubbed: 0.342 / 0.88, 0.498 / 0.67, 0.774 / 0.20.
+
+**Recall per type at 250 sessions, scrubbed, prior λ = 1:** substitution 1.00, abandonment 0.13,
+omission 0.88, transposition 0.91, repetition 0.83.
+
+- **Scrubbing alone beats every add-on**, at a sixth of the healthy false alarms at 250 sessions.
+  With idle gone, a repeated, moved or skipped step is an unusual transition between actions, and
+  s_trans sees it. No extra channel is needed.
+- **`s_count` adds nothing on scrubbed streams** (±0.002). What it caught is now a transition. It
+  stays in the code (optional, off without fitted counts), and its live version is tested.
+- **Abandonment is what is left** (0.13). That is the negative binomial's left tail
+  (next_steps.md §3, the nonparametric hazard).
+- **Cold start is better but not good:** two healthy sessions in three still alarm with 10 training
+  sessions.
+
 ## 10. Code
 
 | Concept | Where |
@@ -695,6 +728,7 @@ copies merge in place into one longer run.
 | global prior + fine-tune (§9.2) | `hsmm/train/global_prior.py:count_global`, `apply_global_prior` (fixed or fading: `person_counts`, `n0`), `state_pairs`; `eval_synth_prior.py --stage eval-split`; `scripts/eval/eval_synth_prior.py`; `harness.hindsight_split_grid`, `split_op` |
 | overnight rerun of everything on the revised generator | `scripts/drift_synth/overnight_v2.sh` |
 | step-level injectors, healthy-support oracle (§9.6–9.7) | `drift_synth/inject.py`; `eval/synth_oracle.py:HealthySupport`, `person_support`; `eval_synth_prior.py --pool all\|real\|gen`; `harness.trials_from_groups` |
+| idle scrubbing (§9.8) | `data/scrub.py:scrub_idle`, `map_spans`, `scrub_sequence`; `eval_synth_prior.py --variant cal_scrub` (`_scrub_export`); `scripts/drift_synth/overnight_scrub.sh` |
 | add-on channels for the hindsight HSMM (§9.7) | `detectors/skip_idle.py:SkipIdleTransitions`, `population_prior`; `detectors/count_channel.py:CountChannel`; `detectors/empirical_duration.py:EmpiricalShortDuration`; `eval_synth_prior.py --skip-idle --count-channel --emp-dur --struct-prior` |
 | injection and duration diagnostics (§9.5) | `scripts/eval/diagnose_synth_injections.py`, `scripts/eval/diagnose_synth_durations.py` |
 | CC4D calibration (§9.3) | `scripts/drift_synth/calibrate_cc4d.py` (`--write-scales`); `sampler.step_owners`; `assets.load_step_scale`; `configs/drift_synth/step_time_scale.json`; `scripts/drift_synth/overnight_cal.sh` |
