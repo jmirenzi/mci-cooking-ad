@@ -77,3 +77,18 @@ def test_spans_are_on_the_tick_grid():
     (a, b), = event_spans(ev, marked, 0.5)
     e = ev[marked[0][0]]
     assert a == round((e.t_start - ev[0].t_start) / 0.5) and b >= a
+
+
+def test_injection_does_not_depend_on_the_hash_seed():
+    """Step ids are strings: iterating a set of them follows PYTHONHASHSEED, so a pool drawn in
+    two processes differed (transposition's candidate pairs came from parents()' sets)."""
+    import os
+    import subprocess
+    import sys
+    code = ("import sys; sys.path.insert(0, 'tests'); import numpy as np\n"
+            "from test_drift_synth_inject import _session, OMELET; from cook_ad.drift_synth.inject import inject\n"
+            "rng = np.random.default_rng(0)\n"
+            "print([[(e.verb, e.noun) for e in inject('transposition', _session(s), OMELET, rng)[0]] for s in range(4)])")
+    outs = {subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
+                           env=dict(os.environ, PYTHONHASHSEED=str(h))).stdout for h in (1, 2, 3)}
+    assert len(outs) == 1

@@ -123,7 +123,7 @@ def transposition(items, order, graph, rng, **_):
     par = parents(graph)
     pos = {s: k for k, s in enumerate(blocks)}
     # (a, b): a must come before b, and both have actions; move b to just before a
-    pairs = [(a, b) for b in blocks for a in par.get(b, ()) if a in blocks and pos[a] < pos[b]]
+    pairs = [(a, b) for b in blocks for a in sorted(par.get(b, ())) if a in blocks and pos[a] < pos[b]]   # sorted: ids are str
     if not pairs:
         return None
     a, b = pairs[int(rng.integers(len(pairs)))]
