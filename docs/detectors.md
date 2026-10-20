@@ -268,8 +268,9 @@ $$
 $$
 
 A beginning of i at t is bad at α if its visit number v = ⌊ĉ_{t,r,i} + ½⌋ + 1 has
-P̂(C_i ≥ v | r) ≤ α (an extra visit), or if some k whose usual successor is i has ĉ_{t,r,k} < ½ and
-P̂(C_k = 0 | r) ≤ α (it follows a missing step). Then
+P̂(C_i ≥ v | r) ≤ α (an extra visit), or, at a first visit (v = 1), if some k with ĉ_{t,r,k} < ½
+has P̂(k not before i's first visit | r, i) ≤ α (precedence: k is skipped, or i moved ahead of it;
+`VisitCounts.p_begin`). Then
 
 $$
 \text{count}_t = \min\Bigl(1,\ \sum_{r,i} m_t(r, i)\ \mathbb 1[\text{bad}_\alpha(r, i)]\Bigr),
@@ -277,6 +278,11 @@ $$
 
 flagged at count_t > κ (`CountState.step`). Using expected visits rather than their distribution
 is an approximation: the exact belief would also have to track which subtasks have been visited.
+When the belief is sure (one-hot entries on the hindsight path) the live rule reduces exactly to
+hindsight's (`tests/test_count_live.py`). The precedence rule replaced "k's usual successor began
+while ĉ_k < ½", which alarmed on 77-91% of healthy synthetic sessions live: the usual successor
+is often not the only one, so k legitimately comes later. Whether the channel is worth having at
+all: `scripts/eval/compare_s_count.py` and the 2026-10-20 logbook entry.
 
 ### 3.7 Worked example: a healthy step change
 
@@ -428,16 +434,17 @@ start. At K_R = 1 it is zero with +inf thresholds (§2.3).
 
 The visit-count statistics are fitted once, after training (`scripts/train/fit_visit_counts.py`).
 The final model decodes its own training sessions, and for every recipe r and subtask k the
-fraction of sessions with C_k ≥ c visits, smoothed as (n + 0.5)/(N_r + 1), is stored, along with
-k's most frequent successor. Idle subtasks (most likely verb `stall`) are not counted. On the
-decoded path z*:
+fraction of sessions with C_k ≥ c visits, and, for every pair, the fraction of the sessions that
+contain j in which k came before j's first visit, both smoothed as (n + 0.5)/(N + 1), are stored.
+Idle subtasks (most likely verb `stall`) are not counted. On the decoded path z*, at each segment
+start of k:
 
 $$
-s_{\text{count}} = -\log \hat P(C_k \ge c \mid \hat r) \text{ at the start of the } c\text{-th visit of } k,
-\qquad -\log \hat P(C_k = 0 \mid \hat r) \text{ for a } k \text{ never visited,}
+s_{\text{count}} = -\log \hat P(C_k \ge c \mid \hat r) \text{ at the } c\text{-th visit } (c \ge 2),
+\qquad -\log \min_{j \text{ not yet visited}} \hat P(j \text{ not before } k \mid \hat r, k) \text{ at the first,}
 $$
 
-the second at the start of k's usual successor, else at the last segment. The threshold is −log α,
+(`VisitCounts.path_pvalues`). The threshold is −log α,
 like the duration channels (the p-values are frequencies, not model tails). The smallest
 reachable p is 0.5/(N_r + 1), so a recipe with few training sessions cannot fire. In the
 validation grid the channel sits with the transition channels (`harness.TRANSITION_CHANNELS`).
@@ -527,6 +534,6 @@ README ("Results") and [`eval.md`](eval.md).
 | Hindsight | `detectors/hsmm_hindsight.py:HindsightHSMMDetector` (`traces`, `assemble`, `thresholds`, `flags`, `detect_many`) |
 | Hindsight channels | `HindsightHSMMDetector.emission_surprise`, `stall_surprise`, `duration_surprise`, `transition_surprise`, `recipe_transition_surprise` |
 | Hindsight trace | `hsmm_hindsight.py:HindsightTrace` |
-| visit counts (`s_count`, optional) | `hsmm/visit_counts.py:VisitCounts` (`fit`, `path_pvalues`, `p_at_least`, `p_zero`); `HindsightHSMMDetector(counts=)`, `count_surprise`; `LiveHSMMDetector(counts=)`, `hsmm_live.py:entry_one_tick`, `entry_table`, `CountState`; `scripts/train/fit_visit_counts.py` |
+| visit counts (`s_count`, optional) | `hsmm/visit_counts.py:VisitCounts` (`fit`, `path_pvalues`, `p_at_least`, `precedence`, `p_begin`); `HindsightHSMMDetector(counts=)`, `count_surprise`; `LiveHSMMDetector(counts=)`, `hsmm_live.py:entry_one_tick`, `entry_table`, `CountState`; `scripts/train/fit_visit_counts.py` |
 | narration | `detectors/narrate.py:narrate`, `Query`, `Lexicon`, `severity`, `expected_given`, `expected_pair`, `missing_step` |
 | tests | `tests/test_detector_contract.py`, `test_live.py` (R2, exactness), `test_hindsight.py`, `test_thresholds.py`, `test_narrate.py`, `test_count_live.py` (s_count) |

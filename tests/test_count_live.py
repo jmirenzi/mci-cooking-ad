@@ -89,3 +89,39 @@ def test_live_counts_are_expected_visits():
     for v, n in zip(tr.verbs, tr.nouns):
         det.step(int(v), int(n))
     np.testing.assert_allclose(det._count.c[0], np.ones(K), atol=0.05)
+
+
+def test_live_reduces_to_hindsight_when_the_belief_is_sure():
+    """Sharp emissions make the belief a point mass on the hindsight path; then live s_count must
+    alarm exactly where hindsight s_count does, on random orders, repeats and skips."""
+    rng = np.random.default_rng(0)
+    train = []
+    for _ in range(60):                       # mostly 0 1 2 3, sometimes 0 2 1 3
+        train.append((0, [0, 1, 2, 3] if rng.random() < 0.8 else [0, 2, 1, 3]))
+    counts = VisitCounts.fit(train)
+    h = _model()
+    alphas = {c: 1e-3 for c in ("s_emit", "s_verb", "s_noun", "s_temporal", "s_dur_two",
+                                "s_transition", "s_recipe_transition")}
+    hind = HindsightHSMMDetector(h, BadSets(h, ALPHAS), OperatingPoint(alphas | {COUNT: 0.05}), counts=counts)
+    live = LiveHSMMDetector(h, BadSets(h, ALPHAS), OperatingPoint(alphas | {COUNT: 0.05}, 0.5), counts=counts)
+    for _ in range(25):
+        states = list(rng.permutation(4))
+        if rng.random() < 0.5:
+            states.insert(int(rng.integers(1, len(states))), int(rng.integers(4)))
+        if rng.random() < 0.3:
+            states.pop(int(rng.integers(len(states))))
+        states = [s for i, s in enumerate(states) if i == 0 or s != states[i - 1]]
+        tr = _trial(states)
+        a = sorted({x.tick for x in hind.detect_many([tr])[0].alarms if x.channel == COUNT})
+        b = sorted({x.tick for x in live.detect_trial(tr).alarms if x.channel == COUNT})
+        assert a == b, (states, a, b)
+
+
+def test_a_legal_alternative_order_is_not_a_missing_step():
+    """0 2 1 3 is in training (20%): 2 starting before 1 must not be flagged at 0.05."""
+    counts = VisitCounts.fit([(0, [0, 1, 2, 3])] * 32 + [(0, [0, 2, 1, 3])] * 8)
+    h = _model()
+    op = _live().op
+    det = LiveHSMMDetector(h, BadSets(h, ALPHAS), op, counts=counts)
+    assert not [a for a in det.detect_trial(_trial([0, 2, 1, 3])).alarms if a.channel == COUNT]
+    assert [a.tick for a in det.detect_trial(_trial([0, 3, 1, 2])).alarms if a.channel == COUNT]

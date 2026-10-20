@@ -190,14 +190,11 @@ class CountState:
             recipes = range(k_recipe)[recipes]
         self.counts, self.recipes = counts, [int(r) for r in np.atleast_1d(recipes)]
         self.c = np.zeros((len(self.recipes), k))
-        pm = []
-        for r in self.recipes:
-            pred = counts.predecessors(r) if counts.known(r) else {}
-            pm.append([[kk for kk in pred.get(j, []) if kk not in counts.ignore] for j in range(k)])
-        self.pred = pm
 
     def step(self, entry, p_r, alphas):
-        """(G,) bad-event mass at this tick, then add the tick's entries to the counts."""
+        """(G,) bad-event mass at this tick, then add the tick's entries to the counts. A
+        beginning of i is bad at alpha if counts.p_begin <= alpha for the visit it would be
+        (round(c_i) + 1), with "not yet happened" read as c_k < 1/2."""
         entry, p_r = np.asarray(entry, dtype=float), np.asarray(p_r, dtype=float)
         cond = entry / np.maximum(p_r[:, None], 1e-300)
         alphas = np.asarray(alphas, dtype=float)
@@ -205,14 +202,13 @@ class CountState:
         for a, r in enumerate(self.recipes):
             if not self.counts.known(r):
                 continue
+            c = self.c[a]
             for i in np.flatnonzero(entry[a] > 1e-12):
                 i = int(i)
                 if i in self.counts.ignore:
                     continue
-                visit = int(np.floor(self.c[a, i] + 0.5)) + 1          # the visit this would be
-                p = self.counts.p_at_least(r, i, visit)
-                miss = [self.counts.p_zero(r, k) for k in self.pred[a][i] if self.c[a, k] < 0.5]
-                p = min([p] + miss)
+                visit = int(np.floor(c[i] + 0.5)) + 1
+                p = self.counts.p_begin(r, i, visit, lambda k: c[k] < 0.5)
                 bad += entry[a, i] * (p <= alphas)
         self.c += cond
         return np.minimum(bad, 1.0)

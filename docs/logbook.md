@@ -5,6 +5,14 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-20 — which s_count, if any (metric G)
+
+Ten rules, own alpha axis, picked on validation (`scripts/eval/compare_s_count.py`, `_breakfast.py`).
+Synthetic scrubbed: every rule +-0.006 of off at 30 and 250 sessions, also with 40 population
+sessions/recipe. Breakfast live: missing-step precedence alone +0.014 [+0.001, +0.026] (omission
+0.31 -> 0.46, healthy FPR same); the extra-visit half -0.012 (CI < 0); progress, touched-set and
+end-of-session rules never beat precedence. runs/drift_synth/scount/summary.md.
+
 ## 2026-10-19 — metric H (any flag hits, one miss per run), delay 2
 
 Breakfast dish-given test (97/group), metric H delay 2: hindsight 0.655, live 0.656, LLM 0.35-0.40,

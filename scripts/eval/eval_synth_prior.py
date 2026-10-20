@@ -544,6 +544,110 @@ def stage_eval_split(persons, chunk_size=8):
                       "results": out})
 
 
+COUNT_ALPHAS = (0.0, 0.005, 0.01, 0.02, 0.05)       # the live s_count axis; 0 = off
+
+
+def stage_eval_live(persons, chunk_size=8):
+    """The causal detector (LiveHSMMDetector, L = 0) on the step-level pools: alpha x kappa
+    picked on validation by G-F1, plus an s_count alpha axis with --core-count (level 0 = off,
+    so the same grid also gives the run without it). Durations from stage 4b with --np-stage."""
+    from cook_ad.xla_env import disable_gpu_autotuning
+    disable_gpu_autotuning()
+    import jax
+    import numpy as np
+    jax.config.update("jax_enable_x64", True)
+    from cook_ad.core import OperatingPoint, Trial
+    from cook_ad.data.config import load_config
+    from cook_ad.detectors.hsmm_hindsight import HindsightHSMMDetector
+    from cook_ad.detectors.hsmm_live import COUNT, LiveHSMMDetector
+    from cook_ad.detectors.thresholds import BadSets
+    from cook_ad.eval import harness, metric_g
+    from cook_ad.eval.synth_oracle import person_support
+    from cook_ad.hsmm import params as hparams
+    from cook_ad.hsmm.model import HSMM, durations_path
+    from cook_ad.hsmm.train.global_prior import apply_global_prior
+    from cook_ad.hsmm.train.lexical_init import recipe_label_assignment
+    from cook_ad.hsmm.train.np_hazard import load_tables
+    from cook_ad.hsmm.visit_counts import VisitCounts
+
+    if POOL != "gen":
+        raise SystemExit("eval-live runs on the step-level pools (--pool gen)")
+    d_max = load_config(CONFIG)["duration"]["d_max_ticks"]
+    gcounts = json.loads((ROOT / "global_counts.json").read_text())
+    for i in persons:
+        pid = f"p{i:02d}"
+        d = ROOT / "persons" / pid
+        labels = json.loads((d / "null" / "labels.json").read_text())
+        seqs = _in_order(json.loads((d / "null" / "sequences.json").read_text()), labels)
+        _, names = recipe_label_assignment(seqs, labels)
+        vocab = json.loads((d / "null" / "vocab.json").read_text())
+        support = person_support(i, SEED, _assets({"theta0_by_knob": CAPABILITY, "habit": 2.0}), vocab,
+                                 N_DAYS, ORACLE_DAYS, TICK, cache=d / f"oracle_support_v{ORACLE_VERSION}.pkl")
+        val = gen_pool(i, seqs[VAL_START:TEST_START], labels, support)
+        test = gen_pool(i, seqs[TEST_START:TEST_END], labels, support)
+        out = {}
+        for n in TRAIN_SESSIONS:
+            model = d / f"model_s{n}" / "model.npz"
+            train = seqs[:n]
+            out[n] = {}
+            for arm in POOL_ARMS:
+                lam, _ = FADE_ARMS[arm]
+                p = apply_global_prior(hparams.load(str(model)), gcounts, names, lam)
+                dp = durations_path(model)
+                hsmm = HSMM(p, d_max, duration_tables=load_tables(dp)) if NP_STAGE else HSMM(p, d_max)
+                bad = BadSets(hsmm, harness.ALPHAS)
+                vc = None
+                if CORE_COUNT:
+                    hind = HindsightHSMMDetector(hsmm, bad, OperatingPoint(0.01), chunk_size=chunk_size)
+                    td = recipe_label_assignment(train, labels)[0]
+                    trs = hind.traces([Trial(s_["trial_id"], np.asarray(s_["verb_ids"]),
+                                             np.asarray(s_["noun_ids"]), int(r_), (), "healthy")
+                                       for s_, r_ in zip(train, td)])
+                    vc = VisitCounts.fit([(t.r_hat, [k for k, _ in t.segments]) for t in trs])
+                live = LiveHSMMDetector(hsmm, bad, OperatingPoint(0.01, 0.5), counts=vc)
+                kap = np.asarray(harness.KAPPAS)
+
+                def grid(trials):
+                    score = metric_g.GridScore(TICK)
+                    for group, t in trials:
+                        tr = live.trace(t)
+                        g = harness.live_grid(live, tr, harness.ALPHAS, harness.KAPPAS)    # (T, A, K)
+                        if vc is not None:
+                            ev = tr.events[COUNT]
+                            cnt = np.stack([np.zeros((len(ev), len(kap)), dtype=bool) if a_ == 0 else
+                                            ev[:, bad.alpha_index(a_)][:, None] > kap[None, :]
+                                            for a_ in COUNT_ALPHAS], axis=-1)              # (T, K, C)
+                            g = g[..., None] | cnt[:, None, :, :]
+                        score.add(group, g, list(t.spans), t.verbs, t.nouns)
+                    return score.result()
+                gv, gt = grid(val), grid(test)
+                rows = {"": gv}
+                idx = harness.pick(gv)
+                row = harness.at(gt, idx)
+                row.update(alpha=harness.ALPHAS[idx[0]], kappa=harness.KAPPAS[idx[1]])
+                label = arm + " live"
+                if vc is not None:
+                    row["count_alpha"] = COUNT_ALPHAS[idx[2]]
+                    out[n][label + " +s_count"] = row
+                    sl = lambda x: np.asarray(x)[..., 0]  # noqa: E731   s_count off
+                    gv0 = {k: (sl(v) if k != "per_type_recall" else {t: sl(x) for t, x in v.items()}) for k, v in gv.items()}
+                    gt0 = {k: (sl(v) if k != "per_type_recall" else {t: sl(x) for t, x in v.items()}) for k, v in gt.items()}
+                    i0 = harness.pick(gv0)
+                    r0 = harness.at(gt0, i0)
+                    r0.update(alpha=harness.ALPHAS[i0[0]], kappa=harness.KAPPAS[i0[1]])
+                    out[n][label] = r0
+                    print(f"{pid} N={n:3d} {label:24s} F1={r0['f1']:.3f} FPR={r0['healthy_trial_fpr']:.2f} | "
+                          f"+s_count (a={row['count_alpha']:g}) F1={row['f1']:.3f} FPR={row['healthy_trial_fpr']:.2f} "
+                          + " ".join(f"{k[:5]} {r0['per_type'][k]:.2f}->{v:.2f}" for k, v in row["per_type"].items()),
+                          flush=True)
+                else:
+                    out[n][label] = row
+                    print(f"{pid} N={n:3d} {label:24s} F1={row['f1']:.3f} FPR={row['healthy_trial_fpr']:.2f}", flush=True)
+                del rows
+        harness.dump(f"runs/drift_synth/eval_synth_prior_live{TAG}_{pid}.json",
+                     {"metric": "G", "person": pid, "unit": "sessions", "pool": POOL, "results": out})
+
+
 def _unit(pattern):
     """Training-size unit of the results files: "sessions", or "days" for files written before
     the switch to session counts (the base variant at f590c55)."""
@@ -712,7 +816,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stage", choices=["population", "persons", "train", "eval", "summary", "plot",
-                                        "eval-split", "summary-split", "plot-split"],
+                                        "eval-split", "summary-split", "plot-split", "eval-live"],
                     required=True)
     ap.add_argument("--person", type=int, action="append")
     ap.add_argument("--sessions", type=int, action="append")
@@ -776,6 +880,10 @@ def main():
         summarize_split()
     elif a.stage == "summary-split":
         summarize_split()
+    elif a.stage == "eval-live":
+        if a.sessions:
+            globals()["TRAIN_SESSIONS"] = tuple(a.sessions)
+        stage_eval_live(persons)
     elif a.stage == "plot-split":
         plot_split()
     else:
