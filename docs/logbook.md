@@ -5,6 +5,13 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-20 — s_count comparison rescored under metric H
+
+Same runs scored G, H delay 2, H delay 10 in one pass (compare_s_count.py). Verdict unchanged:
+Breakfast live precedence-only +0.014 (G) / +0.012 (H2, H10; CI lower end -0.000); extra-visit
+half -0.012 to -0.014 under G and H10; synthetic every rule within +-0.004 under all three. H10
+equals G within 0.004 F1; H2 is 0.007-0.03 lower (shorter window). runs/drift_synth/scount/gh/.
+
 ## 2026-10-20 — generator: sessions only, no noise, no gaps, CC4D step totals
 
 Jack's four changes (drift_synth.md §2, §9.9). θ noise, speed, recipe draw and drift regimes step per
