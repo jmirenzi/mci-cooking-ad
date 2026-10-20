@@ -171,7 +171,7 @@ Out of scope for now: sequential/anytime-valid tests, the LLM interpreter's prom
 sensor or recognizer health checks. The last of these is required before deployment, because a
 moved camera or a recognizer update looks exactly like emission drift.
 
-## 3. A nonparametric duration hazard (tested 2026-10-20; not yet a training stage)
+## 3. A nonparametric duration hazard (built 2026-10-20: training stage 4b, docs/training.md)
 
 **What changes.** Today every (recipe, subtask) cell's duration is a negative binomial (r, p), and
 the hazard h_ij = P(D = j | D ≥ j, z = i) that the filter, stall, early-exit and s_dur_two all read
@@ -229,3 +229,17 @@ tables. With κ = κ₀ = 10⁶ the swap reproduces the NB results (±0.01, p00)
   the NB (κ₀ = 20, 100) does not remove it.
 - **Next:** gate it by cell size (NB below ~30 segments at risk) or a large κ, then make it training
   stage 4b.
+
+**As built: training stage 4b, gated at 30 segments per cell, with exact NB tables kept in gated
+cells** (the first table path lost the NB's zero tail and rounded deep CDFs; that bug, not the
+method, caused most of the cold-start loss above). Metric G, F1 / healthy-trial FPR:
+
+| data | NB | stage 4b |
+|---|---|---|
+| synthetic scrubbed, 10 sessions (prior λ = 1) | 0.451 / 0.67 | 0.451 / 0.67 (no cell has 30 segments) |
+| synthetic scrubbed, 30 sessions | 0.644 / 0.31 | 0.644 / 0.31 |
+| synthetic scrubbed, 250 sessions | 0.834 / 0.03 | **0.869** / 0.05 (abandonment 0.13 → 0.54) |
+| synthetic scrubbed, 250 sessions, person only | 0.774 / 0.20 | **0.807** / 0.21 |
+| Breakfast dish given, hindsight (train-picked) | 0.659 / 0.47 | **0.679** / **0.24** |
+| Breakfast dish given, live L = 0 | 0.662 / 0.32 | **0.685** / 0.25 |
+| EPIC-Tent real errors, hindsight / live | 0.383 / 0.396 | 0.383 / 0.400 |

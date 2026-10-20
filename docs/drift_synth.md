@@ -693,8 +693,9 @@ omission 0.88, transposition 0.91, repetition 0.83.
   s_trans sees it. No extra channel is needed.
 - **`s_count` adds nothing on scrubbed streams** (±0.002). What it caught is now a transition. It
   stays in the code (optional, off without fitted counts), and its live version is tested.
-- **Abandonment is what is left** (0.13). That is the negative binomial's left tail
-  (next_steps.md §3, the nonparametric hazard).
+- **Abandonment is what is left** (0.13). That is the negative binomial's left tail. Training
+  stage 4b (the nonparametric hazard, docs/training.md) lifts it to 0.54 and F1 to 0.869 at 250
+  sessions, and leaves 10–30 sessions unchanged (next_steps.md §3).
 - **Cold start is better but not good:** two healthy sessions in three still alarm with 10 training
   sessions.
 

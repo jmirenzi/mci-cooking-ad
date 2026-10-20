@@ -12,6 +12,13 @@ null (tick) 0.301. EPIC-Tent procedural default split (9 sessions, 51 spans): hi
 0.337, LLM 0.175, null 0.169. Live alarms/10 min 9.3 vs 2.6 under G: stretches expose flicker.
 `eval/metric_h.py`, `COOK_METRIC=H`; delay sweep 0/2/5/10 on EPIC-Tent only.
 
+## 2026-10-20 — training stage 4b: nonparametric hazard, gated (metric G)
+
+Cells with < 30 segments keep the exact NB tables. Synthetic scrubbed: 10 / 30 sessions unchanged
+(0.451 / 0.644), 250: 0.834 -> 0.869. Breakfast hindsight 0.659 -> 0.679, healthy FPR 0.47 -> 0.24.
+EPIC-Tent unchanged. The ungated cold-start loss was mostly a table-path bug (NB zero tail lost,
+CDF rounded); fixed in 7ec63c1. `scripts/train/fit_np_hazard.py`.
+
 ## 2026-10-20 — nonparametric duration hazard tested on synthetic, Breakfast, EPIC-Tent (metric G)
 
 Kaplan-Meier hazard from training decodes, swapped for the NB tables. Synthetic scrubbed, 250
