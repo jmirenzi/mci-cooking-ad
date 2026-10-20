@@ -1,38 +1,42 @@
 """Tables from compare_s_count[_breakfast].py: metric G per variant (mean over persons) and the
 per-session alarm rates. Writes markdown to stdout.
 
-    ./py scripts/eval/summarize_s_count.py > runs/drift_synth/scount/summary.md
+    ./py scripts/eval/summarize_s_count.py > runs/drift_synth/scount/gh/summary.md
 """
 import glob
 import json
-import re
 
 import numpy as np
 
 TYPES = ("substitution", "abandonment", "omission", "transposition", "repetition")
 
 
-def load():
-    out = {}
-    for f in sorted(glob.glob("runs/drift_synth/compare_s_count_*p0?.json")):
+METRIC_LABEL = {"G": "G", "H2": "H, delay 2", "H10": "H, delay 10"}
+
+
+def load(root="runs/drift_synth/scount/gh"):
+    """{(corpus, N, mode, metric): [per-person result]} from the G/H runs (scored in one pass)."""
+    out, levels = {}, None
+    files = [(f, "synthetic") for f in sorted(glob.glob(f"{root}/compare_s_count_p0?.json"))]
+    files += [(f, "breakfast") for f in glob.glob(f"{root}/compare_s_count_breakfast.json")]
+    for f, corpus in files:
         d = json.load(open(f))
-        pop = re.match(r".*compare_s_count_pop(\d+)_p0\d\.json", f)
-        corpus = "synthetic" + (f" +population {pop.group(1)}/recipe" if pop else "")
-        for n, modes in d["results"].items():
-            for mode, r in modes.items():
-                out.setdefault((corpus, f"N={n}", mode), []).append(r)
-    for f in glob.glob("runs/drift_synth/scount/compare_s_count_breakfast.json"):
-        d = json.load(open(f))
-        for mode, r in d["results"].items():
-            out.setdefault(("breakfast", "N=402", mode), []).append(r)
-    return out, d["levels"] if out else None
+        levels = d["levels"]
+        res = d["results"]
+        by_n = res.items() if corpus == "synthetic" else [("402", res)]
+        for n, modes in by_n:
+            for mode, metrics in modes.items():
+                for m, r in metrics.items():
+                    out.setdefault((corpus, f"N={n}", mode, m), []).append(r)
+    return out, levels
 
 
 def main():
     res, levels = load()
-    for (corpus, n, mode), runs in sorted(res.items()):
+    for (corpus, n, mode, metric), runs in sorted(res.items()):
         variants = list(runs[0]["rows"])
-        print(f"\n### {corpus} {n} {mode} ({len(runs)} person{'s' if len(runs) > 1 else ''}) -- metric G\n")
+        print(f"\n### {corpus} {n} {mode} ({len(runs)} person{'s' if len(runs) > 1 else ''}) "
+              f"-- metric {METRIC_LABEL[metric]}\n")
         print("| variant | F1 | ΔF1 vs off | 95% CI (bootstrap) | precision | recall | healthy FPR | alarms/10 min | s_count α | "
               + " | ".join(t[:5] for t in TYPES) + " |")
         print("|---" * (9 + len(TYPES)) + "|")
@@ -48,6 +52,8 @@ def main():
             print(f"| {v} | {m('f1'):.3f} | {m('f1') - off:+.3f} | {ci} | {m('precision'):.3f} | {m('recall'):.3f} | "
                   f"{m('healthy_trial_fpr'):.2f} | {m('alarms_per_10min'):.2f} | {al} | "
                   + " | ".join(f"{np.mean([x['per_type'][t] for x in rows]):.2f}" for t in TYPES) + " |")
+        if metric != "G":
+            continue                     # per-session rates do not depend on the metric
         print("\nSessions with any s_count alarm (test; live at κ = 0.5), by α:\n")
         print("| variant | α | healthy | " + " | ".join(t[:5] for t in TYPES) + " |")
         print("|---" * (3 + len(TYPES)) + "|")

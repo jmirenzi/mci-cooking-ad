@@ -37,7 +37,8 @@ import numpy as np
 
 import eval_synth_prior as E
 
-E.set_variant("cal_scrub")
+VARIANT = os.environ.get("SYNTH_VARIANT", "sess")   # cal_scrub = the day-based data of 2026-10-19
+E.set_variant(VARIANT)
 E.SCRUB = True
 from cook_ad.xla_env import disable_gpu_autotuning
 
@@ -51,7 +52,7 @@ from cook_ad.data.config import load_config
 from cook_ad.detectors.hsmm_hindsight import HindsightHSMMDetector
 from cook_ad.detectors.hsmm_live import EVENTS, LiveHSMMDetector, entry_table, event_table
 from cook_ad.detectors.thresholds import BadSets
-from cook_ad.eval import harness, metric_g
+from cook_ad.eval import harness, metric_g, metric_h
 from cook_ad.eval.synth_oracle import person_support
 from cook_ad.hsmm import params as hparams
 from cook_ad.hsmm.model import HSMM, durations_path
@@ -258,21 +259,34 @@ def hindsight_inputs(trace, k):
 # ---- scoring --------------------------------------------------------------------------------
 
 
-class TrialScore(metric_g.GridScore):
-    """GridScore that also keeps each trial's hits and false alarms over the grid, for a
-    bootstrap at the picked operating point."""
+# metric -> (scoring module, deadline / delay). G is the old headline (deadline 10); H at delay 2
+# is how metric H has been quoted (docs/eval.md §1b), and H at 10 has G's window, so the two
+# differ only in the counting rule.
+METRICS = {"G": (metric_g, metric_g.DEADLINE), "H2": (metric_h, 2), "H10": (metric_h, 10)}
 
-    def __init__(self, tick_seconds=1.0):
-        super().__init__(tick_seconds)
+
+class TrialScore:
+    """One metric's GridScore that also keeps each trial's hits and false alarms over the grid
+    (record=True), for a bootstrap at the picked operating point."""
+
+    def __init__(self, module, deadline, tick_seconds=1.0, record=False):
+        self.module, self.record = module, record
+        self.grid = module.GridScore(tick_seconds, deadline)
+        self.deadline = deadline
         self.per = []                                   # (group, hits (P,), n_spans, fp (P,))
 
     def add(self, group, flags, spans, verbs, nouns):
-        super().add(group, flags, spans, verbs, nouns)
+        self.grid.add(group, flags, spans, verbs, nouns)
+        if not self.record:
+            return
         f = np.asarray(flags, dtype=bool)
-        r = metric_g.score_dense(f.reshape(f.shape[0], -1), spans, metric_g.correct_runs(verbs, nouns, spans),
-                                 metric_g.run_starts(verbs, nouns), self.deadline)
+        r = self.module.score_dense(f.reshape(f.shape[0], -1), spans, metric_g.correct_runs(verbs, nouns, spans),
+                                    metric_g.run_starts(verbs, nouns), self.deadline)
         self.per.append((group, r["hits"].sum(axis=0).reshape(f.shape[1:]), len(spans),
                          r["fp"].reshape(f.shape[1:])))
+
+    def result(self):
+        return self.grid.result()
 
 
 def bootstrap_delta(score, idx, idx0, reps=2000, seed=0):
@@ -319,7 +333,8 @@ def evaluate(person, n, mode, val, test, model_parts, tick=None, hind_grid=harne
     kap = np.asarray(KAPPAS)
 
     def run(trials, part):
-        scores = {v: TrialScore(tick) for v in VARIANTS}
+        scores = {(m, v): TrialScore(mod, dl, tick, record=part == "test")
+                  for m, (mod, dl) in METRICS.items() for v in VARIANTS}
         sess = {v: defaultdict(list) for v in VARIANTS}
         groups = list(dict.fromkeys(g for g, _ in trials))
         for g in groups:
@@ -343,30 +358,34 @@ def evaluate(person, n, mode, val, test, model_parts, tick=None, hind_grid=harne
                         cnt = ms[:, None, :] > kap[None, :, None]                      # (T, K, L)
                         grid = base[..., None] | cnt[:, None, :, :]
                         sess[v][g].append(cnt[:, KAPPAS.index(0.5)].any(axis=0))
-                    scores[v].add(g, grid, list(t.spans), t.verbs, t.nouns)
+                    for m in METRICS:
+                        scores[m, v].add(g, grid, list(t.spans), t.verbs, t.nouns)
         run.scores = scores
-        return {v: s.result() for v, s in scores.items()}, {
+        return {key: sc.result() for key, sc in scores.items()}, {
             v: {g: np.mean(x, axis=0).tolist() for g, x in d.items()} for v, d in sess.items()}
 
     t0 = time.time()
     gv, _ = run(val, "val")
     gt, st = run(test, "test")
-    rows = {}
-    off_v, off_t = _slice0(gv[VARIANTS[0]]), _slice0(gt[VARIANTS[0]])
-    i0 = harness.pick(off_v)
-    rows["off"] = harness.at(off_t, i0)
     test_scores = run.scores
-    for v in VARIANTS:
-        idx = harness.pick(gv[v])
-        row = harness.at(gt[v], idx)
-        row["count_alpha"] = LEVELS[idx[-1]]
-        row["index"] = [int(x) for x in idx]
-        row["delta_f1_vs_off"] = bootstrap_delta(test_scores[v], tuple(idx), tuple(i0) + (0,))
-        rows[v] = row
-    print(f"{person} N={n:3d} {mode:9s} ({time.time() - t0:.0f}s) off F1={rows['off']['f1']:.3f} "
-          f"FPR={rows['off']['healthy_trial_fpr']:.2f} | "
-          + " ".join(f"{v}={rows[v]['f1']:.3f}@{rows[v]['count_alpha']:g}" for v in VARIANTS), flush=True)
-    return {"rows": rows, "session_any": st}
+    out = {}
+    for m in METRICS:
+        rows = {}
+        off_v, off_t = _slice0(gv[m, VARIANTS[0]]), _slice0(gt[m, VARIANTS[0]])
+        i0 = harness.pick(off_v)
+        rows["off"] = harness.at(off_t, i0)
+        for v in VARIANTS:
+            idx = harness.pick(gv[m, v])
+            row = harness.at(gt[m, v], idx)
+            row["count_alpha"] = LEVELS[idx[-1]]
+            row["index"] = [int(x) for x in idx]
+            row["delta_f1_vs_off"] = bootstrap_delta(test_scores[m, v], tuple(idx), tuple(i0) + (0,))
+            rows[v] = row
+        print(f"{person} N={n:3d} {mode:9s} [{m}] ({time.time() - t0:.0f}s) off F1={rows['off']['f1']:.3f} "
+              f"FPR={rows['off']['healthy_trial_fpr']:.2f} | "
+              + " ".join(f"{v}={rows[v]['f1']:.3f}@{rows[v]['count_alpha']:g}" for v in VARIANTS), flush=True)
+        out[m] = {"rows": rows, "session_any": st}
+    return out
 
 
 def population_sessions(names, m, seed=0):
@@ -392,7 +411,7 @@ def main():
     ap.add_argument("--sessions", type=int, action="append")
     ap.add_argument("--mode", action="append", choices=["hindsight", "live"])
     ap.add_argument("--limit", type=int, default=None, help="sessions per group (smoke test)")
-    ap.add_argument("--out", default="runs/drift_synth/compare_s_count")
+    ap.add_argument("--out", default="runs/drift_synth/scount/gh/compare_s_count")
     ap.add_argument("--pop", type=int, default=0,
                     help="add M population sessions per recipe (decoded by the person's model) to the s_count statistics")
     a = ap.parse_args()
@@ -408,7 +427,7 @@ def main():
         _, names = recipe_label_assignment(seqs, labels)
         vocab = json.loads((d / "null" / "vocab.json").read_text())
         sup = person_support(i, E.SEED, E._assets({"theta0_by_knob": E.CAPABILITY, "habit": 2.0}), vocab,
-                             E.N_DAYS, E.ORACLE_DAYS, E.TICK, cache=d / f"oracle_support_v{E.ORACLE_VERSION}.pkl")
+                             E.N_SESSIONS, E.ORACLE_SESSIONS, E.TICK, cache=d / f"oracle_support_v{E.ORACLE_VERSION}.pkl")
         val = E.gen_pool(i, seqs[E.VAL_START:E.TEST_START], labels, sup)
         test = E.gen_pool(i, seqs[E.TEST_START:E.TEST_END], labels, sup)
         if a.limit:
@@ -421,7 +440,7 @@ def main():
                         out.append((g, t))
                 return out
             val, test = cut(val), cut(test)
-        report = {"metric": "G", "person": pid, "levels": LEVELS, "variants": VARIANTS, "results": {}}
+        report = {"metric": list(METRICS), "person": pid, "levels": LEVELS, "variants": VARIANTS, "results": {}}
         for n in a.sessions or (30, 250):
             model = d / f"model_s{n}" / "model.npz"
             p = apply_global_prior(hparams.load(str(model)), gc, names, 1.0)

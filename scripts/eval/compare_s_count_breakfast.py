@@ -32,7 +32,7 @@ B = "dataset/processed/breakfast"
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", action="append", choices=["hindsight", "live"])
-    ap.add_argument("--out", default="runs/drift_synth/scount/compare_s_count_breakfast.json")
+    ap.add_argument("--out", default="runs/drift_synth/scount/gh/compare_s_count_breakfast.json")
     a = ap.parse_args()
     d_max = load_config("configs/breakfast.yaml")["duration"]["d_max_ticks"]
     vocab = json.load(open(f"{B}/vocab.json"))
@@ -66,7 +66,7 @@ def main():
     def stats_val(t):       # Trial ids are "<group>/<pool index>"
         return st_fold[fold(pool_ids["train"][int(t.trial_id.split("/")[1])])]
 
-    out = {"metric": "G", "corpus": "breakfast", "model": "dish-given", "levels": C.LEVELS,
+    out = {"metric": list(C.METRICS), "corpus": "breakfast", "model": "dish-given", "levels": C.LEVELS,
            "variants": C.VARIANTS, "results": {}}
     for mode in a.mode or ("hindsight", "live"):
         out["results"][mode] = C.evaluate("breakfast", len(train), mode, parts["train"], parts["test"],
