@@ -58,3 +58,18 @@ def fit_np_hazard(trajectories, k_recipe, k_subtask, d_max, log_h_nb, kappa=5.0,
     h_pool = (ev.sum(0)[None] + kappa0 * h_nb) / (risk.sum(0)[None] + kappa0)
     h = (ev + kappa * h_pool) / (risk + kappa)
     return tables_from_hazard(h)
+
+
+def np_hsmm(params, d_max, sequences, recipes=None, kappa=5.0, kappa0=2.0, bandwidth=1, chunk_size=16):
+    """An HSMM whose duration tables are the nonparametric hazard fitted on `params`' own Viterbi
+    decode of `sequences` (the training split), under `recipes` (given dish per sequence) or the
+    inferred one."""
+    from cook_ad.hsmm.model import HSMM
+    from cook_ad.synthetic import generate
+    base = HSMM(params, d_max)
+    traj = generate.trajectories_from_real_joint(params, sequences, d_max, chunk_size=chunk_size,
+                                                 r_hat=recipes)
+    k_r, k = np.asarray(params.init_counts).shape
+    return HSMM(params, d_max, duration_tables=fit_np_hazard(
+        traj, k_r, k, d_max, np.asarray(base.tables.log_h), kappa=kappa, kappa0=kappa0,
+        bandwidth=int(bandwidth)))

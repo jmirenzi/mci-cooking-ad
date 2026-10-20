@@ -171,7 +171,7 @@ Out of scope for now: sequential/anytime-valid tests, the LLM interpreter's prom
 sensor or recognizer health checks. The last of these is required before deployment, because a
 moved camera or a recognizer update looks exactly like emission drift.
 
-## 3. A nonparametric duration hazard (proposal, not built)
+## 3. A nonparametric duration hazard (tested 2026-10-20; not yet a training stage)
 
 **What changes.** Today every (recipe, subtask) cell's duration is a negative binomial (r, p), and
 the hazard h_ij = P(D = j | D ≥ j, z = i) that the filter, stall, early-exit and s_dur_two all read
@@ -204,3 +204,28 @@ A nonparametric h gives the same to every channel at once, live included, and ne
   measured.
 - `durations.duration_tables` and everything downstream read (log_pmf, log_surv), so the change is
   local to the fit: pmf_j = h_j ∏_{j'<j}(1 − h_j'), surv_j = ∏_{j'<j}(1 − h_j').
+
+**Tested** (`hsmm/train/np_hazard.py:fit_np_hazard`, `np_hsmm`). The trained models' NB tables are
+swapped at evaluation time (`HSMM(duration_tables=...)`); s_dur_two and the early-exit bins read the
+tables. With κ = κ₀ = 10⁶ the swap reproduces the NB results (±0.01, p00), so the plumbing is exact.
+
+| data (metric) | operating point | NB | NP (κ = 5, kernel 1) |
+|---|---|---|---|
+| synthetic, scrubbed step pools, 250 sessions (G, prior λ = 1) | picked on validation | 0.834 F1, aband. 0.13, FPR 0.03 | **0.871**, aband. **0.57**, FPR 0.04 |
+| same, 30 sessions | picked on validation | **0.644**, FPR 0.31 | 0.624, FPR 0.29 |
+| same, 10 sessions | picked on validation | **0.451**, FPR 0.67 | 0.416, FPR 0.66 |
+| Breakfast test pool, dish given, hindsight (G) | picked on train | 0.659 (α 0.07), FPR 0.47 | **0.682** (α 0.02), FPR 0.27 |
+| Breakfast, live L = 0 (G) | picked on train | 0.662, FPR 0.32 | **0.685**, FPR 0.28 |
+| Breakfast hindsight at α = 0.005 (G) | fixed | 0.617, aband. 0.35, FPR 0.14 | **0.656**, aband. **0.71**, FPR 0.20 |
+| EPIC-Tent real errors, hindsight (G) | fixed (α 5e-3) | 0.383 | 0.383 |
+| EPIC-Tent real errors, live L = 0 (G) | fixed | 0.396 | 0.400 |
+
+- **It is not a synthetic artefact.** On Breakfast, at every α from 0.07 down to 10⁻³, abandonment
+  recall rises (at 0.005: 0.35 → 0.71; at 10⁻³: 0.20 → 0.65) and F1 is equal or higher. The
+  train-picked rows gain 0.023 F1 and roughly halve the hindsight healthy-trial FPR.
+- **EPIC-Tent does not move.** Its procedural errors are order and omission, not steps cut short.
+- **Cold start costs a little on synthetic data** (−0.02 to −0.035 at 10–30 sessions). It is uneven
+  across persons (p02 at 10, p01 and p03 at 30), healthy FPR is unchanged, and a stronger fallback to
+  the NB (κ₀ = 20, 100) does not remove it.
+- **Next:** gate it by cell size (NB below ~30 segments at risk) or a large κ, then make it training
+  stage 4b.

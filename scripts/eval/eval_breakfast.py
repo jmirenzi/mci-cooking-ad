@@ -182,6 +182,9 @@ def main():
     ap.add_argument("--skip-test-grid", action="store_true",
                     help="skip step 2 (the full test-pool sweep)")
     ap.add_argument("--out", default="runs/eval_breakfast.json")
+    ap.add_argument("--np-hazard", type=float, nargs=2, metavar=("KAPPA", "BW"), default=None,
+                    help="replace each model's NB durations with the nonparametric hazard fitted on its "
+                         "decode of the train split (hsmm/train/np_hazard.py; testing)")
     ap.add_argument("--operating-points", default=None,
                     help="write the train-picked operating points into this YAML")
     ap.add_argument("--model", default="gemma3:27b")
@@ -208,9 +211,18 @@ def main():
     out = {"metric": "G", "metric_g_definition": dict(metric_g.METRIC_G), "alphas": harness.ALPHAS,
            "kappas": harness.KAPPAS, "lags": lags, "grids": {}, "operating_points": {},
            "pools": {part: meta for part, (_, meta) in pool.items()}}
+    def load_model(model):
+        path, given = MODELS[model]
+        if not args.np_hazard:
+            return HSMM.load(path, d_max)
+        from cook_ad.hsmm.train.np_hazard import np_hsmm   # nonparametric hazard (next_steps.md §3)
+        kappa, bw = args.np_hazard
+        return np_hsmm(hparams.load(path), d_max, train_seqs,
+                       dish_of(train_seqs, labels) if given else None, kappa=kappa, bandwidth=bw)
+
     for model in args.models.split(","):
         path, given = MODELS[model]
-        hsmm = HSMM.load(path, d_max)
+        hsmm = load_model(model)
         bad = BadSets(hsmm, harness.ALPHAS)
         out["grids"][model] = {}
         for part in ("train", "test"):
@@ -235,7 +247,7 @@ def main():
         lexicon = Lexicon(vocab, placement)
         rows.update(llm_rows(args, vocab, labels, lexicon, train_seqs, trials))
     for model in args.models.split(","):
-        hsmm = HSMM.load(MODELS[model][0], d_max)
+        hsmm = load_model(model)
         rows.update(hsmm_rows(model, hsmm, out["operating_points"][model], streams,
                               dishes if MODELS[model][1] else None))
     out["table"] = rows

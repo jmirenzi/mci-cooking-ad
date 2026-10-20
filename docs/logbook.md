@@ -12,6 +12,13 @@ null (tick) 0.301. EPIC-Tent procedural default split (9 sessions, 51 spans): hi
 0.337, LLM 0.175, null 0.169. Live alarms/10 min 9.3 vs 2.6 under G: stretches expose flicker.
 `eval/metric_h.py`, `COOK_METRIC=H`; delay sweep 0/2/5/10 on EPIC-Tent only.
 
+## 2026-10-20 — nonparametric duration hazard tested on synthetic, Breakfast, EPIC-Tent (metric G)
+
+Kaplan-Meier hazard from training decodes, swapped for the NB tables. Synthetic scrubbed, 250
+sessions: 0.834 -> 0.871 (abandonment 0.13 -> 0.57); 10-30 sessions -0.02 to -0.035. Breakfast
+hindsight 0.659 -> 0.682 (train-picked), abandonment at alpha 0.005 0.35 -> 0.71. EPIC-Tent
+unchanged. next_steps.md §3.
+
 ## 2026-10-19 — idle scrubbing beats every add-on (metric G)
 
 Same persons refit on idle-free streams: the plain HSMM scores 0.451 / 0.644 / 0.834 at 10 / 30 /

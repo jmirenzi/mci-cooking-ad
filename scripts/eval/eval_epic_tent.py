@@ -71,7 +71,7 @@ from cook_ad.detectors.hsmm_lag import LagHSMMDetector  # noqa: E402
 from cook_ad.detectors.hsmm_live import LiveHSMMDetector  # noqa: E402
 from cook_ad.detectors.narrate import Lexicon  # noqa: E402
 from cook_ad.detectors.thresholds import BadSets  # noqa: E402
-from cook_ad.eval import metric_e, metric_g, pools  # noqa: E402
+from cook_ad.eval import harness, metric_e, metric_g, pools  # noqa: E402
 from cook_ad.eval.pools import group_truth, slice_flags, trim_at_first_mistake  # noqa: E402
 from cook_ad.hsmm import params as hsmm_params  # noqa: E402
 from cook_ad.hsmm.model import HSMM  # noqa: E402
@@ -300,7 +300,8 @@ def score(flags_by_trial, truth, group, trajectories, lexicon, sil):
             alarmed_ticks += len({f if isinstance(f, (int, np.integer)) else f.tick
                                   for f in inside})
         healthy_ticks += sum(end - start + 1 for start, end in fragments)
-    report = metric_g.evaluate(healthy, trials, healthy_starts, trial_starts, error_types=group)
+    report = harness.SCORER.evaluate(healthy, trials, healthy_starts, trial_starts, error_types=group,
+                                     **{"delay" if harness.METRIC == "H" else "deadline": harness.DELAY})
     # The per-fragment false-positive rate is binary per fragment, so it rises with fragment
     # LENGTH, and removing out-of-group types merges fragments into longer ones; it is not
     # comparable across groups. Alarms per 10 minutes of healthy activity is, and the share of
@@ -378,6 +379,8 @@ def print_group(name, group, reports, truth):
     metric = next(iter(reports.values())).get("metric", "D")
     print(f"  metric {metric}" + {"G": " (one alarm per run of constant (verb, noun); its first flag "
                                        "must land in [start, end+10])",
+                                  "H": f" (any flag in [start, end+{harness.DELAY}] finds a span; one "
+                                       "miss per run with a flag outside every window)",
                                   "G-gap": " (alarm onsets after a 5-tick gap merge; deadline 10)"}.get(
         metric, " (ANY flag finds a span; merged alarms are FPs; deadline 10)"))
     print(f"  {n_spans} spans in {len(truth)} sessions; every other error type REMOVED "
@@ -479,6 +482,10 @@ def main():
                     help="CHANNEL=ALPHA, repeatable. Defaults to the Breakfast arm's measured "
                          "s_temporal override -- re-measure before trusting it on this corpus.")
     ap.add_argument("--chunk-size", type=int, default=8)
+    ap.add_argument("--np-hazard", type=float, nargs=2, metavar=("KAPPA", "BW"), default=None,
+                    help="nonparametric duration hazard (hsmm/train/np_hazard.py; testing)")
+    ap.add_argument("--np-train-sequences", default=f"{D}/sequences_clean.json")
+    ap.add_argument("--np-train-split", default=f"{D}/split_clean.json")
     ap.add_argument("--skip-hsmm", action="store_true")
     ap.add_argument("--live", action="store_true",
                     help="add the causal detectors (detectors/hsmm_live.py, hsmm_lag.py) as arm(s) "
@@ -550,6 +557,14 @@ def main():
 
     joint = hsmm_params.load(args.joint_params)
     hsmm = HSMM(joint, d_max)
+    if args.np_hazard:          # nonparametric hazard from the model's decode of its training fragments
+        from cook_ad.hsmm.train.np_hazard import np_hsmm
+        train = json.loads(open(args.np_train_sequences).read())
+        train = split_mod.filter_sequences(train, split_mod.load_split(args.np_train_split), "train")
+        hsmm = np_hsmm(joint, d_max, train, kappa=args.np_hazard[0], bandwidth=args.np_hazard[1],
+                       chunk_size=args.chunk_size)
+        print(f"  nonparametric hazard: kappa={args.np_hazard[0]:g} bw={args.np_hazard[1]:g}, "
+              f"fitted on {len(train)} training fragments")
     # SIL tokens from the config, not Lexicon's Breakfast defaults: 'kitchen' is not this corpus'
     # sentinel, and phrase() would leak 'stall idle' into every query card.
     lexicon = Lexicon(vocab, joint, sil_verb=sil_verb, sil_noun=sil_noun)
@@ -732,10 +747,11 @@ def main():
         injected = [(f, [(tuple(map(int, s)), g) for s in t["spans"]])
                     for g in pools.ERROR_TYPES for f, t in zip(flags[g], streams[g])]
         starts = lambda items: [metric_g.run_starts(t["verb_ids"], t["noun_ids"]) for t in items]  # noqa: E731
-        reports["control/hsmm-injected"] = metric_g.evaluate(
+        reports["control/hsmm-injected"] = harness.SCORER.evaluate(
             flags["healthy"], injected, starts(streams["healthy"]),
             [rs for g in pools.ERROR_TYPES for rs in starts(streams[g])],
-            error_types=pools.ERROR_TYPES)
+            error_types=pools.ERROR_TYPES,
+            **{"delay" if harness.METRIC == "H" else "deadline": harness.DELAY})
         p = reports["control/hsmm-injected"]["pooled"]
         print(f"\nCONTROL: the same HSMM on INJECTED anomalies, same sessions: precision "
               f"{p['precision']:.3f}  recall {p['recall']:.3f}  F1 {p['f1']:.3f}")
