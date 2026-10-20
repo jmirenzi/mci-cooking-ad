@@ -44,6 +44,18 @@ def _at_segment_ends(segments, values, fill=0.0, dtype=np.float64):
     return out
 
 
+def table_tails(tables, r, k, d):
+    """(log P(D >= d), log P(D <= d)) of states k at lengths d, from the duration tables."""
+    log_surv = np.asarray(tables.log_surv[r], dtype=float)
+    D = log_surv.shape[-1]
+    d = np.minimum(np.asarray(d), D)
+    ls = log_surv[k, d - 1]
+    nxt = np.where(d < D, log_surv[k, np.minimum(d, D - 1)], -np.inf)       # log P(D >= d + 1)
+    with np.errstate(divide="ignore"):
+        lc = np.log1p(-np.exp(nxt))
+    return ls, lc
+
+
 def _from_previous(segments):
     """At each segment's first tick, the previous segment's subtask; -1 elsewhere."""
     out = np.full(sum(d for _, d in segments), -1, dtype=np.int64)
@@ -92,10 +104,13 @@ class HindsightHSMMDetector(AnomalyDetector):
         if n > 0:
             k = np.array([s for s, _ in segments[:n]])
             d = np.array([float(d) for _, d in segments[:n]])
-            p = self.hsmm.params
-            rr, pp = np.asarray(p.dur_r[r])[k].astype(float), np.asarray(p.dur_p[r])[k].astype(float)
-            log_surv = durations.nb_log_survival_np(d, rr, pp)
-            log_cdf = durations.nb_log_cdf_np(d, rr, pp)
+            if getattr(self.hsmm, "table_durations", False):    # nonparametric hazard tables
+                log_surv, log_cdf = table_tails(self.hsmm.tables, r, k, d.astype(int))
+            else:
+                p = self.hsmm.params
+                rr, pp = np.asarray(p.dur_r[r])[k].astype(float), np.asarray(p.dur_p[r])[k].astype(float)
+                log_surv = durations.nb_log_survival_np(d, rr, pp)
+                log_cdf = durations.nb_log_cdf_np(d, rr, pp)
             s_two[:n] = np.maximum(0.0, -(LOG2 + np.minimum(log_surv, log_cdf)))
             attr[:n] = np.where(log_surv < log_cdf, "stuck", "left_early")
         return (_at_segment_ends(segments, s_two),

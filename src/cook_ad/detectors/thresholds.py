@@ -114,6 +114,10 @@ class BadSets:
 
     def _early_bin(self):
         """A segment ending after d ticks is early at alpha when P(D <= d) < alpha / 2."""
+        if getattr(self.hsmm, "table_durations", False):        # nonparametric hazard tables
+            surv = np.exp(np.asarray(self.hsmm.tables.log_surv, dtype=np.float64))
+            cdf = 1.0 - np.concatenate([surv[..., 1:], np.zeros(surv.shape[:-1] + (1,))], -1)
+            return np.searchsorted(self.alphas, 2.0 * cdf, side="right").astype(np.int32)
         p = self.hsmm.params
         d = np.arange(1, self.hsmm.d_max + 1, dtype=np.float64)
         log_cdf = durations.nb_log_cdf_np(d[None, None, :],

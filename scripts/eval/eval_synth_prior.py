@@ -58,6 +58,7 @@ STRUCT = set()    # --count-channel / --skip-idle: structural channels on one mo
 COUNT_LEVELS = (0.0, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1)   # their shared p levels; 0 = off
 DUR_SPLIT = False  # --dur-split: duration channels on their own alpha axis (harness.DUR_ALPHAS)
 EMP_DUR = False    # --emp-dur: detectors/empirical_duration.py on its own axis
+NP_HAZARD = None    # --np-hazard KAPPA BW: nonparametric duration hazard (hsmm/train/np_hazard.py)
 CORE_COUNT = False  # --core-count: the detectors' s_count channel, in the transition alpha group
 STRUCT_PRIOR = 0.0  # --struct-prior W: the prior arms' skip-idle channel gets W population pseudo-counts per row
 EMP_LEVELS = (0.0, 0.002, 0.005, 0.01, 0.02)
@@ -425,6 +426,15 @@ def stage_eval_split(persons, chunk_size=8):
                 p = apply_global_prior(base, gcounts, names, lam, person_counts=person if n0 else None,
                                        n0=n0)
                 hsmm = HSMM(p, d_max)
+                if NP_HAZARD:       # nonparametric hazard from this model's decode of its training
+                    from cook_ad.hsmm.train.np_hazard import fit_np_hazard
+                    from cook_ad.synthetic import generate
+                    tr_traj = generate.trajectories_from_real_joint(
+                        p, train, d_max, chunk_size=chunk_size, r_hat=recipe_label_assignment(train, labels)[0])
+                    k_r, k_s = np.asarray(p.init_counts).shape
+                    hsmm = HSMM(p, d_max, duration_tables=fit_np_hazard(
+                        tr_traj, k_r, k_s, d_max, np.asarray(hsmm.tables.log_h), kappa=NP_HAZARD[0],
+                        kappa0=2.0, bandwidth=int(NP_HAZARD[1])))
                 bad = BadSets(hsmm, harness.ALPHAS)
                 det = HindsightHSMMDetector(hsmm, bad, OperatingPoint(0.005), chunk_size=chunk_size)
 
@@ -506,7 +516,7 @@ def stage_eval_split(persons, chunk_size=8):
                 row = harness.at(gt, idx)
                 row["alpha_transition"] = harness.ALPHAS[idx[0]]
                 row["alpha_rest"] = harness.ALPHAS[idx[1]]
-                cc = " +s_count" if CORE_COUNT else ""
+                cc = (" +s_count" if CORE_COUNT else "") + (f" +np(k={NP_HAZARD[0]:g},bw={NP_HAZARD[1]:g})" if NP_HAZARD else "")
                 out[n][arm + cc] = row
                 # the single-alpha pick is the grid's diagonal (same alpha for every channel)
                 diag = [float(np.asarray(gv["f1"])[j, j]) for j in range(len(harness.ALPHAS))]
@@ -702,6 +712,8 @@ def main():
                          "anomalies (real), or the step-level injectors (gen); real/gen run 2 arms")
     ap.add_argument("--dur-split", action="store_true",
                     help="eval-split: duration channels on their own alpha axis")
+    ap.add_argument("--np-hazard", type=float, nargs=2, metavar=("KAPPA", "BW"),
+                    help="eval-split: nonparametric duration hazard, shrinkage kappa and kernel half-width")
     ap.add_argument("--core-count", action="store_true",
                     help="eval-split: the detectors' own s_count channel (fitted on the training decodes)")
     ap.add_argument("--struct-prior", type=float, default=0.0,
@@ -714,7 +726,7 @@ def main():
                     help="eval-split: also the visit-count channel (detectors/count_channel.py)")
     a = ap.parse_args()
     set_variant(a.variant)
-    global POOL, TAG, STRUCT, DUR_SPLIT, EMP_DUR, STRUCT_PRIOR, SCRUB, CORE_COUNT
+    global POOL, TAG, STRUCT, DUR_SPLIT, EMP_DUR, STRUCT_PRIOR, SCRUB, CORE_COUNT, NP_HAZARD
     SCRUB = a.variant == "cal_scrub"
     if SCRUB and a.pool == "real":
         raise SystemExit("--pool real reads the tick injectors' streams before scrubbing; use gen")
@@ -730,6 +742,8 @@ def main():
     TAG += f"_sp{STRUCT_PRIOR:g}" if STRUCT_PRIOR else ""
     CORE_COUNT = a.core_count
     TAG += "_scount" if CORE_COUNT else ""
+    NP_HAZARD = tuple(a.np_hazard) if a.np_hazard else None
+    TAG += f"_np{NP_HAZARD[0]:g}bw{NP_HAZARD[1]:g}" if NP_HAZARD else ""
     persons = a.person or PERSONS
     if a.stage == "population":
         stage_population()

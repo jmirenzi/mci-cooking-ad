@@ -1,0 +1,60 @@
+"""A nonparametric duration hazard (docs/next_steps.md §3; testing, not yet a training stage).
+
+h_ij = P(D = j | D >= j, z = i) estimated directly from decoded segment lengths, as a discrete
+Kaplan-Meier hazard: of the segments of i still running at j ticks, the fraction that ended at j.
+The censored last segment of a trial is at risk up to its length and never an event, so it needs
+no imputation. Thin cells borrow strength in two steps:
+
+    h_pool(k, j) = (E_kj + kappa0 * h_nb(r, k, j)) / (R_kj + kappa0)     pooled over recipes
+    h(r, k, j)   = (e_rkj + kappa * h_pool) / (n_rkj + kappa)             the cell
+
+e = events, n = at risk, E / R their sums over recipes, h_nb the model's negative-binomial hazard
+(the fallback where nothing is observed). `bandwidth` > 0 first smooths events and at-risk counts
+over j with a triangular kernel of that half-width (in ticks), so the hazard is not spiky at the
+lengths that happened to occur. Returns (log_pmf, log_surv) in the layout of
+hsmm/durations.duration_tables: the last column of log_pmf holds P(D >= D_max).
+"""
+import numpy as np
+
+from cook_ad.hsmm.train.refit import duration_histograms
+
+H_CLIP = 1e-9
+
+
+def _smooth(x, bandwidth):
+    if bandwidth <= 0:
+        return x
+    w = np.concatenate([np.arange(1, bandwidth + 2), np.arange(bandwidth, 0, -1)]).astype(float)
+    w /= w.sum()
+    pad = [(0, 0)] * (x.ndim - 1) + [(bandwidth, bandwidth)]
+    xp = np.pad(x, pad, mode="edge")
+    return np.apply_along_axis(lambda v: np.convolve(v, w, mode="valid"), -1, xp)
+
+
+def at_risk(xi, cens):
+    """n[..., j] = segments (closed or censored) still running at j + 1 ticks."""
+    tot = xi + cens
+    return np.flip(np.cumsum(np.flip(tot, -1), -1), -1)
+
+
+def tables_from_hazard(h):
+    """(..., D) hazard (last column forced to 1) -> (log_pmf, log_surv)."""
+    h = np.clip(np.asarray(h, dtype=float), H_CLIP, 1.0 - H_CLIP)
+    h[..., -1] = 1.0
+    log1m = np.log1p(-np.minimum(h, 1.0 - H_CLIP))
+    log_surv = np.concatenate([np.zeros(h.shape[:-1] + (1,)), np.cumsum(log1m, -1)[..., :-1]], -1)
+    log_pmf = log_surv + np.log(h)
+    log_pmf[..., -1] = log_surv[..., -1]
+    return log_pmf, log_surv
+
+
+def fit_np_hazard(trajectories, k_recipe, k_subtask, d_max, log_h_nb, kappa=5.0, kappa0=2.0,
+                  bandwidth=0):
+    """trajectories: [{"recipe_id", "segments": [(state, d)]}] (decoded training sessions);
+    log_h_nb: (K_R, K, D) the model's NB log hazard (hsmm.tables.log_h)."""
+    xi, cens = duration_histograms(trajectories, k_recipe, k_subtask, d_max)
+    ev, risk = _smooth(xi, bandwidth), _smooth(at_risk(xi, cens), bandwidth)
+    h_nb = np.exp(np.asarray(log_h_nb, dtype=float))
+    h_pool = (ev.sum(0)[None] + kappa0 * h_nb) / (risk.sum(0)[None] + kappa0)
+    h = (ev + kappa * h_pool) / (risk + kappa)
+    return tables_from_hazard(h)
