@@ -52,7 +52,8 @@ def main():
     k_r, k = np.asarray(jp.init_counts).shape
     nb = HSMM(jp, d_max)
     log_pmf, log_surv = fit_np_hazard(traj, k_r, k, d_max, np.asarray(nb.tables.log_h), args.kappa,
-                                      args.kappa0, args.bandwidth, args.min_segments)
+                                      args.kappa0, args.bandwidth, args.min_segments,
+                                      nb_tables=(nb.tables.log_pmf, nb.tables.log_surv))
     out = args.out or durations_path(args.inp)
     save_tables(out, log_pmf, log_surv, {"kappa": args.kappa, "kappa0": args.kappa0,
                                          "bandwidth": args.bandwidth, "min_segments": args.min_segments,

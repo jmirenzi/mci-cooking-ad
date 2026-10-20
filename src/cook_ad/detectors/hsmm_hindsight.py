@@ -45,15 +45,13 @@ def _at_segment_ends(segments, values, fill=0.0, dtype=np.float64):
 
 
 def table_tails(tables, r, k, d):
-    """(log P(D >= d), log P(D <= d)) of states k at lengths d, from the duration tables."""
+    """(log P(D >= d), log P(D <= d)) of states k at lengths d, from the duration tables. The
+    CDF is summed from the pmf in log space: 1 - survival would round a deep left tail to 0."""
     log_surv = np.asarray(tables.log_surv[r], dtype=float)
+    log_cdf = np.logaddexp.accumulate(np.asarray(tables.log_pmf[r], dtype=float), axis=-1)
     D = log_surv.shape[-1]
     d = np.minimum(np.asarray(d), D)
-    ls = log_surv[k, d - 1]
-    nxt = np.where(d < D, log_surv[k, np.minimum(d, D - 1)], -np.inf)       # log P(D >= d + 1)
-    with np.errstate(divide="ignore"):
-        lc = np.log1p(-np.exp(nxt))
-    return ls, lc
+    return log_surv[k, d - 1], np.minimum(log_cdf[k, d - 1], 0.0)
 
 
 def _from_previous(segments):

@@ -51,9 +51,11 @@ def tables_from_hazard(h):
 
 
 def fit_np_hazard(trajectories, k_recipe, k_subtask, d_max, log_h_nb, kappa=5.0, kappa0=2.0,
-                  bandwidth=0, min_segments=0):
+                  bandwidth=0, min_segments=0, nb_tables=None):
     """trajectories: [{"recipe_id", "segments": [(state, d)]}] (decoded training sessions);
-    log_h_nb: (K_R, K, D) the model's NB log hazard (hsmm.tables.log_h)."""
+    log_h_nb: (K_R, K, D) the model's NB log hazard (hsmm.tables.log_h); nb_tables: its exact
+    (log_pmf, log_surv), copied into the cells the gate keeps on the NB (rebuilding them from the
+    hazard would lose the NB's underflowed, exactly-zero tail)."""
     xi, cens = duration_histograms(trajectories, k_recipe, k_subtask, d_max)
     ev, risk = _smooth(xi, bandwidth), _smooth(at_risk(xi, cens), bandwidth)
     h_nb = np.exp(np.asarray(log_h_nb, dtype=float))
@@ -61,7 +63,11 @@ def fit_np_hazard(trajectories, k_recipe, k_subtask, d_max, log_h_nb, kappa=5.0,
     h = (ev + kappa * h_pool) / (risk + kappa)
     thin = at_risk(xi, cens)[..., 0] < min_segments          # segments observed per cell
     h = np.where(thin[..., None], h_nb, h)
-    return tables_from_hazard(h)
+    log_pmf, log_surv = tables_from_hazard(h)
+    if nb_tables is not None:
+        log_pmf = np.where(thin[..., None], np.asarray(nb_tables[0], dtype=float), log_pmf)
+        log_surv = np.where(thin[..., None], np.asarray(nb_tables[1], dtype=float), log_surv)
+    return log_pmf, log_surv
 
 
 def np_hsmm(params, d_max, sequences, recipes=None, kappa=5.0, kappa0=2.0, bandwidth=1, chunk_size=16,
@@ -77,7 +83,8 @@ def np_hsmm(params, d_max, sequences, recipes=None, kappa=5.0, kappa0=2.0, bandw
     k_r, k = np.asarray(params.init_counts).shape
     return HSMM(params, d_max, duration_tables=fit_np_hazard(
         traj, k_r, k, d_max, np.asarray(base.tables.log_h), kappa=kappa, kappa0=kappa0,
-        bandwidth=int(bandwidth), min_segments=min_segments))
+        bandwidth=int(bandwidth), min_segments=min_segments,
+        nb_tables=(base.tables.log_pmf, base.tables.log_surv)))
 
 
 def save_tables(path, log_pmf, log_surv, meta=None):

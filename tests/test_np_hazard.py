@@ -75,3 +75,29 @@ def test_sidecar_is_picked_up_by_hsmm_load(tmp_path):
     h = HSMM.load(str(path), D)
     assert h.table_durations and np.allclose(np.asarray(h.tables.log_pmf), lp)
     assert not HSMM.load(str(path), D, durations=None).table_durations
+
+
+def test_a_fully_gated_model_is_exactly_the_nb():
+    """min_segments above every cell: the tables, bins and duration surprises equal the NB path."""
+    from cook_ad.detectors.hsmm_hindsight import HindsightHSMMDetector
+    from cook_ad.detectors.thresholds import BadSets
+    from cook_ad.hsmm.model import HSMM
+    from cook_ad.hsmm.params import JointHSMMParams
+    k = 3
+    p = JointHSMMParams(jnp.ones((1, k)) * 2, jnp.asarray([[[0.0, 3.0, 2.0], [3.0, 0.0, 2.0], [2.0, 3.0, 0.0]]]),
+                        jnp.eye(k) * 50 + 1, jnp.eye(k) * 50 + 1, jnp.asarray([[2.0, 40.0, 5.0]]),
+                        jnp.asarray([[0.5, 0.9, 0.6]]), jnp.ones(1) * 2)
+    Dm = 60
+    nb = HSMM(p, Dm)
+    traj = [{"recipe_id": 0, "segments": [(0, 4), (1, 9), (2, 5)]}] * 5
+    lp, ls = fit_np_hazard(traj, 1, k, Dm, np.asarray(nb.tables.log_h), min_segments=10**6,
+                           nb_tables=(nb.tables.log_pmf, nb.tables.log_surv))
+    st = HSMM(p, Dm, duration_tables=(lp, ls))
+    for f in ("log_pmf", "log_surv", "log_h", "log_stay"):
+        np.testing.assert_array_equal(np.asarray(getattr(nb.tables, f)), np.asarray(getattr(st.tables, f)))
+    alphas = [0.1, 0.01, 1e-3]
+    np.testing.assert_array_equal(np.asarray(BadSets(nb, alphas).early_bin), np.asarray(BadSets(st, alphas).early_bin))
+    segs = [(0, 1), (1, 2), (2, 30), (0, 3)]
+    a = HindsightHSMMDetector(nb, BadSets(nb, alphas), None).duration_surprise(segs, 0)[0]
+    b = HindsightHSMMDetector(st, BadSets(st, alphas), None).duration_surprise(segs, 0)[0]
+    np.testing.assert_allclose(a, b, rtol=1e-6, atol=1e-6)
