@@ -3,6 +3,7 @@
 #
 #   PRESET=lexhard     Breakfast, recipes = latent clusters (joint_params_train_lexhard.npz):
 #                      fit_lexical -> fit_hard_em -> smooth_params -> refit_durations
+#                      -> fit_np_hazard (stage 4b: $NAME.durations.npz; NP=0 skips it)
 #   PRESET=dish        the same 4 stages with recipe = labelled dish (joint_params_train_dish.npz)
 #   PRESET=epic_tent   EPIC-Tent: fit_lexical on the error-excised clean split (joint_params_clean.npz)
 #   PRESET=epic_tent_prego   the same on PREGO's split (joint_params_clean_prego.npz)
@@ -40,6 +41,9 @@ case "$PRESET" in
             --strength 0.7 --backoff-tau 30
         ./py $T/refit_durations.py $RL --in "$OUT/${NAME}_smooth.npz" --out "$OUT/$NAME.npz" \
             --kappa 0.001
+        if [ "${NP:-1}" = 1 ]; then
+            ./py $T/fit_np_hazard.py $RL --in "$OUT/$NAME.npz" --kappa 5 --bandwidth 1 --min-segments 30
+        fi
         ;;
     epic_tent|epic_tent_prego)
         D=dataset/processed/epic_tent

@@ -1,6 +1,7 @@
 """class HSMM: the joint (recipe, subtask, duration) model at inference (docs/model.md)."""
 import functools
 import math
+from pathlib import Path
 from typing import NamedTuple
 
 import jax
@@ -67,6 +68,12 @@ _predict = jax.jit(kernels.predict)
 _update = jax.jit(kernels.update)
 
 
+def durations_path(model_path):
+    """Where stage 4b writes a model's nonparametric duration tables."""
+    p = str(model_path)
+    return (p[:-4] if p.endswith(".npz") else p) + ".durations.npz"
+
+
 class HSMM:
     """Parameters, their log tables, and the current belief b_t(r, i, j)."""
 
@@ -85,8 +92,15 @@ class HSMM:
         self.reset()
 
     @classmethod
-    def load(cls, path, d_max) -> "HSMM":
-        return cls(load(path), d_max)
+    def load(cls, path, d_max, durations="auto") -> "HSMM":
+        """`durations`: "auto" reads the stage-4b nonparametric tables next to the model
+        (`durations_path`) when they exist; None keeps the negative binomial; or a path."""
+        if durations == "auto":
+            durations = durations_path(path) if Path(durations_path(path)).exists() else None
+        if durations is None:
+            return cls(load(path), d_max)
+        from cook_ad.hsmm.train.np_hazard import load_tables
+        return cls(load(path), d_max, duration_tables=load_tables(durations))
 
     # ---- the per-trial view
 

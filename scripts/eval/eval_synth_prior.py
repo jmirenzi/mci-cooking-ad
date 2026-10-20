@@ -58,6 +58,7 @@ STRUCT = set()    # --count-channel / --skip-idle: structural channels on one mo
 COUNT_LEVELS = (0.0, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1)   # their shared p levels; 0 = off
 DUR_SPLIT = False  # --dur-split: duration channels on their own alpha axis (harness.DUR_ALPHAS)
 EMP_DUR = False    # --emp-dur: detectors/empirical_duration.py on its own axis
+NP_STAGE = False    # --np-stage: the models' stage-4b nonparametric duration tables
 NP_HAZARD = None    # --np-hazard KAPPA BW: nonparametric duration hazard (hsmm/train/np_hazard.py)
 CORE_COUNT = False  # --core-count: the detectors' s_count channel, in the transition alpha group
 STRUCT_PRIOR = 0.0  # --struct-prior W: the prior arms' skip-idle channel gets W population pseudo-counts per row
@@ -191,6 +192,8 @@ def stage_train(persons, sizes):
                  "--out", str(out / "smooth.npz"), "--strength", "0.7", "--backoff-tau", "30"],
                 ["scripts/train/refit_durations.py", *common, "--in", str(out / "smooth.npz"),
                  "--out", str(out / "model.npz"), "--kappa", "0.001"],
+                ["scripts/train/fit_np_hazard.py", *common, "--in", str(out / "model.npz"),
+                 "--kappa", "5", "--bandwidth", "1", "--min-segments", "30"],
             ]
             with open(out / "train.log", "w") as log:
                 for cmd in steps:
@@ -426,6 +429,11 @@ def stage_eval_split(persons, chunk_size=8):
                 p = apply_global_prior(base, gcounts, names, lam, person_counts=person if n0 else None,
                                        n0=n0)
                 hsmm = HSMM(p, d_max)
+                if NP_STAGE:        # the model's stage-4b tables (hsmm/model.py:durations_path)
+                    from cook_ad.hsmm.model import durations_path
+                    from cook_ad.hsmm.train.np_hazard import load_tables
+                    hsmm = HSMM(p, d_max, duration_tables=load_tables(
+                        durations_path(d / f"model_s{n}" / "model.npz")))
                 if NP_HAZARD:       # nonparametric hazard from this model's decode of its training
                     from cook_ad.hsmm.train.np_hazard import fit_np_hazard
                     from cook_ad.synthetic import generate
@@ -516,7 +524,7 @@ def stage_eval_split(persons, chunk_size=8):
                 row = harness.at(gt, idx)
                 row["alpha_transition"] = harness.ALPHAS[idx[0]]
                 row["alpha_rest"] = harness.ALPHAS[idx[1]]
-                cc = (" +s_count" if CORE_COUNT else "") + (
+                cc = (" +s_count" if CORE_COUNT else "") + (" +np-stage" if NP_STAGE else "") + (
                     f" +np(k={NP_HAZARD[0]:g},bw={NP_HAZARD[1]:g}" + (f",k0={NP_HAZARD[2]:g}" if len(NP_HAZARD) > 2 else "")
                     + ")" if NP_HAZARD else "")
                 out[n][arm + cc] = row
@@ -714,6 +722,8 @@ def main():
                          "anomalies (real), or the step-level injectors (gen); real/gen run 2 arms")
     ap.add_argument("--dur-split", action="store_true",
                     help="eval-split: duration channels on their own alpha axis")
+    ap.add_argument("--np-stage", action="store_true",
+                    help="eval-split: read each model's stage-4b nonparametric duration tables")
     ap.add_argument("--np-hazard", type=float, nargs="+", metavar="X",
                     help="eval-split: nonparametric duration hazard: KAPPA BW [KAPPA0] (cell shrinkage, "
                          "kernel half-width, pooled-to-NB shrinkage, default 2)")
@@ -729,7 +739,7 @@ def main():
                     help="eval-split: also the visit-count channel (detectors/count_channel.py)")
     a = ap.parse_args()
     set_variant(a.variant)
-    global POOL, TAG, STRUCT, DUR_SPLIT, EMP_DUR, STRUCT_PRIOR, SCRUB, CORE_COUNT, NP_HAZARD
+    global POOL, TAG, STRUCT, DUR_SPLIT, EMP_DUR, STRUCT_PRIOR, SCRUB, CORE_COUNT, NP_HAZARD, NP_STAGE
     SCRUB = a.variant == "cal_scrub"
     if SCRUB and a.pool == "real":
         raise SystemExit("--pool real reads the tick injectors' streams before scrubbing; use gen")
@@ -745,6 +755,8 @@ def main():
     TAG += f"_sp{STRUCT_PRIOR:g}" if STRUCT_PRIOR else ""
     CORE_COUNT = a.core_count
     TAG += "_scount" if CORE_COUNT else ""
+    NP_STAGE = a.np_stage
+    TAG += "_npstage" if NP_STAGE else ""
     NP_HAZARD = tuple(a.np_hazard) if a.np_hazard else None
     TAG += (f"_np{NP_HAZARD[0]:g}bw{NP_HAZARD[1]:g}" + (f"k0{NP_HAZARD[2]:g}" if len(NP_HAZARD) > 2 else "")) if NP_HAZARD else ""
     persons = a.person or PERSONS

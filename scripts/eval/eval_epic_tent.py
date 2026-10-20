@@ -482,6 +482,8 @@ def main():
                     help="CHANNEL=ALPHA, repeatable. Defaults to the Breakfast arm's measured "
                          "s_temporal override -- re-measure before trusting it on this corpus.")
     ap.add_argument("--chunk-size", type=int, default=8)
+    ap.add_argument("--nb-durations", action="store_true",
+                    help="ignore the model's stage-4b nonparametric duration tables")
     ap.add_argument("--np-hazard", type=float, nargs=2, metavar=("KAPPA", "BW"), default=None,
                     help="nonparametric duration hazard (hsmm/train/np_hazard.py; testing)")
     ap.add_argument("--np-train-sequences", default=f"{D}/sequences_clean.json")
@@ -556,7 +558,7 @@ def main():
         truth = [truth_by_id[s["trial_id"]] for s in sequences]
 
     joint = hsmm_params.load(args.joint_params)
-    hsmm = HSMM(joint, d_max)
+    hsmm = HSMM.load(args.joint_params, d_max, durations=None if args.nb_durations else "auto")
     if args.np_hazard:          # nonparametric hazard from the model's decode of its training fragments
         from cook_ad.hsmm.train.np_hazard import np_hsmm
         train = json.loads(open(args.np_train_sequences).read())

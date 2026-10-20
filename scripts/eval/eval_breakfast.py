@@ -182,6 +182,8 @@ def main():
     ap.add_argument("--skip-test-grid", action="store_true",
                     help="skip step 2 (the full test-pool sweep)")
     ap.add_argument("--out", default="runs/eval_breakfast.json")
+    ap.add_argument("--nb-durations", action="store_true",
+                    help="ignore a model's stage-4b nonparametric duration tables (the NB durations)")
     ap.add_argument("--np-hazard", type=float, nargs=2, metavar=("KAPPA", "BW"), default=None,
                     help="replace each model's NB durations with the nonparametric hazard fitted on its "
                          "decode of the train split (hsmm/train/np_hazard.py; testing)")
@@ -213,8 +215,8 @@ def main():
            "pools": {part: meta for part, (_, meta) in pool.items()}}
     def load_model(model):
         path, given = MODELS[model]
-        if not args.np_hazard:
-            return HSMM.load(path, d_max)
+        if not args.np_hazard:          # stage-4b tables next to the model, unless --nb-durations
+            return HSMM.load(path, d_max, durations=None if args.nb_durations else "auto")
         from cook_ad.hsmm.train.np_hazard import np_hsmm   # nonparametric hazard (next_steps.md §3)
         kappa, bw = args.np_hazard
         return np_hsmm(hparams.load(path), d_max, train_seqs,

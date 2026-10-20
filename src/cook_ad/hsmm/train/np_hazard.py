@@ -1,4 +1,4 @@
-"""A nonparametric duration hazard (docs/next_steps.md §3; testing, not yet a training stage).
+"""A nonparametric duration hazard: training stage 4b (docs/training.md §4b).
 
 h_ij = P(D = j | D >= j, z = i) estimated directly from decoded segment lengths, as a discrete
 Kaplan-Meier hazard: of the segments of i still running at j ticks, the fraction that ended at j.
@@ -11,7 +11,9 @@ no imputation. Thin cells borrow strength in two steps:
 e = events, n = at risk, E / R their sums over recipes, h_nb the model's negative-binomial hazard
 (the fallback where nothing is observed). `bandwidth` > 0 first smooths events and at-risk counts
 over j with a triangular kernel of that half-width (in ticks), so the hazard is not spiky at the
-lengths that happened to occur. Returns (log_pmf, log_surv) in the layout of
+lengths that happened to occur. A cell with fewer than `min_segments` training segments keeps
+its negative-binomial hazard outright: on few segments the empirical shape is noise, and at cold
+start that cost F1 (next_steps.md §3). Returns (log_pmf, log_surv) in the layout of
 hsmm/durations.duration_tables: the last column of log_pmf holds P(D >= D_max).
 """
 import numpy as np
@@ -49,7 +51,7 @@ def tables_from_hazard(h):
 
 
 def fit_np_hazard(trajectories, k_recipe, k_subtask, d_max, log_h_nb, kappa=5.0, kappa0=2.0,
-                  bandwidth=0):
+                  bandwidth=0, min_segments=0):
     """trajectories: [{"recipe_id", "segments": [(state, d)]}] (decoded training sessions);
     log_h_nb: (K_R, K, D) the model's NB log hazard (hsmm.tables.log_h)."""
     xi, cens = duration_histograms(trajectories, k_recipe, k_subtask, d_max)
@@ -57,10 +59,13 @@ def fit_np_hazard(trajectories, k_recipe, k_subtask, d_max, log_h_nb, kappa=5.0,
     h_nb = np.exp(np.asarray(log_h_nb, dtype=float))
     h_pool = (ev.sum(0)[None] + kappa0 * h_nb) / (risk.sum(0)[None] + kappa0)
     h = (ev + kappa * h_pool) / (risk + kappa)
+    thin = at_risk(xi, cens)[..., 0] < min_segments          # segments observed per cell
+    h = np.where(thin[..., None], h_nb, h)
     return tables_from_hazard(h)
 
 
-def np_hsmm(params, d_max, sequences, recipes=None, kappa=5.0, kappa0=2.0, bandwidth=1, chunk_size=16):
+def np_hsmm(params, d_max, sequences, recipes=None, kappa=5.0, kappa0=2.0, bandwidth=1, chunk_size=16,
+            min_segments=0):
     """An HSMM whose duration tables are the nonparametric hazard fitted on `params`' own Viterbi
     decode of `sequences` (the training split), under `recipes` (given dish per sequence) or the
     inferred one."""
@@ -72,4 +77,15 @@ def np_hsmm(params, d_max, sequences, recipes=None, kappa=5.0, kappa0=2.0, bandw
     k_r, k = np.asarray(params.init_counts).shape
     return HSMM(params, d_max, duration_tables=fit_np_hazard(
         traj, k_r, k, d_max, np.asarray(base.tables.log_h), kappa=kappa, kappa0=kappa0,
-        bandwidth=int(bandwidth)))
+        bandwidth=int(bandwidth), min_segments=min_segments))
+
+
+def save_tables(path, log_pmf, log_surv, meta=None):
+    """The stage-4b sidecar, `<model>.durations.npz` (hsmm/model.py:durations_path)."""
+    np.savez(path, log_pmf=np.asarray(log_pmf), log_surv=np.asarray(log_surv),
+             meta=np.asarray(__import__("json").dumps(meta or {})))
+
+
+def load_tables(path):
+    z = np.load(path)
+    return z["log_pmf"], z["log_surv"]

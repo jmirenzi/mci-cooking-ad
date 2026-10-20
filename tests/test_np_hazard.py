@@ -45,3 +45,33 @@ def test_table_tails_equal_the_nb_formulas():
     rr, pp = np.array([3.0, 5.0, 3.0]), np.array([0.4, 0.6, 0.4])
     np.testing.assert_allclose(a, durations.nb_log_survival_np(d.astype(float), rr, pp), atol=1e-9)
     np.testing.assert_allclose(b, durations.nb_log_cdf_np(d.astype(float), rr, pp), atol=1e-9)
+
+
+def test_thin_cells_keep_the_nb():
+    rng = np.random.default_rng(0)
+    traj = [{"recipe_id": 0, "segments": [(0, int(d)), (1, 3)]} for d in rng.integers(6, 9, 40)]
+    traj += [{"recipe_id": 0, "segments": [(2, 5), (1, 3)]}] * 3          # state 2: 3 segments
+    log_h = np.log(np.full((1, 3, D), 0.15))
+    lp, _ = fit_np_hazard(traj, 1, 3, D, log_h, kappa=2.0, min_segments=10)
+    nb_lp, _ = tables_from_hazard(np.exp(log_h))
+    np.testing.assert_allclose(lp[0, 2], nb_lp[0, 2])                     # thin: the NB
+    assert np.exp(lp[0, 0, 5:8]).sum() > 0.9                              # rich: the data
+
+
+def test_sidecar_is_picked_up_by_hsmm_load(tmp_path):
+    from cook_ad.hsmm import params as hparams
+    from cook_ad.hsmm.model import HSMM, durations_path
+    from cook_ad.hsmm.params import JointHSMMParams
+    from cook_ad.hsmm.train.np_hazard import save_tables
+    k = 2
+    p = JointHSMMParams(jnp.ones((1, k)) * 2, jnp.asarray([[[0.0, 3.0], [3.0, 0.0]]]),
+                        jnp.ones((k, 3)) * 2, jnp.ones((k, 3)) * 2, jnp.full((1, k), 3.0),
+                        jnp.full((1, k), 0.5), jnp.ones(1) * 2)
+    path = tmp_path / "m.npz"
+    hparams.save(p, str(path))
+    assert not HSMM.load(str(path), D).table_durations
+    lp, ls = tables_from_hazard(np.full((1, k, D), 0.3))
+    save_tables(durations_path(str(path)), lp, ls)
+    h = HSMM.load(str(path), D)
+    assert h.table_durations and np.allclose(np.asarray(h.tables.log_pmf), lp)
+    assert not HSMM.load(str(path), D, durations=None).table_durations
