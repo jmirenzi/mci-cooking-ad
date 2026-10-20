@@ -7,6 +7,13 @@ and are recoverable at the git tag `pre-restructure`. Scripts, options and `drif
 (§5–§9.9) named in entries from 2026-10-15 to 2026-10-20 were removed in the 2026-10-20 cleanup and
 are recoverable at the git tag `pre-cleanup`.
 
+## 2026-10-20 — the session-time generator validated (metric G)
+
+4 persons, step pools, stage 4b, F1 / healthy FPR at 10 / 30 / 250 sessions. Hindsight: person only
+0.352 / 0.534 / 0.798 (FPR 0.89 / 0.65 / 0.23), prior λ = 1 0.471 / 0.723 / 0.854 (0.64 / 0.25 / 0.07).
+Live, prior: 0.492 / 0.726 / 0.850. H delay 2 is 0.015–0.02 lower, same ranking. Cold start beats
+the day-based data (0.451 / 0.644); 250 level (0.869). `prior_experiment.sh`, runs/drift_synth/prior/.
+
 ## 2026-10-20 — cleanup before merging `synthetic-drift`
 
 Deleted (tag `pre-cleanup`): the skip-idle, count and empirical-duration channels (idle scrubbing
