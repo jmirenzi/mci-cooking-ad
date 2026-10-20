@@ -6,7 +6,7 @@ from collections import Counter
 
 import numpy as np
 import pytest
-from scipy.stats import chi2, chisquare, ks_2samp, norm
+from scipy.stats import chisquare, ks_2samp, norm
 
 from _drift_fixtures import OMELET, SALAD, TAGS, VOCAB, V, theta, toy_assets
 from cook_ad.drift_synth import ground_truth as GT
@@ -325,7 +325,8 @@ def test_null_and_drift_conditions_share_pre_onset_sessions():
     drift = ConditionCfg("d", DriftRegime("sudden", 10), {"tidy": 0.4}, n_sessions=20)
     _, a, ga = generate_person(2, null, 0, ASSETS)
     _, b, gb = generate_person(2, drift, 0, ASSETS)
-    pre = lambda ss: [(s.index, [(e.verb, e.noun, e.t_start) for e in s.events]) for s in ss if s.index < 10]
+    def pre(ss):
+        return [(s.index, [(e.verb, e.noun, e.t_start) for e in s.events]) for s in ss if s.index < 10]
     assert pre(a) == pre(b)
     assert ga["theta0"] == gb["theta0"] and gb["delta"] == {"tidy": pytest.approx(
         gb["theta1"]["tidy"] - gb["theta0"]["tidy"])}

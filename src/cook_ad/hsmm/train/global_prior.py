@@ -1,4 +1,4 @@
-"""A population ("global") prior for one person's model (docs/training.md §3, docs/drift_synth.md §9.2).
+"""A population ("global") prior for one person's model (docs/training.md §3, docs/drift_synth.md §7).
 
 The global prior is per-recipe counts of first runs and of run-to-run transitions, read off many
 people's tick streams by run-length encoding, keyed by the (verb, noun) pair. States are pairs
@@ -12,10 +12,8 @@ Dirichlet-MAP mode (numerator c - 1), a cell the person never produced is worth 
 lam x P_global, and lam = 0 returns the person model unchanged bit for bit (cells below 1 floor
 either way). A transition nobody in the population produced stays on the floor.
 
-`person_counts` + `n0` make the prior fade: a row the person has left n times gets
-lam / (1 + n / n0), so rarely seen actions lean on the population and well-observed ones keep
-the person's own habits (an unseen-by-the-person transition there stays rare enough for a
-transition-channel alpha to flag it; eval/harness.hindsight_split_grid).
+A prior that makes a transition rare rather than impossible needs a looser alpha on the
+transition channels than the rest can bear: eval/harness.hindsight_split_grid picks them apart.
 
 Durations are untouched (person only).
 """
@@ -89,41 +87,17 @@ def _prior_rows(global_counts, recipe, pairs):
     return p_init, p_trans
 
 
-def _row_strength(lam, n0, person_counts, recipe, pairs):
-    """(K,) prior strength per transition row, and the init row's: lam, or lam / (1 + n / n0)
-    with n the person's observed exits from that pair (init: their trials of the recipe)."""
-    k = len(pairs)
-    if person_counts is None or not n0:
-        return np.full(k, float(lam)), float(lam)
-    rows = person_counts["trans"].get(recipe, {})
-    n = np.array([sum(rows.get(_key(*p), {}).values()) if p else 0 for p in pairs], dtype=float)
-    n_trials = person_counts["n_trials"].get(recipe, 0)
-    return lam / (1.0 + n / n0), lam / (1.0 + n_trials / n0)
-
-
-def apply_global_prior(params, global_counts, recipe_names, lam, lam_init=None, replace=False,
-                       person_counts=None, n0=None):
+def apply_global_prior(params, global_counts, recipe_names, lam):
     """The person model with the global prior added at strength `lam` (pseudocounts per row).
-    `recipe_names[r]` names the person model's recipe r. `replace=True` drops the person's own
-    init/transition counts first: the global-only model on the person's state space.
-    `person_counts` (count_global on the person's TRAINING sequences) and `n0` fade the prior
-    per row (module docstring)."""
-    lam_init = lam if lam_init is None else lam_init
+    `recipe_names[r]` names the person model's recipe r."""
+    if lam == 0:
+        return params
     pairs = state_pairs(params)
     init = np.asarray(params.init_counts, dtype=float).copy()
     trans = np.asarray(params.trans_counts, dtype=float).copy()
-    k = trans.shape[-1]
-    off = 1.0 - np.eye(k)
-    if replace:
-        init[:] = 0.0
-        trans[:] = 0.0
-    if lam == 0 and lam_init == 0 and not replace:
-        return params
+    off = 1.0 - np.eye(trans.shape[-1])
     for r, name in enumerate(recipe_names):
         p_init, p_trans = _prior_rows(global_counts, name, pairs)
-        lam_rows, lam_i = _row_strength(lam, n0, person_counts, name, pairs)
-        if lam_init is not None and person_counts is None:
-            lam_i = lam_init
-        init[r] = np.maximum(init[r], 1.0) + lam_i * p_init
-        trans[r] = (np.maximum(trans[r], 1.0) + lam_rows[:, None] * p_trans) * off
+        init[r] = np.maximum(init[r], 1.0) + lam * p_init
+        trans[r] = (np.maximum(trans[r], 1.0) + lam * p_trans) * off
     return params._replace(init_counts=init, trans_counts=trans)

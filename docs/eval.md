@@ -60,15 +60,14 @@ channel)`. `GridScore` scores dense (T, P) flag matrices, P operating points at 
 sweeps use. `evaluate` takes every span of a trial at once: passing the same flags once per error
 type would charge a flag that hit a transposition as a false positive in the substitution entry.
 Alarms per 10 minutes need the tick length: `GridScore(tick_seconds)`, default 1.0 (Breakfast,
-EPIC-Tent). Pass 0.5 for EPIC-KITCHENS and the synthetic drift data, or the rate reads half the
-truth.
+EPIC-Tent, the synthetic data). Pass 0.5 for EPIC-KITCHENS, or the rate reads half the truth.
 
 ---
 
 ## 1b. Metric H (candidate; G stays the headline until the owner switches)
 
-Written 2026-10-19 after a worked case against G: a stray flag early in a run, then a perfect
-flag on the span, is one FP and one FN under G, because the run's alarm is dated by the stray.
+Why: a stray flag early in a run, then a perfect flag on the span, is one FP and one FN under G,
+because the run's alarm is dated by the stray. Under H it is one TP and one FP.
 
 - **Hit**: any flag in [start, end + delay]. At most one per span.
 - **Miss (FP)**: one per run that holds a flag outside every span's window, however many flags.
@@ -79,10 +78,7 @@ flag on the span, is one FP and one FN under G, because the run's alarm is dated
 - **Delay** is a slider, not a constant. Run with `COOK_METRIC=H COOK_DELAY=2 ./py scripts/eval/...`;
   the harness labels the table `H, delay 2`. Spans are unchanged from G.
 
-Measured (test pools, delay 2, `runs/H_breakfast_d2.json`, `runs/H_et_d2.json`): Breakfast
-dish given hindsight F1 0.655, live 0.656 (G: 0.659, 0.662); EPIC-Tent procedural, default split,
-hindsight 0.326, live 0.337 (G: 0.383, 0.396), where recall goes 0.18 / 0.29 / 0.29 / 0.35 at delay
-0 / 2 / 5 / 10. The ranking HSMM > LLM >= null holds at every delay.
+Measurements against G: [`logbook.md`](logbook.md), 2026-10-19 and 2026-10-20.
 
 ---
 
@@ -182,6 +178,9 @@ original `--base-url` and `--max-requests 0` ([`llm.md`](llm.md) §5).
     --split-file dataset/processed/epic_tent/split_prego.json \
     --joint-params dataset/processed/epic_tent/joint_params_clean_prego.npz \
     --base-url http://localhost:11434/v1 --max-requests 0 --out runs/et_E_llm_prego_trimmed.json
+
+# Synthetic persons (drift_synth.md §7): data, models and every table, about 4 h
+scripts/drift_synth/prior_experiment.sh
 ```
 
 `eval_breakfast.py` scores three models (`--models dish-given,dish-inferred,lexhard`) and the

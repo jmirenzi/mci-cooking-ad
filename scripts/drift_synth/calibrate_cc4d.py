@@ -1,5 +1,5 @@
 """Calibrate the drift generator against CaptainCook4D: real people on the same task graphs
-(docs/drift_synth.md §9.3). Writes runs/drift_synth/reports/cc4d_calibration.{md,json}.
+(docs/drift_synth.md §2, Durations). Writes runs/drift_synth/reports/cc4d_calibration.{md,json}.
 
 1. Orders. Per approved recipe, real recordings with no Order Error or Missing Step against
    rollouts: distinct orders, mean normalized Kendall distance to the medoid order, and the
@@ -23,7 +23,6 @@ from itertools import combinations
 from pathlib import Path
 
 import numpy as np
-import yaml
 
 from cook_ad.drift_synth.assets import load_assets
 from cook_ad.drift_synth.graphs import ancestors, recipe_key

@@ -484,10 +484,6 @@ def main():
     ap.add_argument("--chunk-size", type=int, default=8)
     ap.add_argument("--nb-durations", action="store_true",
                     help="ignore the model's stage-4b nonparametric duration tables")
-    ap.add_argument("--np-hazard", type=float, nargs=2, metavar=("KAPPA", "BW"), default=None,
-                    help="nonparametric duration hazard (hsmm/train/np_hazard.py; testing)")
-    ap.add_argument("--np-train-sequences", default=f"{D}/sequences_clean.json")
-    ap.add_argument("--np-train-split", default=f"{D}/split_clean.json")
     ap.add_argument("--skip-hsmm", action="store_true")
     ap.add_argument("--live", action="store_true",
                     help="add the causal detectors (detectors/hsmm_live.py, hsmm_lag.py) as arm(s) "
@@ -559,14 +555,6 @@ def main():
 
     joint = hsmm_params.load(args.joint_params)
     hsmm = HSMM.load(args.joint_params, d_max, durations=None if args.nb_durations else "auto")
-    if args.np_hazard:          # nonparametric hazard from the model's decode of its training fragments
-        from cook_ad.hsmm.train.np_hazard import np_hsmm
-        train = json.loads(open(args.np_train_sequences).read())
-        train = split_mod.filter_sequences(train, split_mod.load_split(args.np_train_split), "train")
-        hsmm = np_hsmm(joint, d_max, train, kappa=args.np_hazard[0], bandwidth=args.np_hazard[1],
-                       chunk_size=args.chunk_size)
-        print(f"  nonparametric hazard: kappa={args.np_hazard[0]:g} bw={args.np_hazard[1]:g}, "
-              f"fitted on {len(train)} training fragments")
     # SIL tokens from the config, not Lexicon's Breakfast defaults: 'kitchen' is not this corpus'
     # sentinel, and phrase() would leak 'stall idle' into every query card.
     lexicon = Lexicon(vocab, joint, sil_verb=sil_verb, sil_noun=sil_noun)

@@ -13,7 +13,7 @@ e = events, n = at risk, E / R their sums over recipes, h_nb the model's negativ
 over j with a triangular kernel of that half-width (in ticks), so the hazard is not spiky at the
 lengths that happened to occur. A cell with fewer than `min_segments` training segments keeps
 its negative-binomial hazard outright: on few segments the empirical shape is noise, and at cold
-start that cost F1 (next_steps.md §3). Returns (log_pmf, log_surv) in the layout of
+start that cost F1 (logbook.md, 2026-10-20). Returns (log_pmf, log_surv) in the layout of
 hsmm/durations.duration_tables: the last column of log_pmf holds P(D >= D_max).
 """
 import numpy as np
@@ -68,23 +68,6 @@ def fit_np_hazard(trajectories, k_recipe, k_subtask, d_max, log_h_nb, kappa=5.0,
         log_pmf = np.where(thin[..., None], np.asarray(nb_tables[0], dtype=float), log_pmf)
         log_surv = np.where(thin[..., None], np.asarray(nb_tables[1], dtype=float), log_surv)
     return log_pmf, log_surv
-
-
-def np_hsmm(params, d_max, sequences, recipes=None, kappa=5.0, kappa0=2.0, bandwidth=1, chunk_size=16,
-            min_segments=0):
-    """An HSMM whose duration tables are the nonparametric hazard fitted on `params`' own Viterbi
-    decode of `sequences` (the training split), under `recipes` (given dish per sequence) or the
-    inferred one."""
-    from cook_ad.hsmm.model import HSMM
-    from cook_ad.synthetic import generate
-    base = HSMM(params, d_max)
-    traj = generate.trajectories_from_real_joint(params, sequences, d_max, chunk_size=chunk_size,
-                                                 r_hat=recipes)
-    k_r, k = np.asarray(params.init_counts).shape
-    return HSMM(params, d_max, duration_tables=fit_np_hazard(
-        traj, k_r, k, d_max, np.asarray(base.tables.log_h), kappa=kappa, kappa0=kappa0,
-        bandwidth=int(bandwidth), min_segments=min_segments,
-        nb_tables=(base.tables.log_pmf, base.tables.log_surv)))
 
 
 def save_tables(path, log_pmf, log_surv, meta=None):

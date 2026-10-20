@@ -1,7 +1,7 @@
 """Sanity plots for the drift generator, before any detector touches the data
-(docs/drift_synth.md §8). Writes to runs/drift_synth/reports/sanity/:
+(docs/drift_synth.md). Writes to runs/drift_synth/reports/sanity/:
 
-- dose_response.png   drift_magnitude vs |delta theta| per knob, averaged over the 18 recipes,
+- dose_response.png   drift_magnitude vs |delta theta| per knob, averaged over the recipes,
                       with the Monte Carlo noise floor (same theta, another seed);
 - isolation.png       knob x feature group, change at |delta| = 0.45 as a multiple of that floor;
 - lengths.png         session length and action duration, synthetic vs CC4D / EPIC;
@@ -55,7 +55,7 @@ def _subset_js(s0, s1, keep):
 
 def _features(s0, s1):
     m = GT.drift_magnitude(s0, s1)
-    is_log = lambda t: t.split(" ")[0] in LOGISTIC_VERBS
+    is_log = lambda t: t.split(" ")[0] in LOGISTIC_VERBS  # noqa: E731
     return {"marginal_js": m["marginal_js"], "bigram_js": m["bigram_js"],
             "duration_w1": m["duration_w1_mean"],
             "core_marginal_js": _subset_js(s0, s1, lambda t: not is_log(t)),
@@ -91,7 +91,7 @@ def plot_dose(res, path):
     for ax, (f, title) in zip(axes, feats):
         _style(ax)
         for color, knob in zip(SERIES, KNOBS):
-            ys = [res["knobs"][knob][l][f] for l in LEVELS]
+            ys = [res["knobs"][knob][lv][f] for lv in LEVELS]
             ax.plot(LEVELS, ys, color=color, linewidth=2, marker="o", markersize=4, label=knob)
         ax.axhline(res["null"][f], color=INK2, linestyle="--", linewidth=1,
                    label="MC noise (rerun at θ = 0.5)")
@@ -235,7 +235,7 @@ def main():
 
     (out / "sanity.json").write_text(json.dumps(
         {"levels": LEVELS, "null": res["null"],
-         "knobs": {k: {str(l): v for l, v in d.items()} for k, d in res["knobs"].items()},
+         "knobs": {k: {str(lv): v for lv, v in d.items()} for k, d in res["knobs"].items()},
          "isolation_ratio": {k: dict(zip(["core_marginal", "logistics_marginal", "bigram",
                                            "duration"], map(float, row)))
                              for k, row in zip(KNOBS, mat)},

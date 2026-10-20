@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 
 from cook_ad.hsmm.params import JointHSMMParams, _row_normalize
 from cook_ad.hsmm.train.global_prior import (apply_global_prior, count_global, run_length,
@@ -55,26 +54,9 @@ def test_lambda_zero_is_identity_and_prior_lifts_only_population_transitions():
     assert np.all(np.diagonal(q.trans_counts, axis1=1, axis2=2) == 0)
 
 
-def test_unknown_recipe_and_replace():
+def test_unknown_recipe_only_lifts_cells():
     p = _params()
     g = count_global([_seq([(0, 0), (2, 2)])], ["other"])
     q = apply_global_prior(p, g, ["r"], 10.0)
     np.testing.assert_array_equal(np.maximum(np.asarray(p.trans_counts), 1.0) * (1 - np.eye(4)),
                                   q.trans_counts)
-    g = count_global([_seq([(0, 0), (2, 2)])], ["r"])
-    only = apply_global_prior(p, g, ["r"], 10.0, replace=True)
-    assert only.trans_counts[0, 0, 1] == 1.0 and only.trans_counts[0, 0, 2] == 11.0
-
-
-def test_fading_prior_shrinks_with_the_persons_own_count():
-    p = _params()
-    g = count_global([_seq([(0, 0), (2, 2), (1, 1), (0, 0)])], ["r"])   # 0->2, 2->1, 1->0
-    # the person left state 0 fifty times (0 -> 1) and never left state 2
-    person = count_global([_seq([(0, 0), (1, 1)])] * 50, ["r"] * 50)
-    fixed = apply_global_prior(p, g, ["r"], 10.0)
-    fade = apply_global_prior(p, g, ["r"], 10.0, person_counts=person, n0=5.0)
-    # row 0 (well observed): prior mass 10 / (1 + 50/5) ~ 0.91 instead of 10
-    assert fade.trans_counts[0, 0, 2] - 1.0 == pytest.approx(10.0 / 11.0)
-    assert fixed.trans_counts[0, 0, 2] - 1.0 == pytest.approx(10.0)
-    # row 2 (never left by the person): the full prior
-    assert fade.trans_counts[0, 2, 1] == fixed.trans_counts[0, 2, 1]

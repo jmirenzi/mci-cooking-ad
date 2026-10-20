@@ -21,8 +21,10 @@ def test_tables_from_hazard_is_a_distribution():
 
 
 def test_kaplan_meier_with_censoring():
-    xi = np.zeros((1, 1, D)); cens = np.zeros((1, 1, D))
-    xi[0, 0, 4] = 6; cens[0, 0, 2] = 2           # 6 segments of 5 ticks, 2 cut at 3 ticks
+    xi = np.zeros((1, 1, D))
+    cens = np.zeros((1, 1, D))
+    xi[0, 0, 4] = 6                              # 6 segments of 5 ticks,
+    cens[0, 0, 2] = 2                            # 2 cut at 3 ticks
     n = at_risk(xi, cens)
     assert n[0, 0, 0] == 8 and n[0, 0, 3] == 6 and n[0, 0, 5] == 0
 

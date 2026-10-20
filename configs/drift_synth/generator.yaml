@@ -14,7 +14,7 @@ paths:
   out: dataset/processed/drift_synth
 
 export:
-  tick_seconds: 1.0          # the HSMM configs (configs/drift_synth/hsmm_cal.yaml)
+  tick_seconds: 1.0          # the HSMM configs (configs/drift_synth/hsmm.yaml)
   sil: [stall, idle]         # (verb, noun) for gaps
   fps: 20                    # parse_epic.FPS_REF: the frame grid the tick vote runs on
 

@@ -1,4 +1,4 @@
-"""Stage 5: action durations. One source per quantity (docs/drift_synth.md §4):
+"""Stage 5: action durations. One source per quantity (docs/drift_synth.md §2, Durations):
 
   step totals   CaptainCook4D: real people's time for each step of these recipes (StepTimes, a
                 log-normal per step: the median of its normal recordings, one pooled spread);
@@ -80,8 +80,8 @@ def fit_from_intervals(videos, min_verb=20, min_pair=20, min_duration=0.05, sour
 
 
 def fit_duration_priors(source, root, min_verb=20, min_pair=20):
-    """source: "epic" (EPIC-100 annotations dir). "cc4d_fine" and "cc4d_step" are the spec's
-    other sources; the first is not public and the second is not built."""
+    """source: "epic" (EPIC-100 annotations dir). CC4D's fine-grained actions are not public; its
+    step totals are StepTimes (fit_step_times)."""
     if source != "epic":
         raise NotImplementedError(f"duration source {source!r} is not available (docs/drift_synth.md §3)")
     from cook_ad.data.parse_epic import load_classes, load_narrations

@@ -6,7 +6,7 @@ from cook_ad.drift_synth.types import StepExpansion, Variant
 
 
 def _reply(tokens, variants=()):
-    pair = lambda t: {"verb": t[0], "noun": t[1]}
+    pair = lambda t: {"verb": t[0], "noun": t[1]}  # noqa: E731
     return {"tokens": [pair(t) for t in tokens],
             "variants": [{"knob": k, "kind": kind, "tokens": [pair(t) for t in toks], "replaces": rep}
                          for k, kind, toks, rep in variants]}

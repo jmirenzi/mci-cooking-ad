@@ -3,7 +3,16 @@
 Dated entries, newest first, ≤ 5 lines each: what was tried, the number, the verdict, and the
 script or commit that measured it. Every number states its metric letter where it is a detection
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
-and are recoverable at the git tag `pre-restructure`.
+and are recoverable at the git tag `pre-restructure`. Scripts, options and `drift_synth.md` sections
+(§5–§9.9) named in entries from 2026-10-15 to 2026-10-20 were removed in the 2026-10-20 cleanup and
+are recoverable at the git tag `pre-cleanup`.
+
+## 2026-10-20 — cleanup before merging `synthetic-drift`
+
+Deleted (tag `pre-cleanup`): the skip-idle, count and empirical-duration channels (idle scrubbing
+replaced them); `eval_synth_ad.py`, `diagnose_synth_*`, `validate_s_count.py`, `compare_s_count*`,
+`precheck.py`, the old overnight scripts; the fading and global-only prior, `--np-hazard`/`np_hsmm`,
+the duration-split grid. `eval_synth_prior.py` is the one protocol (§7); drift_synth.md is theory.
 
 ## 2026-10-20 — s_count comparison rescored under metric H
 
@@ -32,13 +41,6 @@ sessions/recipe. Breakfast live: missing-step precedence alone +0.014 [+0.001, +
 0.31 -> 0.46, healthy FPR same); the extra-visit half -0.012 (CI < 0); progress, touched-set and
 end-of-session rules never beat precedence. runs/drift_synth/scount/summary.md.
 
-## 2026-10-19 — metric H (any flag hits, one miss per run), delay 2
-
-Breakfast dish-given test (97/group), metric H delay 2: hindsight 0.655, live 0.656, LLM 0.35-0.40,
-null (tick) 0.301. EPIC-Tent procedural default split (9 sessions, 51 spans): hindsight 0.326, live
-0.337, LLM 0.175, null 0.169. Live alarms/10 min 9.3 vs 2.6 under G: stretches expose flicker.
-`eval/metric_h.py`, `COOK_METRIC=H`; delay sweep 0/2/5/10 on EPIC-Tent only.
-
 ## 2026-10-20 — training stage 4b: nonparametric hazard, gated (metric G)
 
 Cells with < 30 segments keep the exact NB tables. Synthetic scrubbed: 10 / 30 sessions unchanged
@@ -52,6 +54,13 @@ Kaplan-Meier hazard from training decodes, swapped for the NB tables. Synthetic 
 sessions: 0.834 -> 0.871 (abandonment 0.13 -> 0.57); 10-30 sessions -0.02 to -0.035. Breakfast
 hindsight 0.659 -> 0.682 (train-picked), abandonment at alpha 0.005 0.35 -> 0.71. EPIC-Tent
 unchanged. next_steps.md §3.
+
+## 2026-10-19 — metric H (any flag hits, one miss per run), delay 2
+
+Breakfast dish-given test (97/group), metric H delay 2: hindsight 0.655, live 0.656, LLM 0.35-0.40,
+null (tick) 0.301. EPIC-Tent procedural default split (9 sessions, 51 spans): hindsight 0.326, live
+0.337, LLM 0.175, null 0.169. Live alarms/10 min 9.3 vs 2.6 under G: stretches expose flicker.
+`eval/metric_h.py`, `COOK_METRIC=H`; delay sweep 0/2/5/10 on EPIC-Tent only.
 
 ## 2026-10-19 — idle scrubbing beats every add-on (metric G)
 

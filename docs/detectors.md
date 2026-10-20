@@ -280,13 +280,11 @@ is an approximation: the exact belief would also have to track which subtasks ha
 When the belief is sure (one-hot entries on the hindsight path) the live rule reduces exactly to
 hindsight's (`tests/test_count_live.py`).
 
-Why this rule and no other (2026-10-20, `scripts/eval/compare_s_count.py`, metric G): on Breakfast
-it lifts live F1 0.685 → 0.698 (paired bootstrap 95% CI [+0.001, +0.026]; omission recall 0.31 →
-0.46, healthy FPR unchanged). On the scrubbed synthetic persons no rule moves F1 (±0.006), because
-skips are already rare transitions there. An extra-visit test (P(C_k ≥ c | r) at the c-th visit)
-cost Breakfast 0.012 and was dropped; a touched-set model P(k untouched | r, S), a progress rank and
-an end-of-session check never beat precedence (later alarms, thin data). It replaced "k's usual
-successor began while ĉ_k < ½", which alarmed on 77-91% of healthy synthetic sessions live.
+Why this rule: it catches omissions a first-order model misses on Breakfast (where coarse
+actions can follow each other in several orders) without healthy alarms; on idle-scrubbed
+synthetic streams skips are already rare transitions, so it is off by default. The other rules
+tried (extra visits, a touched-set model, progress rank, an end-of-session check, "the usual
+successor began") and their numbers are in [`logbook.md`](logbook.md), 2026-10-20.
 
 ### 3.7 Worked example: a healthy step change
 
@@ -450,8 +448,8 @@ $$
 (`VisitCounts.path_pvalues`). The threshold is −log α, like the duration channels (the p-values
 are frequencies, not model tails). The smallest reachable p is 0.5/(N + 1), so a recipe with few
 training sessions cannot fire: about 0.1 at 4 sessions per recipe, 0.012 at 40. In the validation
-grid the channel sits with the transition channels (`harness.TRANSITION_CHANNELS`), or on its own
-α axis (`compare_s_count.py`).
+grid the channel sits with the transition channels (`harness.TRANSITION_CHANNELS`) for
+Hindsight and on its own α axis for Live (`eval_synth_prior.py --core-count`).
 
 ---
 

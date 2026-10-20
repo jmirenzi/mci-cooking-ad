@@ -1,4 +1,4 @@
-"""Step-level error injection on a synthetic session's clean events (docs/drift_synth.md §9.6).
+"""Step-level error injection on a synthetic session's clean events (docs/drift_synth.md §7).
 
 The tick-stream injectors (synthetic/error_injection.py) pick a segment of the model's own
 segmentation; on Breakfast that is a recipe step, here a third of segments are idle gaps and a

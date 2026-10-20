@@ -143,10 +143,17 @@ fit at κ = 0.001. Each trial's last segment is imputed as censored, as in EM.
 
 `scripts/train/fit_np_hazard.py` → `hsmm/train/np_hazard.py:fit_np_hazard`. The final model decodes
 the training split, as in stage 4. Each (recipe, subtask) cell's hazard is then the discrete
-Kaplan–Meier one, h_j = (segments ending at j) / (segments still running at j). The censored last
-segment is at risk up to its length and never an event. It is smoothed over j (triangular kernel,
-half-width 1) and shrunk with κ = 5 toward the state's hazard pooled over recipes, itself shrunk
-with κ₀ = 2 toward the negative binomial.
+Kaplan–Meier one, shrunk toward the state's hazard pooled over recipes:
+
+$$
+\hat h_{ij} = \frac{n_{ij} + \kappa\, g_{ij}}{N_{i,\ge j} + \kappa},
+$$
+
+with n_ij the cell's training segments that ended at exactly j ticks, N_{i,≥j} those still running
+at j (the censored last segment is at risk up to its length and never an event), and g_ij the
+pooled hazard, itself shrunk with κ₀ = 2 toward the negative binomial's. Counts are smoothed over
+j (triangular kernel, half-width 1) and κ = 5. The tables follow as pmf_j = h_j ∏_{j'<j}(1 − h_j')
+and surv_j = ∏_{j'<j}(1 − h_j'), and everything downstream reads (log_pmf, log_surv).
 
 A cell with fewer than 30 training segments keeps the negative binomial outright: on few segments
 the empirical shape is noise, and ungated it cost 0.02–0.035 F1 at 10–30 sessions. The tables
@@ -154,7 +161,7 @@ are written next to the model as `<model>.durations.npz` (`hsmm/model.py:duratio
 `HSMM.load` reads them automatically (`durations=None` keeps the NB), and `s_dur_two` and the
 early-exit bins then read the tables (`HSMM.table_durations`). Why: the negative binomial has the
 right spread but puts ~10% of mass below where real durations start, so a step cut short never
-looks short (next_steps.md §3 has the measurements).
+looks short (measurements: logbook.md, 2026-10-20).
 
 ### Stage 5 (optional): visit counts
 
@@ -217,7 +224,7 @@ dev split.
 | hard EM | `hsmm/train/hard_em.py:hard_em_step`, `hard_counts` |
 | smoothing | `hsmm/train/smoothing.py:shifted_mode_counts`, `backoff_counts` |
 | duration refit | `hsmm/train/refit.py:refit_durations`, `duration_histograms` |
-| nonparametric hazard (stage 4b) | `scripts/train/fit_np_hazard.py`; `hsmm/train/np_hazard.py:fit_np_hazard`, `tables_from_hazard`, `np_hsmm`, `save_tables`, `load_tables`; `hsmm/model.py:HSMM(duration_tables=)`, `HSMM.load(durations=)`, `durations_path` |
+| nonparametric hazard (stage 4b) | `scripts/train/fit_np_hazard.py`; `hsmm/train/np_hazard.py:fit_np_hazard`, `tables_from_hazard`, `save_tables`, `load_tables`; `hsmm/model.py:HSMM(duration_tables=)`, `HSMM.load(durations=)`, `durations_path` |
 | visit counts (stage 5) | `scripts/train/fit_visit_counts.py`; `hsmm/visit_counts.py:VisitCounts` |
 | NB fit, censoring, shrinkage | `hsmm/train/durations_fit.py:fit_durations_shrunk`, `impute_censored_histogram`, `newton_update_r`, `method_of_moments_r`, `update_p_given_r` |
 | clustering metrics | `hsmm/train/metrics.py:adjusted_rand`, `matched_accuracy`, `effective_k` |

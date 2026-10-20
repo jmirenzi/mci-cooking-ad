@@ -1,4 +1,4 @@
-"""Is an injected synthetic trial actually anomalous? (docs/drift_synth.md §9.5)
+"""Is an injected synthetic trial actually anomalous? (docs/drift_synth.md §7)
 
 The reference is a large healthy sample of the SAME simulated person, on sessions no pool uses, in
 the tick representation the detector sees. Three checks on the trial's runs (maximal stretches of

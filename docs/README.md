@@ -20,7 +20,7 @@ parameter row. Two LLM detectors are kept as baselines and scored the same way.
 | [`data.md`](data.md) | corpora, ticks, splits, canonical pools, injected errors |
 | [`eval.md`](eval.md) | metric G, metric E, operating points, the eval scripts |
 | [`next_steps.md`](next_steps.md) | planned work: open vocabulary, drift detection |
-| [`drift_synth.md`](drift_synth.md) | the synthetic drift-data generator (CaptainCook4D graphs, EPIC vocab, knobs, regimes) |
+| [`drift_synth.md`](drift_synth.md) | the synthetic data generator (CaptainCook4D graphs, EPIC vocab, knobs, regimes) and the anomaly detector on it |
 | [`logbook.md`](logbook.md) | what was tried, the number, the verdict, newest first |
 
 ---
@@ -94,26 +94,31 @@ src/cook_ad/
 │   ├── kernels.py     pure-JAX predict, update, filter, backward, forward pass, Viterbi
 │   ├── model.py       class HSMM
 │   ├── batch.py       r̂, occupancy and Viterbi over many trials at once
-│   └── train/         lexical init, joint EM, hard EM, smoothing, duration refit, metrics
+│   ├── visit_counts.py  precedence statistics for the optional s_count channel
+│   └── train/         lexical init, joint EM, hard EM, smoothing, duration refit, nonparametric hazard,
+│                      global (population) prior, metrics
 ├── detectors/
 │   ├── thresholds.py  class BadSets
 │   ├── hsmm_live.py   hsmm_lag.py   hsmm_hindsight.py
 │   ├── narrate.py     templated questions from a Hindsight detection
 │   └── llm_base.py    llm_verdict.py   llm_predictive.py
-├── eval/              metric_g.py, metric_e.py, pools.py, harness.py
+├── eval/              metric_g.py, metric_h.py, metric_e.py, pools.py, harness.py, synth_oracle.py
 ├── llm/               textify, prompts, client (+ cache), detect, predict: LLM plumbing
-├── data/              corpus parsers, tick expansion, splits
+├── data/              corpus parsers, tick expansion, splits, idle scrubbing
 ├── synthetic/         healthy sampling, the five injected error types
 ├── drift_synth/       synthetic longitudinal drift data from CaptainCook4D (no model imports)
 └── xla_env.py         process-level XLA flags
 scripts/
 ├── data/              fetch, split, build_pools
-├── train/             fit_lexical, fit_hard_em, smooth_params, refit_durations, train_hsmm.sh
-├── eval/              eval_breakfast.py, eval_epic_tent.py, llm_breakfast.sh, llm_epic_tent.sh
+├── train/             fit_lexical, fit_hard_em, smooth_params, refit_durations, fit_np_hazard,
+│                      fit_visit_counts, train_hsmm.sh
+├── eval/              eval_breakfast.py, eval_epic_tent.py, eval_synth_prior.py, llm_*.sh
+├── drift_synth/       build_assets, calibrate_cc4d, generate, prior_experiment.sh, rollout_examples,
+│                      sanity_plots
 ├── figures/           trial_figure.py
 ├── analysis/          participant_variability.py
 └── demo_trial.py      one trial through every HSMM detector, tick by tick
-configs/               corpus configs; operating_points.yaml (train-picked α, κ)
+configs/               corpus configs; operating_points.yaml (train-picked α, κ); drift_synth/
 dataset/processed/     sequences, labels, vocab, splits, pools, fitted .npz, llm_cache/
 tests/                 pytest
 ```
@@ -258,7 +263,7 @@ scored step by step as PREGO's code does.
 - **Drift detection** ([`next_steps.md`](next_steps.md) §2): frozen weekly references, and a
   recipe-stratified permutation test that says whether and where a person's normal behaviour has
   changed (weekly, monthly, yearly). Its test data comes from the generator in
-  [`drift_synth.md`](drift_synth.md) (built; all conditions generated, sanity plots in §8; the HSMM detector on it in §9).
+  [`drift_synth.md`](drift_synth.md) (built; the anomaly detector on it in §7).
 - **Live narration.** `narrate` needs a Viterbi segmentation, so today only Hindsight detections
   can be narrated. A live version would phrase a question from the filter's current belief at the
   moment an alarm is raised.

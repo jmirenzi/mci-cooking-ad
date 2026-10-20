@@ -1,8 +1,8 @@
-# HSMM for one synthetic drift-data person (scripts/eval/eval_synth_ad.py). The stream is the
-# EPIC-100 vocabulary at 0.5 s ticks, as configs/epic.yaml; the recipe is the CC4D recipe
-# (--recipe-labels, so k_recipe is overridden by the person's repertoire).
+# HSMM for one synthetic person (scripts/eval/eval_synth_prior.py): EPIC-100 vocabulary at 1 s
+# ticks, d_max 300 (CC4D step totals put cooking waits up to ~270 s). The recipe is the CC4D
+# recipe (--recipe-labels, so k_recipe is overridden by the person's repertoire).
 
-tick_seconds: 0.5
+tick_seconds: 1.0
 
 vocab:
   verbs: 98    # 97 EPIC verb classes + "stall" (SIL)
@@ -16,7 +16,7 @@ prior:
   alpha_pi: 1.0
 
 duration:
-  d_max_ticks: 200        # 100 s, as EPIC
+  d_max_ticks: 300        # 300 s at 1 s ticks: CC4D-calibrated cooking waits run to ~270 s (p99 of runs)
   shrinkage_kappa: 5.0
 
 em:

@@ -1,4 +1,4 @@
-"""Scrub idle observations from a tick stream (docs/drift_synth.md §9.8).
+"""Scrub idle observations from a tick stream (docs/drift_synth.md §7).
 
 In gap-heavy streams (two actions in three separated by a (stall, idle) run in the synthetic
 data) the HSMM's transitions go A -> idle -> B, and idle -> anything is common, so a repeated,
