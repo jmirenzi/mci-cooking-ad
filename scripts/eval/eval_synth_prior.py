@@ -434,7 +434,7 @@ def stage_eval_split(persons, chunk_size=8):
                     k_r, k_s = np.asarray(p.init_counts).shape
                     hsmm = HSMM(p, d_max, duration_tables=fit_np_hazard(
                         tr_traj, k_r, k_s, d_max, np.asarray(hsmm.tables.log_h), kappa=NP_HAZARD[0],
-                        kappa0=2.0, bandwidth=int(NP_HAZARD[1])))
+                        kappa0=NP_HAZARD[2] if len(NP_HAZARD) > 2 else 2.0, bandwidth=int(NP_HAZARD[1])))
                 bad = BadSets(hsmm, harness.ALPHAS)
                 det = HindsightHSMMDetector(hsmm, bad, OperatingPoint(0.005), chunk_size=chunk_size)
 
@@ -516,7 +516,9 @@ def stage_eval_split(persons, chunk_size=8):
                 row = harness.at(gt, idx)
                 row["alpha_transition"] = harness.ALPHAS[idx[0]]
                 row["alpha_rest"] = harness.ALPHAS[idx[1]]
-                cc = (" +s_count" if CORE_COUNT else "") + (f" +np(k={NP_HAZARD[0]:g},bw={NP_HAZARD[1]:g})" if NP_HAZARD else "")
+                cc = (" +s_count" if CORE_COUNT else "") + (
+                    f" +np(k={NP_HAZARD[0]:g},bw={NP_HAZARD[1]:g}" + (f",k0={NP_HAZARD[2]:g}" if len(NP_HAZARD) > 2 else "")
+                    + ")" if NP_HAZARD else "")
                 out[n][arm + cc] = row
                 # the single-alpha pick is the grid's diagonal (same alpha for every channel)
                 diag = [float(np.asarray(gv["f1"])[j, j]) for j in range(len(harness.ALPHAS))]
@@ -712,8 +714,9 @@ def main():
                          "anomalies (real), or the step-level injectors (gen); real/gen run 2 arms")
     ap.add_argument("--dur-split", action="store_true",
                     help="eval-split: duration channels on their own alpha axis")
-    ap.add_argument("--np-hazard", type=float, nargs=2, metavar=("KAPPA", "BW"),
-                    help="eval-split: nonparametric duration hazard, shrinkage kappa and kernel half-width")
+    ap.add_argument("--np-hazard", type=float, nargs="+", metavar="X",
+                    help="eval-split: nonparametric duration hazard: KAPPA BW [KAPPA0] (cell shrinkage, "
+                         "kernel half-width, pooled-to-NB shrinkage, default 2)")
     ap.add_argument("--core-count", action="store_true",
                     help="eval-split: the detectors' own s_count channel (fitted on the training decodes)")
     ap.add_argument("--struct-prior", type=float, default=0.0,
@@ -743,7 +746,7 @@ def main():
     CORE_COUNT = a.core_count
     TAG += "_scount" if CORE_COUNT else ""
     NP_HAZARD = tuple(a.np_hazard) if a.np_hazard else None
-    TAG += f"_np{NP_HAZARD[0]:g}bw{NP_HAZARD[1]:g}" if NP_HAZARD else ""
+    TAG += (f"_np{NP_HAZARD[0]:g}bw{NP_HAZARD[1]:g}" + (f"k0{NP_HAZARD[2]:g}" if len(NP_HAZARD) > 2 else "")) if NP_HAZARD else ""
     persons = a.person or PERSONS
     if a.stage == "population":
         stage_population()
