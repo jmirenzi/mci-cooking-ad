@@ -193,8 +193,8 @@ class CountState:
 
     def step(self, entry, p_r, alphas):
         """(G,) bad-event mass at this tick, then add the tick's entries to the counts. A
-        beginning of i is bad at alpha if counts.p_begin <= alpha for the visit it would be
-        (round(c_i) + 1), with "not yet happened" read as c_k < 1/2."""
+        beginning of i that would be its first visit (c_i < 1/2) is bad at alpha if
+        counts.p_first <= alpha, with "not yet happened" read as c_k < 1/2."""
         entry, p_r = np.asarray(entry, dtype=float), np.asarray(p_r, dtype=float)
         cond = entry / np.maximum(p_r[:, None], 1e-300)
         alphas = np.asarray(alphas, dtype=float)
@@ -203,12 +203,11 @@ class CountState:
             if not self.counts.known(r):
                 continue
             c = self.c[a]
-            for i in np.flatnonzero(entry[a] > 1e-12):
+            for i in np.flatnonzero((entry[a] > 1e-12) & (c < 0.5)):
                 i = int(i)
                 if i in self.counts.ignore:
                     continue
-                visit = int(np.floor(c[i] + 0.5)) + 1
-                p = self.counts.p_begin(r, i, visit, lambda k: c[k] < 0.5)
+                p = self.counts.p_first(r, i, lambda k: c[k] < 0.5)
                 bad += entry[a, i] * (p <= alphas)
         self.c += cond
         return np.minimum(bad, 1.0)
@@ -240,8 +239,9 @@ class LiveHSMMDetector(AnomalyDetector):
 
     def __init__(self, hsmm, bad_sets, op: OperatingPoint, counts=None):
         """`counts`: hsmm/visit_counts.VisitCounts; adds the s_count event channel (§5.7):
-        the posterior mass that a subtask beginning now is an extra visit, or follows a missing
-        one, under the expected visit counts so far. Without it: the seven-channel detector."""
+        the posterior mass that a subtask beginning now for the first time skips one that
+        should have come before it, under the expected visit counts so far. Without it: the
+        seven-channel detector."""
         self.hsmm, self.bad, self.op, self.counts = hsmm, bad_sets, op, counts
         self.channels = CHANNELS + (COUNT,) if counts is not None else CHANNELS
         self._alpha_idx = {c: bad_sets.alpha_index(op.alpha_for(c)) for c in EVENTS}

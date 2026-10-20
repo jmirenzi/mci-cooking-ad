@@ -133,8 +133,7 @@ class HindsightHSMMDetector(AnomalyDetector):
         return s_transition - self.transition_surprise(segments, self.hsmm.tables.log_A_marginal)[0]
 
     def count_surprise(self, segments, r):
-        """-log p of each visit's count and of each missing subtask (§5.7), at the segment start
-        where it shows; the largest where two land on one tick."""
+        """-log p of each first visit's precedence test (§5.7), at its segment start."""
         s = np.zeros(sum(d for _, d in segments))
         for t, p in self.counts.path_pvalues(int(r), segments):
             s[t] = max(s[t], -float(np.log(p)))

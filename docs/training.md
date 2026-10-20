@@ -159,8 +159,9 @@ looks short (next_steps.md §3 has the measurements).
 ### Stage 5 (optional): visit counts
 
 `scripts/train/fit_visit_counts.py` → `hsmm/visit_counts.py:VisitCounts.fit`. The final model decodes
-the training split (as stage 4), and the per-recipe visit counts of every subtask are written as JSON
-next to the model. Only the `s_count` channel reads them (detectors.md §3.6a, §5.6).
+the training split (as stage 4), and per recipe which subtasks each session visits, and which came
+before each one's first visit, are written as JSON next to the model. Only the optional `s_count`
+(missing-step) channel reads them (detectors.md §3.6a, §5.6); `train_hsmm.sh` does not run this stage.
 
 ## 5. The duration fit
 

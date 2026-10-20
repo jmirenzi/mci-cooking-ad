@@ -45,14 +45,15 @@ def _hindsight(op):
     return HindsightHSMMDetector(h, BadSets(h, ALPHAS), op, counts=COUNTS)
 
 
-def test_hindsight_s_count_flags_a_repeat_and_a_skip_not_the_recipe():
+def test_hindsight_s_count_flags_a_skip_not_the_recipe_or_a_repeat():
+    """A repeat is left to the transition channels: s_count tests first visits only."""
     op = OperatingPoint({c: 1e-3 for c in ("s_emit", "s_verb", "s_noun", "s_temporal", "s_dur_two",
                                            "s_transition", "s_recipe_transition")} | {COUNT: 0.05})
     det = _hindsight(op)
     ok, rep, skip = det.detect_many([_trial([0, 1, 2, 3]), _trial([0, 1, 2, 1, 2, 3]),
                                      _trial([0, 1, 3])])
     assert not [a for a in ok.alarms if a.channel == COUNT]
-    assert [a.tick for a in rep.alarms if a.channel == COUNT] == [3 * DUR, 4 * DUR]
+    assert not [a for a in rep.alarms if a.channel == COUNT]
     assert [a.tick for a in skip.alarms if a.channel == COUNT] == [2 * DUR]      # where 2 belonged
 
 
@@ -71,7 +72,7 @@ def _live(alpha=0.05):
 
 def test_live_s_count_is_causal_and_step_matches_trace():
     det = _live()
-    for states, want in (([0, 1, 2, 3], []), ([0, 1, 2, 1, 2, 3], [3 * DUR, 4 * DUR]),
+    for states, want in (([0, 1, 2, 3], []), ([0, 1, 2, 1, 2, 3], []),
                          ([0, 1, 3], [2 * DUR])):
         tr = _trial(states)
         flagged = [a.tick for a in det.detect_trial(tr).alarms if a.channel == COUNT]
@@ -125,3 +126,12 @@ def test_a_legal_alternative_order_is_not_a_missing_step():
     det = LiveHSMMDetector(h, BadSets(h, ALPHAS), op, counts=counts)
     assert not [a for a in det.detect_trial(_trial([0, 2, 1, 3])).alarms if a.channel == COUNT]
     assert [a.tick for a in det.detect_trial(_trial([0, 3, 1, 2])).alarms if a.channel == COUNT]
+
+
+def test_counts_round_trip_and_test_first_visits_only(tmp_path):
+    counts = VisitCounts.fit([(0, [0, 1, 2, 3])] * 32 + [(0, [0, 2, 1, 3])] * 8, ignore=[3])
+    counts.save(tmp_path / "c.json")
+    back = VisitCounts.load(tmp_path / "c.json")
+    segs = [(0, 2), (2, 2), (1, 2), (2, 2), (3, 2)]                # 2 returns; 3 is ignored
+    assert back.path_pvalues(0, segs) == counts.path_pvalues(0, segs)
+    assert [t for t, _ in counts.path_pvalues(0, segs)] == [0, 2, 4]

@@ -251,13 +251,13 @@ with q^(r) renormalised within recipe r (`recipe_transition_prob`). This is the 
 helps most, since r̂ is pinned by everything after the transition. At K_R = 1 its bad set is empty
 (§2.3).
 
-### 3.6a Visit count (`s_count`, optional)
+### 3.6a Missing step (`s_count`, optional, off by default)
 
-"Is the subtask beginning now one visit too many, or does it follow a subtask that never happened?"
-Present only when the detector is given fitted visit counts (`hsmm/visit_counts.py:VisitCounts`,
-§5.6), so the seven-channel detector is unchanged without them. A first-order model sees adjacent
-pairs only: a step done twice with a legal step between, or skipped where its neighbours may follow
-each other, leaves every transition ordinary.
+"Does the subtask beginning now for the first time skip one that should have come before it?"
+Present only when the detector is given fitted statistics (`hsmm/visit_counts.py:VisitCounts`,
+§5.6), so the seven-channel detector is unchanged without them; nothing loads them by default. A
+first-order model sees adjacent pairs only: a step skipped where its neighbours may follow each
+other leaves every transition ordinary.
 
 The entry mass into i at t is the switch posterior summed over what was left,
 m_t(r, i) = Σ_k Σ_j q^(r)_t(k, j, i) (`entry_one_tick`). At t = 0 it is the posterior itself.
@@ -267,10 +267,9 @@ $$
 \hat c_{t,r,k} = \sum_{t' < t} \frac{m_{t'}(r, k)}{P(r \mid o_{0:t'})}.
 $$
 
-A beginning of i at t is bad at α if its visit number v = ⌊ĉ_{t,r,i} + ½⌋ + 1 has
-P̂(C_i ≥ v | r) ≤ α (an extra visit), or, at a first visit (v = 1), if some k with ĉ_{t,r,k} < ½
-has P̂(k not before i's first visit | r, i) ≤ α (precedence: k is skipped, or i moved ahead of it;
-`VisitCounts.p_begin`). Then
+A beginning of i at t that would be its first visit (ĉ_{t,r,i} < ½) is bad at α if some k with
+ĉ_{t,r,k} < ½ has P̂(k not before i's first visit | r, i) ≤ α (k is skipped, or i moved ahead of
+it), or if P̂(i visited | r) ≤ α (a subtask this recipe never had; `VisitCounts.p_first`). Then
 
 $$
 \text{count}_t = \min\Bigl(1,\ \sum_{r,i} m_t(r, i)\ \mathbb 1[\text{bad}_\alpha(r, i)]\Bigr),
@@ -279,10 +278,15 @@ $$
 flagged at count_t > κ (`CountState.step`). Using expected visits rather than their distribution
 is an approximation: the exact belief would also have to track which subtasks have been visited.
 When the belief is sure (one-hot entries on the hindsight path) the live rule reduces exactly to
-hindsight's (`tests/test_count_live.py`). The precedence rule replaced "k's usual successor began
-while ĉ_k < ½", which alarmed on 77-91% of healthy synthetic sessions live: the usual successor
-is often not the only one, so k legitimately comes later. Whether the channel is worth having at
-all: `scripts/eval/compare_s_count.py` and the 2026-10-20 logbook entry.
+hindsight's (`tests/test_count_live.py`).
+
+Why this rule and no other (2026-10-20, `scripts/eval/compare_s_count.py`, metric G): on Breakfast
+it lifts live F1 0.685 → 0.698 (paired bootstrap 95% CI [+0.001, +0.026]; omission recall 0.31 →
+0.46, healthy FPR unchanged). On the scrubbed synthetic persons no rule moves F1 (±0.006), because
+skips are already rare transitions there. An extra-visit test (P(C_k ≥ c | r) at the c-th visit)
+cost Breakfast 0.012 and was dropped; a touched-set model P(k untouched | r, S), a progress rank and
+an end-of-session check never beat precedence (later alarms, thin data). It replaced "k's usual
+successor began while ĉ_k < ½", which alarmed on 77-91% of healthy synthetic sessions live.
 
 ### 3.7 Worked example: a healthy step change
 
@@ -430,24 +434,24 @@ a signed excess, not a surprisal: "ordinary in general, wrong for this recipe". 
 negative, and so can its threshold, so the threshold is +inf on every tick that is not a segment
 start. At K_R = 1 it is zero with +inf thresholds (§2.3).
 
-### 5.6 Visit count (`s_count`, optional)
+### 5.6 Missing step (`s_count`, optional)
 
-The visit-count statistics are fitted once, after training (`scripts/train/fit_visit_counts.py`).
-The final model decodes its own training sessions, and for every recipe r and subtask k the
-fraction of sessions with C_k ≥ c visits, and, for every pair, the fraction of the sessions that
-contain j in which k came before j's first visit, both smoothed as (n + 0.5)/(N + 1), are stored.
-Idle subtasks (most likely verb `stall`) are not counted. On the decoded path z*, at each segment
-start of k:
+The statistics are fitted once, after training (`scripts/train/fit_visit_counts.py`). The final
+model decodes its own training sessions; for every recipe r it stores N_r, for every subtask j the
+number of sessions that visit it, and for every pair the number of those in which k came before
+j's first visit. Probabilities are smoothed as (n + 0.5)/(N + 1). Idle subtasks (most likely verb
+`stall`) are not counted. On the decoded path z*, at the first visit of each subtask k:
 
 $$
-s_{\text{count}} = -\log \hat P(C_k \ge c \mid \hat r) \text{ at the } c\text{-th visit } (c \ge 2),
-\qquad -\log \min_{j \text{ not yet visited}} \hat P(j \text{ not before } k \mid \hat r, k) \text{ at the first,}
+s_{\text{count}} = -\log \min\Bigl(\hat P(k \text{ visited} \mid \hat r),\
+\min_{j \text{ not yet visited}} \hat P(j \text{ not before } k \mid \hat r, k)\Bigr)
 $$
 
-(`VisitCounts.path_pvalues`). The threshold is −log α,
-like the duration channels (the p-values are frequencies, not model tails). The smallest
-reachable p is 0.5/(N_r + 1), so a recipe with few training sessions cannot fire. In the
-validation grid the channel sits with the transition channels (`harness.TRANSITION_CHANNELS`).
+(`VisitCounts.path_pvalues`). The threshold is −log α, like the duration channels (the p-values
+are frequencies, not model tails). The smallest reachable p is 0.5/(N + 1), so a recipe with few
+training sessions cannot fire: about 0.1 at 4 sessions per recipe, 0.012 at 40. In the validation
+grid the channel sits with the transition channels (`harness.TRANSITION_CHANNELS`), or on its own
+α axis (`compare_s_count.py`).
 
 ---
 
@@ -534,6 +538,6 @@ README ("Results") and [`eval.md`](eval.md).
 | Hindsight | `detectors/hsmm_hindsight.py:HindsightHSMMDetector` (`traces`, `assemble`, `thresholds`, `flags`, `detect_many`) |
 | Hindsight channels | `HindsightHSMMDetector.emission_surprise`, `stall_surprise`, `duration_surprise`, `transition_surprise`, `recipe_transition_surprise` |
 | Hindsight trace | `hsmm_hindsight.py:HindsightTrace` |
-| visit counts (`s_count`, optional) | `hsmm/visit_counts.py:VisitCounts` (`fit`, `path_pvalues`, `p_at_least`, `precedence`, `p_begin`); `HindsightHSMMDetector(counts=)`, `count_surprise`; `LiveHSMMDetector(counts=)`, `hsmm_live.py:entry_one_tick`, `entry_table`, `CountState`; `scripts/train/fit_visit_counts.py` |
+| missing step (`s_count`, optional) | `hsmm/visit_counts.py:VisitCounts` (`fit`, `path_pvalues`, `p_seen`, `precedence`, `p_first`); `HindsightHSMMDetector(counts=)`, `count_surprise`; `LiveHSMMDetector(counts=)`, `hsmm_live.py:entry_one_tick`, `entry_table`, `CountState`; `scripts/train/fit_visit_counts.py` |
 | narration | `detectors/narrate.py:narrate`, `Query`, `Lexicon`, `severity`, `expected_given`, `expected_pair`, `missing_step` |
 | tests | `tests/test_detector_contract.py`, `test_live.py` (R2, exactness), `test_hindsight.py`, `test_thresholds.py`, `test_narrate.py`, `test_count_live.py` (s_count) |

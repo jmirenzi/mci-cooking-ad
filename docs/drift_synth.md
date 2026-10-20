@@ -692,7 +692,8 @@ omission 0.88, transposition 0.91, repetition 0.83.
   With idle gone, a repeated, moved or skipped step is an unusual transition between actions, and
   s_trans sees it. No extra channel is needed.
 - **`s_count` adds nothing on scrubbed streams** (±0.002). What it caught is now a transition. It
-  stays in the code (optional, off without fitted counts), and its live version is tested.
+  stays in the code (optional, off without fitted counts), and its live version is tested. Since 2026-10-20 it
+  tests missing steps only (detectors.md §3.6a).
 - **Abandonment is what is left** (0.13). That is the negative binomial's left tail. Training
   stage 4b (the nonparametric hazard, docs/training.md) lifts it to 0.54 and F1 to 0.869 at 250
   sessions, and leaves 10–30 sessions unchanged (next_steps.md §3).

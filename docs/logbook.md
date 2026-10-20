@@ -5,6 +5,11 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-20 — s_count is the precedence rule only
+
+Extra-visit half removed from `VisitCounts` and both detectors (Jack, after the comparison below).
+The JSON drops `ge`; s_count stays optional and off unless counts are passed.
+
 ## 2026-10-20 — which s_count, if any (metric G)
 
 Ten rules, own alpha axis, picked on validation (`scripts/eval/compare_s_count.py`, `_breakfast.py`).
