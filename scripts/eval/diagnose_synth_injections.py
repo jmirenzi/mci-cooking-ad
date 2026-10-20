@@ -4,7 +4,7 @@
 For one person (calibrated variant, N = 250 sessions, prior lambda = 1):
   1. rebuild the exact test pool (same placement model, seed, sessions)
   2. classify each injection's target segment: idle gap / logistics (take/put/wash) / recipe action
-  3. oracles from a big healthy sample of the SAME person (3000 days): would an infinite-data
+  3. oracles from a big healthy sample of the SAME person (3600 sessions): would an infinite-data
      run-bigram model, a run-count check, or a run-duration check see anything?
   4. HSMM per-trial hit (alarm within [span start, span end + 10])
 """
@@ -21,7 +21,7 @@ PID = int(sys.argv[1]) if len(sys.argv) > 1 else 0   # ./py scripts/eval/diagnos
 N = 250
 
 import eval_synth_prior as E
-E.set_variant("cal")
+E.set_variant("sess")
 from cook_ad.xla_env import disable_gpu_autotuning
 disable_gpu_autotuning()
 import jax
@@ -68,8 +68,9 @@ def runs(v, n):
 
 # ---- a big healthy sample of the same person --------------------------------------------------
 assets = E._assets({"theta0_by_knob": E.CAPABILITY, "habit": 2.0})
-_, sessions, _ = generate_person(PID, ConditionCfg("null", n_persons=1, n_days=3000), E.SEED, assets)
-sessions = [s for s in sessions if s.day >= E.N_DAYS]          # days the test pool never saw
+_, sessions, _ = generate_person(PID, ConditionCfg("null", n_persons=1, n_sessions=E.ORACLE_SESSIONS),
+                                 E.SEED, assets)
+sessions = [s for s in sessions if s.index >= E.N_SESSIONS]    # sessions the test pool never saw
 big = defaultdict(list)
 for s in sessions:
     v, n = to_ticks(s.events, vocab, assets.gen["export"]["sil"], assets.gen["export"]["fps"], E.TICK)

@@ -1,12 +1,13 @@
 # The initial dataset conditions (spec "Conditions to generate"). Defaults apply to every
-# condition unless it overrides them. Days are 0-indexed; week 4 onset = day 28.
+# condition unless it overrides them. Time is the session index, 0-based (one recipe a session);
+# the counts are the old 10 weeks / week-4 onset / 3-week ramp / 1-week blocks at 1.3 sessions a day.
 defaults:
   n_persons: 8
-  n_days: 70            # 10 weeks
+  n_sessions: 90
   seeds: [0, 1, 2]
-  onset_day: 28
-  duration_days: 21     # incremental ramp and gradual p(t) ramp: 3 weeks
-  period_days: 7        # recurring blocks
+  onset: 36             # first drifted session
+  duration: 27          # incremental ramp and gradual p(n) ramp, in sessions
+  period: 9             # recurring blocks, in sessions
   delta: 0.4            # |theta1 - theta0| on each moving knob (theta0 ~ U(0.25, 0.75))
   delta_by_knob:         # healthy fine_motor theta0 ~ U(0, 0.4) is below its 0.5 repetition hinge;
     fine_motor: 0.6      # +0.6 puts every person above it

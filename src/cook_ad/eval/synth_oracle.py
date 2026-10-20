@@ -1,6 +1,6 @@
 """Is an injected synthetic trial actually anomalous? (docs/drift_synth.md §9.5)
 
-The reference is a large healthy sample of the SAME simulated person, on days no pool uses, in
+The reference is a large healthy sample of the SAME simulated person, on sessions no pool uses, in
 the tick representation the detector sees. Three checks on the trial's runs (maximal stretches of
 constant (verb, noun)):
   bigram    a run bigram (with start / end markers) that never occurs in the healthy sample;
@@ -41,7 +41,7 @@ def runs(verb_ids, noun_ids):
     return [(t, k) for t, k in out]
 
 
-VERSION = 2
+VERSION = 3          # 3: session time frame, CC4D step totals (2026-10-20)
 
 
 class HealthySupport:
@@ -93,20 +93,20 @@ class HealthySupport:
         return pickle.loads(Path(path).read_bytes())
 
 
-def person_support(person_idx, seed, assets, vocab, first_day, n_days, tick_seconds, cache=None):
-    """HealthySupport from days [first_day, n_days) of one person (generated, noise as `assets`)."""
+def person_support(person_idx, seed, assets, vocab, first, n_sessions, tick_seconds, cache=None):
+    """HealthySupport from sessions [first, n_sessions) of one person (generated, noise as `assets`)."""
     if cache and Path(cache).exists():
         sup = HealthySupport.load(cache)
         if getattr(sup, "version", 1) == VERSION:
             return sup
     from cook_ad.drift_synth.export import to_ticks
     from cook_ad.drift_synth.sampler import ConditionCfg, generate_person
-    _, sessions, _ = generate_person(person_idx, ConditionCfg("null", n_persons=1, n_days=n_days),
+    _, sessions, _ = generate_person(person_idx, ConditionCfg("null", n_persons=1, n_sessions=n_sessions),
                                      seed, assets)
     ex = assets.gen["export"]
     by = defaultdict(list)
     for s in sessions:
-        if s.day >= first_day:
+        if s.index >= first:
             v, n = to_ticks(s.events, vocab, ex["sil"], ex["fps"], tick_seconds)
             by[s.recipe_id].append(runs(v, n))
     sup = HealthySupport(dict(by), (vocab["verbs"][ex["sil"][0]], vocab["nouns"][ex["sil"][1]]))

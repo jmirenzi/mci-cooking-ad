@@ -38,7 +38,7 @@ NOISE_SCALE = 1.0   # recognizer noise rates x this (0 = noise-free)
 HABIT = 0.0         # person routine strength (configs/drift_synth/generator.yaml person.habit)
 CONFIG = "configs/drift_synth/hsmm.yaml"
 SEED, PERSON = 0, 6
-N_DAYS, TRAIN_END, VAL_END = 320, 200, 260
+N_DAYS, TRAIN_END, VAL_END = 320, 200, 260   # SESSION indices since 2026-10-20 (the names kept)
 LEVELS = {"slow": ("+", (0.2, 0.4, 0.55)),          # theta0 + delta
           "fine_motor": ("to", (0.6, 0.75, 0.9))}  # theta1 itself: healthy theta0 < 0.5 is below
                                                     # the repetition hinge (knobs.yaml)
@@ -74,10 +74,11 @@ def stage_data():
     assets.gen["recognizer"] = {k: (v if k == "min_event_s" else v * NOISE_SCALE)
                                 for k, v in assets.gen["recognizer"].items()}
     assets.gen["person"]["habit"] = HABIT
+    assets.gen["export"] = dict(assets.gen["export"], tick_seconds=TICK_S)
     from cook_ad.drift_synth.sampler import make_person
-    conds = [ConditionCfg("null", n_persons=1, n_days=N_DAYS)]
+    conds = [ConditionCfg("null", n_persons=1, n_sessions=N_DAYS)]
     conds += [] if not CAPABILITY_POOLS else [ConditionCfg(cond_name(k, d), DriftRegime("sudden", TRAIN_END), {k: d}, n_persons=1,
-                           n_days=N_DAYS) for k, d, _ in levels(make_person(SEED, PERSON, assets).theta0)]
+                           n_sessions=N_DAYS) for k, d, _ in levels(make_person(SEED, PERSON, assets).theta0)]
     for cond in conds:
         person, sessions, gt = generate_person(PERSON, cond, SEED, assets)
         for k, d in gt["delta"].items():
@@ -88,8 +89,8 @@ def stage_data():
               f"{ {k: gt['theta1'][k] for k in KNOBS} }")
     seqs = json.loads((ROOT / "null" / "sequences.json").read_text())
     labels = {e["trial_id"]: e for e in json.loads((ROOT / "null" / "labels.json").read_text())}
-    train = [s["trial_id"] for s in seqs if labels[s["trial_id"]]["day"] < TRAIN_END]
-    test = [s["trial_id"] for s in seqs if labels[s["trial_id"]]["day"] >= TRAIN_END]
+    train = [s["trial_id"] for s in seqs if labels[s["trial_id"]]["session"] < TRAIN_END]
+    test = [s["trial_id"] for s in seqs if labels[s["trial_id"]]["session"] >= TRAIN_END]
     (ROOT / "null" / "split.json").write_text(json.dumps(
         {"seed": SEED, "test_frac": None, "train_trial_ids": train, "test_trial_ids": test,
          "rule": f"train = days < {TRAIN_END}; test = the rest (val {TRAIN_END}-{VAL_END - 1}, "
@@ -132,7 +133,7 @@ def _load(cond):
 
 
 def _days(seqs, labels, lo, hi):
-    return [s for s in seqs if lo <= labels[s["trial_id"]]["day"] < hi]
+    return [s for s in seqs if lo <= labels[s["trial_id"]]["session"] < hi]
 
 
 def repeat_spans(cond, trial_id, n_ticks):

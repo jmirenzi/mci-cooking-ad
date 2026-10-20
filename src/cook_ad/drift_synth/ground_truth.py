@@ -1,5 +1,5 @@
 """Stage 10: ground truth in observable space. Per recipe, at a fixed theta, Monte Carlo over
-clean sessions (no recognizer noise, no day noise, speed 1): token counts per session, token
+clean sessions (no recognizer noise, no session noise, speed 1): token counts per session, token
 marginals, bigrams, and log durations per token. Drift is measured between two such summaries.
 Nothing here refers to a model's latent states."""
 from dataclasses import dataclass

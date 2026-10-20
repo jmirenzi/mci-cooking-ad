@@ -10,7 +10,9 @@
    typical order, the real medoid; 0 = routines uniform over legal orders, the generator today).
    Each is fitted by grid search to the real distance.
 3. Durations. Per step, the CC4D step duration (normal recordings) against the generator's time
-   for that step's tokens plus their logistics and gaps, noise off, theta = 0.5, speed 1.
+   for that step's actions and, apart, its take / put / wash (noise off, theta 0.5, speed 1). The
+   generator draws each step's total from CC4D (--write-step-times fits those), so core time
+   should match by construction; this checks it.
 
     ./py scripts/drift_synth/calibrate_cc4d.py [--sims 200]
 """
@@ -133,12 +135,21 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sims", type=int, default=200, help="rollouts per recipe for order/duration stats")
     ap.add_argument("--out", default="runs/drift_synth/reports/cc4d_calibration")
-    ap.add_argument("--write-scales", default=None,
-                    help="write per-step time scales (CC4D median / generator median) here, e.g. "
-                         "configs/drift_synth/step_time_scale.json")
+    ap.add_argument("--write-step-times", default=None,
+                    help="fit the CC4D step totals the generator reads (durations.StepTimes) and "
+                         "write them here, e.g. configs/drift_synth/step_times.json")
     args = ap.parse_args()
-    assets = load_assets(require_reviewed_affinity=False)   # theta 0.5 below: no flavour inserts
-    assets.step_scale = None   # measure the UNcalibrated generator
+    assets = load_assets(require_reviewed_affinity=False,   # theta 0.5 below: no flavour inserts
+                         require_step_times=not args.write_step_times)
+    if args.write_step_times:                                 # before the duration check reads them
+        from cook_ad.drift_synth.durations import fit_step_times
+        normal = {r: [x["durations"] for x in recs if x["normal"]]
+                  for r, recs in real_recordings(assets.gen["paths"]["cc4d"], assets.graphs).items()}
+        st = fit_step_times(normal)
+        st.save(args.write_step_times)
+        assets.step_times = st
+        print(f"wrote {args.write_step_times}: {sum(map(len, st.step.values()))} steps, pooled log-sd "
+              f"{st.sigma:.2f}")
     graphs = assets.graphs
     beta = assets.knobs["mise_en_place"]["beta"]
     real = real_recordings(assets.gen["paths"]["cc4d"], graphs)
@@ -253,39 +264,11 @@ def main():
         "median_session_sim_s": float(np.median(sess_sim)),
     }
 
-    if args.write_scales:
-        write_scales(report["durations"]["steps"], sorted(graphs), args.write_scales)
-
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.with_suffix(".json").write_text(json.dumps(report, indent=1, default=float))
     write_md(report, out.with_suffix(".md"))
     print(f"wrote {out}.md / .json")
-
-
-SCALE_CLIP = (0.5, 60.0)
-
-
-def write_scales(rows, recipes, path):
-    """{recipe: {step: scale, "_recipe": the recipe's median scale}}, global median for recipes
-    with no CC4D normal recording. Clipped to SCALE_CLIP."""
-    clip = lambda x: float(min(max(x, SCALE_CLIP[0]), SCALE_CLIP[1]))  # noqa: E731
-    by_r = {}
-    for row in rows:
-        if row.get("core_scale"):
-            by_r.setdefault(row["recipe"], {})[row["step"]] = clip(row["core_scale"])
-    glob = float(np.median([v for d in by_r.values() for v in d.values()]))
-    scales = {}
-    for r in recipes:
-        d = by_r.get(r, {})
-        scales[r] = dict(d, _recipe=float(np.median(list(d.values()))) if d else glob)
-    Path(path).write_text(json.dumps(
-        {"source": "scripts/drift_synth/calibrate_cc4d.py --write-scales: CC4D normal-recording "
-                   "median step time minus the step's mean take/put/wash time, over the mean time "
-                   "of its own actions and their gaps, in the uncalibrated generator (noise off, "
-                   "theta 0.5, speed 1); applied to those actions and gaps only", "clip": SCALE_CLIP,
-         "global_median": glob, "scales": scales}, indent=1, sort_keys=True) + "\n")
-    print(f"wrote {path} (global median scale {glob:.2f})")
 
 
 def write_md(rep, path):

@@ -73,9 +73,8 @@ DURATIONS = DurationModel(source="toy", verb={"cut": [math.log(4.0), 0.4, 100]},
 
 GEN = {
     "logistics_verbs": {"take": "take", "put": "put", "wash": "wash"},
-    "person": {"repertoire": [6, 10], "dirichlet_alpha": 1.0, "p_two_sessions": 0.3,
-               "theta0": [0.25, 0.75]},
-    "day_noise": {"sigma": {"sour": 0.3, "sweet": 0.3, "salty": 0.3, "fatty": 0.3,
+    "person": {"repertoire": [6, 10], "dirichlet_alpha": 1.0, "theta0": [0.25, 0.75]},
+    "session_noise": {"sigma": {"sour": 0.3, "sweet": 0.3, "salty": 0.3, "fatty": 0.3,
                             "mise_en_place": 0.3, "tidy": 0.3, "slow": 0.2, "fine_motor": 0.2},
                   "speed_rho": 0.7, "speed_sigma": 0.08},
     "recognizer": {"p_sub_verb": 0.03, "p_sub_noun": 0.05, "p_delete": 0.04, "p_insert": 0.03,

@@ -40,7 +40,7 @@ def stats_cache():
 
 def test_every_emitted_token_is_in_vocab():
     cond = ConditionCfg("c", DriftRegime("sudden", 10), {"sour": 0.4, "fatty": 0.4},
-                        n_persons=3, n_days=21)
+                        n_persons=3, n_sessions=21)
     for i in range(cond.n_persons):
         _, sessions, _ = generate_person(i, cond, 0, ASSETS)
         for s in sessions:
@@ -60,7 +60,7 @@ def test_sampled_orders_are_topological(mise):
 # ---- 3. determinism --------------------------------------------------------------------------
 
 def test_same_seed_same_bytes(tmp_path):
-    cond = ConditionCfg("c", DriftRegime("gradual", 5, 7), {"slow": 0.3}, n_days=14)
+    cond = ConditionCfg("c", DriftRegime("gradual", 5, 7), {"slow": 0.3}, n_sessions=14)
     for out in ("a", "b"):
         _, sessions, gt = generate_person(1, cond, 3, ASSETS)
         export(sessions, tmp_path / out, VOCAB, gt, ASSETS.gen["export"])
@@ -215,7 +215,7 @@ def test_incremental_and_recurring():
     inc = DriftRegime("incremental", 10, 20)
     assert theta_at(20, t0, t1, inc, rng)[0]["slow"] == pytest.approx(0.5)
     assert theta_at(40, t0, t1, inc, rng)[0]["slow"] == pytest.approx(0.8)
-    rec = DriftRegime("recurring", 10, period_days=7)
+    rec = DriftRegime("recurring", 10, period=7)
     assert [theta_at(d, t0, t1, rec, rng)[1] for d in (9, 10, 16, 17, 23, 24)] == [0, 1, 1, 0, 0, 1]
 
 
@@ -289,9 +289,10 @@ def test_healthy_fine_motor_never_repeats():
     assert keep_side_of_hinge(theta(fine_motor=0.3), theta(fine_motor=0.8), kn)["fine_motor"] == 0.5
     a = toy_assets()
     a.gen = dict(a.gen, person=dict(a.gen["person"], theta0_by_knob={"fine_motor": [0.3, 0.5]}),
-                 day_noise=dict(a.gen["day_noise"], sigma=dict(a.gen["day_noise"]["sigma"], fine_motor=2.0)))
+                 session_noise=dict(a.gen["session_noise"],
+                                    sigma=dict(a.gen["session_noise"]["sigma"], fine_motor=2.0)))
     for i in range(4):
-        _, sessions, _ = generate_person(i, ConditionCfg("null", n_days=40), 0, a)
+        _, sessions, _ = generate_person(i, ConditionCfg("null", n_sessions=40), 0, a)
         assert sum(s.meta["repetitions"] for s in sessions) == 0
 
 
@@ -319,12 +320,12 @@ def test_export_ticks():
     assert n[4] == VOCAB["nouns"]["idle"]
 
 
-def test_null_and_drift_conditions_share_pre_onset_days():
-    null = ConditionCfg("null", n_days=20)
-    drift = ConditionCfg("d", DriftRegime("sudden", 10), {"tidy": 0.4}, n_days=20)
+def test_null_and_drift_conditions_share_pre_onset_sessions():
+    null = ConditionCfg("null", n_sessions=20)
+    drift = ConditionCfg("d", DriftRegime("sudden", 10), {"tidy": 0.4}, n_sessions=20)
     _, a, ga = generate_person(2, null, 0, ASSETS)
     _, b, gb = generate_person(2, drift, 0, ASSETS)
-    pre = lambda ss: [(s.day, [(e.verb, e.noun, e.t_start) for e in s.events]) for s in ss if s.day < 10]
+    pre = lambda ss: [(s.index, [(e.verb, e.noun, e.t_start) for e in s.events]) for s in ss if s.index < 10]
     assert pre(a) == pre(b)
     assert ga["theta0"] == gb["theta0"] and gb["delta"] == {"tidy": pytest.approx(
         gb["theta1"]["tidy"] - gb["theta0"]["tidy"])}
@@ -337,7 +338,7 @@ def test_conditions_file_expands_to_the_spec_set():
     conds, seeds = conditions("configs/drift_synth/conditions.yaml")
     assert len(conds) == 37 and seeds == [0, 1, 2]   # 2 + 8x3 + 1 + 2x5
     assert conds["null"].regime.kind == "none" and conds["mix_shift_only"].mix_shift
-    assert conds["slow_incremental"].regime.duration_days == 21
+    assert conds["slow_incremental"].regime.duration == 27
     assert conds["pref_plus_capability"].moving == {"sour": 0.4, "slow": 0.4}
 
 
@@ -385,21 +386,49 @@ def test_per_knob_ranges_and_habit_range():
         {k: v for k, v in base.theta0.items() if k != "slow"}
 
 
-def test_step_time_scale_stretches_only_its_step():
+def _salad_times(mean_s):
+    """StepTimes with salad step 2 (one action, `cut lettuce`) at `mean_s` seconds on average."""
+    from cook_ad.drift_synth.durations import StepTimes
+    sigma = 0.2
+    return StepTimes({"salad": {"2": [math.log(mean_s) - sigma ** 2 / 2, 5]}}, sigma)
+
+
+def test_step_totals_come_from_cc4d_and_logistics_from_epic():
     from cook_ad.drift_synth.noise import NoiseCfg
     from cook_ad.drift_synth.sampler import sample_session
     a = toy_assets()
-    th = theta()
-    plain = sample_session(SALAD, a.expansions["salad"], th, 1.0, a, NoiseCfg().off(), rng_for(1, 1))
-    a.step_scale = {"salad": {"2": 3.0, "_recipe": 1.0}}
-    scaled = sample_session(SALAD, a.expansions["salad"], th, 1.0, a, NoiseCfg().off(), rng_for(1, 1))
-    from cook_ad.drift_synth.sampler import step_owners
-    owners = step_owners([e[4] for e in plain.meta["clean_events"]])
-    for p, q, owner in zip(plain.meta["clean_events"], scaled.meta["clean_events"], owners):
-        assert p[2:] == q[2:]                      # same tokens, same draws
-        ratio = (q[1] - q[0]) / (p[1] - p[0])      # take/put/wash keep their EPIC time
-        want = 3.0 if owner == "2" and p[4] is not None else 1.0
-        assert ratio == pytest.approx(want, rel=1e-2)  # ms rounding
+    a.step_times = _salad_times(60.0)
+    core2, logi = [], []
+    for i in range(300):
+        s = sample_session(SALAD, a.expansions["salad"], theta(), 1.0, a, NoiseCfg().off(), rng_for(1, i))
+        ev = s.meta["clean_events"]
+        core2.append(sum(e[1] - e[0] for e in ev if e[4] == "2"))
+        logi += [e[1] - e[0] for e in ev if e[4] is None and e[2] == "take"]
+        # no gaps: every event starts where the previous one ended
+        assert all(abs(b[0] - x[1]) < 2e-3 for x, b in zip(ev, ev[1:]))
+    assert np.mean(core2) == pytest.approx(60.0, rel=0.1)      # CC4D's step total
+    assert np.median(logi) == pytest.approx(2.0, rel=0.2)      # EPIC overall row (toy): 2 s
+
+
+def test_an_added_action_adds_its_own_share():
+    """A flavour insert takes time on top of the step's CC4D total; it does not shrink the rest."""
+    from cook_ad.drift_synth.noise import NoiseCfg
+    from cook_ad.drift_synth.sampler import sample_session
+    a = toy_assets()
+    sp = lambda th: [sum(e[1] - e[0] for e in sample_session(  # noqa: E731
+        SALAD, a.expansions["salad"], th, 1.0, a, NoiseCfg().off(), rng_for(2, i)).meta["clean_events"]
+        if e[4] == "3" and e[3] != "vinegar") for i in range(300)]
+    plain, sour = sp(theta()), sp(theta(sour=1.0))
+    assert np.mean(sour) == pytest.approx(np.mean(plain), rel=0.1)
+
+
+def test_sessions_are_the_only_clock():
+    cond = ConditionCfg("c", n_persons=1, n_sessions=12)
+    _, sessions, gt = generate_person(0, cond, 0, ASSETS)
+    assert [s.index for s in sessions] == list(range(12))
+    assert [x["session"] for x in gt["sessions"]] == list(range(12))
+    from cook_ad.drift_synth.export import trial_id
+    assert trial_id(sessions[3]) == "p00_s0003"
 
 
 def test_no_put_back_right_after_the_recipes_own_put_and_no_fetching_dishes():

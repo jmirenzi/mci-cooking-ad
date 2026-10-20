@@ -1,6 +1,6 @@
 """Stage 9 output: per person, one JSON per session (seconds, string tokens) plus the loader
 format every other corpus uses (docs/data.md §1): sequences.json / labels.json / vocab.json at
-0.5 s ticks with gaps as the SIL pair, and ground_truth.json.
+the configured tick with gaps as the SIL pair, and ground_truth.json.
 
 Byte-identical for the same inputs: keys sorted, floats rounded, lists in trial order.
 """
@@ -12,7 +12,7 @@ from cook_ad.data.tick_expansion import expand_verb_noun_to_ticks
 
 
 def trial_id(session):
-    return f"{session.person_id}_d{session.day:03d}_s{session.session_idx}"
+    return f"{session.person_id}_s{session.index:04d}"
 
 
 def _dump(path, obj):
@@ -53,15 +53,15 @@ def export(sessions, out_dir, vocab, ground_truth, export_cfg):
     for s in sessions:
         tid = trial_id(s)
         _dump(out / "sessions" / f"{tid}.json", {
-            "trial_id": tid, "person_id": s.person_id, "day": s.day, "session_idx": s.session_idx,
-            "recipe_id": s.recipe_id, "theta_day": {k: round(x, 6) for k, x in s.theta_day.items()},
+            "trial_id": tid, "person_id": s.person_id, "session": s.index,
+            "recipe_id": s.recipe_id, "theta": {k: round(x, 6) for k, x in s.theta.items()},
             "events": [[e.t_start, e.t_end, e.verb, e.noun] for e in s.events], "meta": s.meta})
         verb_ids, noun_ids = to_ticks(s.events, vocab, export_cfg["sil"], export_cfg["fps"],
                                       export_cfg["tick_seconds"])
         seqs.append({"trial_id": tid, "verb_ids": verb_ids, "noun_ids": noun_ids,
                      "terminal_idle_ticks": 0})
         labels.append({"trial_id": tid, "recipe_label": s.recipe_id, "person_id": s.person_id,
-                       "day": s.day, "session_idx": s.session_idx,
+                       "session": s.index,
                        "subtask_labels": step_labels(s, len(verb_ids), export_cfg["tick_seconds"])})
     _dump(out / "sequences.json", seqs)
     _dump(out / "labels.json", labels)

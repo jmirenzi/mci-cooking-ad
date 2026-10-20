@@ -5,6 +5,13 @@ script or commit that measured it. Every number states its metric letter where i
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
 and are recoverable at the git tag `pre-restructure`.
 
+## 2026-10-20 — generator: sessions only, no noise, no gaps, CC4D step totals
+
+Jack's four changes (drift_synth.md §2, §9.9). θ noise, speed, recipe draw and drift regimes step per
+session; recognizer noise 0; no gaps; each step's total drawn from CC4D (median of normal recordings,
+pooled log-sd 0.38), EPIC sets only the split and take/put/wash. Duration check 1.0x on every step
+(was 4.5x before scaling). Prior experiment regenerating in drift_synth_prior_sess/ (overnight_sess.sh).
+
 ## 2026-10-20 — s_count is the precedence rule only
 
 Extra-visit half removed from `VisitCounts` and both detectors (Jack, after the comparison below).

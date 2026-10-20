@@ -231,11 +231,11 @@ def repetition_prob(token, theta, knobs, tags):
     return fm["repeat_base"] + fm["repeat_max"] * max(0.0, theta["fine_motor"] - fm["hinge"])
 
 
-def keep_side_of_hinge(theta_day, theta_base, knobs):
-    """Day noise may not carry a hinged knob across its hinge: a base theta at or below the
-    hinge keeps the day value at or below it (and above stays above), so a healthy person never
-    repeats on a noisy day."""
-    out = dict(theta_day)
+def keep_side_of_hinge(theta_session, theta_base, knobs):
+    """Session noise may not carry a hinged knob across its hinge: a base theta at or below the
+    hinge keeps the session value at or below it (and above stays above), so a healthy person
+    never repeats in a noisy session."""
+    out = dict(theta_session)
     for k, cfg in knobs.items():
         h = cfg.get("hinge")
         if h is not None and k in out:

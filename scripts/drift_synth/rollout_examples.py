@@ -1,6 +1,6 @@
 """Roll out every recipe for a few hand-set, very different people, for reading by eye.
 
-Clean events (no recognizer noise, no day noise, speed 1), CC4D-calibrated durations as in
+Clean events (no recognizer noise, no session noise, speed 1), CC4D step totals as in
 eval_synth_prior.py --variant cal. Writes runs/drift_synth/reports/rollout_examples.md:
 per session the event stream with logistics in italics, flavour additions in bold (+knob) and
 removals struck through (-knob).
@@ -30,11 +30,7 @@ PEOPLE = {   # name -> (who, theta); fine_motor below its hinge for all (healthy
 
 def load(unreviewed):
     import cook_ad.drift_synth.assets as A
-    a = A.load_assets(require_reviewed_affinity=not unreviewed)
-    a.gen["durations"] = dict(a.gen["durations"], step_scale="configs/drift_synth/step_time_scale.json",
-                              max_event_s=600.0)
-    a.step_scale = A.load_step_scale(a.gen)
-    return a
+    return A.load_assets(require_reviewed_affinity=not unreviewed)
 
 
 def render(session):
@@ -75,7 +71,7 @@ def main():
     assets = load(a.unreviewed_affinity)
     noise = NoiseCfg().off()
     lines = ["# Example rollouts: 3 people × every recipe", "",
-             "Clean events (no recognizer or day noise), CC4D-calibrated durations. *Italics* = "
+             "Clean events (no recognizer or session noise), CC4D step totals. *Italics* = "
              "take/put/wash logistics; **bold (+knob)** = a flavour addition; ~~struck (−knob)~~ = "
              "a removed ingredient. Seconds in brackets.", ""]
     lines += [f"- **{k}** — {who}: " + ", ".join(f"{n} {v:g}" for n, v in th.items())

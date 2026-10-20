@@ -1,5 +1,6 @@
-"""Stage 7a: factors the knobs do not model. Day-to-day wobble in theta, a day-level speed that
-drifts as an AR(1), and recognizer noise on the emitted events."""
+"""Stage 7a: factors the knobs do not model. Session-to-session wobble in theta, a speed that
+drifts over sessions as an AR(1), and recognizer noise on the emitted events (off in
+generator.yaml; the code path stays for later)."""
 import math
 from dataclasses import dataclass, replace
 
@@ -15,8 +16,8 @@ def _logit(p):
     return math.log(p / (1 - p))
 
 
-def theta_for_day(theta_base, sigma, rng):
-    """Each knob's day value: sigmoid(logit(theta) + N(0, sigma[knob])), in sorted knob order."""
+def theta_for_session(theta_base, sigma, rng):
+    """Each knob's session value: sigmoid(logit(theta) + N(0, sigma[knob])), in sorted knob order."""
     out = {}
     for k in sorted(theta_base):
         z = rng.standard_normal()
@@ -24,8 +25,8 @@ def theta_for_day(theta_base, sigma, rng):
     return out
 
 
-def day_speed_factor(prev, rho, sigma, rng):
-    """log s_t = rho * log s_{t-1} + N(0, sigma): a multiplier on every duration that day."""
+def speed_factor(prev, rho, sigma, rng):
+    """log s_n = rho * log s_{n-1} + N(0, sigma): a multiplier on every duration that session."""
     return math.exp(rho * math.log(prev) + sigma * rng.standard_normal())
 
 

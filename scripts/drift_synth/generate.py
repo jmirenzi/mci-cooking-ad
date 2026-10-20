@@ -21,9 +21,8 @@ def conditions(path):
     d = cfg["defaults"]
 
     def make(name, regime, moving, mix_shift=False):
-        reg = DriftRegime(regime, d["onset_day"] if regime != "none" else 0, d["duration_days"],
-                          d["period_days"])
-        return ConditionCfg(name, reg, dict(moving), mix_shift, d["n_persons"], d["n_days"])
+        reg = DriftRegime(regime, d["onset"] if regime != "none" else 0, d["duration"], d["period"])
+        return ConditionCfg(name, reg, dict(moving), mix_shift, d["n_persons"], d["n_sessions"])
 
     out = {}
     for name, c in cfg["extra"].items():

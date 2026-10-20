@@ -47,9 +47,8 @@ class Event:
 @dataclass
 class Session:
     person_id: str
-    day: int
-    session_idx: int
+    index: int                        # session number n, the generator's only clock
     recipe_id: str
     events: list[Event]
-    theta_day: dict[str, float]
+    theta: dict[str, float]           # this session's theta (base + session noise)
     meta: dict = field(default_factory=dict)  # regime, noise draws, clean events before noise

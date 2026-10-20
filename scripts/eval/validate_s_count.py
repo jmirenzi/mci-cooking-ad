@@ -26,7 +26,7 @@ import numpy as np
 
 import eval_synth_prior as E
 
-E.set_variant("cal_scrub")
+E.set_variant(os.environ.get("SYNTH_VARIANT", "sess"))
 E.SCRUB = True
 from cook_ad.xla_env import disable_gpu_autotuning
 
@@ -86,7 +86,7 @@ def main():
 
         vocab = json.loads((d / "null" / "vocab.json").read_text())
         sup = person_support(i, E.SEED, E._assets({"theta0_by_knob": E.CAPABILITY, "habit": 2.0}), vocab,
-                             E.N_DAYS, E.ORACLE_DAYS, E.TICK, cache=d / f"oracle_support_v{E.ORACLE_VERSION}.pkl")
+                             E.N_SESSIONS, E.ORACLE_SESSIONS, E.TICK, cache=d / f"oracle_support_v{E.ORACLE_VERSION}.pkl")
         trials = E.gen_pool(i, seqs[E.TEST_START:E.TEST_END], labels, sup)
 
         hind = HindsightHSMMDetector(hsmm, bad, OperatingPoint(0.01), chunk_size=8, counts=vc)

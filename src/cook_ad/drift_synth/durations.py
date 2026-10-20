@@ -1,9 +1,18 @@
-"""Stage 5: action durations and inter-action gaps.
+"""Stage 5: action durations. One source per quantity (docs/drift_synth.md §4):
 
-Log-normal per verb, with a (verb, noun) row where that pair has at least `min_pair` samples, and
-a global row behind both. Gaps are a point mass at zero (narrations that touch or overlap) plus a
-log-normal on the positive gaps. Source: EPIC-100 narration start/stop times (CaptainCook4D's
-fine-grained actions are not public; see docs/drift_synth.md §3).
+  step totals   CaptainCook4D: real people's time for each step of these recipes (StepTimes, a
+                log-normal per step: the median of its normal recordings, one pooled spread);
+  logistics     EPIC-100 narration times for take / put / wash (DurationModel, per verb);
+  within a step EPIC sets only the split: each core action's share of the step total is its
+                EPIC log-normal draw over the step's expected EPIC total (as written).
+
+A CC4D step interval holds the step's own actions: fetching and putting away fit in the time
+between steps (12% of a recording, 15-190 s per recipe against 10-25 s of simulated logistics),
+so logistics are added on top, not subtracted. There are no gaps between actions: the model
+reads idle-free streams (data/scrub.py), so a gap would be drawn only to be deleted.
+
+DurationModel: log-normal per verb, with a (verb, noun) row where that pair has at least
+`min_pair` samples, and a global row behind both; fitted from EPIC-100 start/stop times.
 """
 import json
 import math
@@ -94,10 +103,56 @@ def sample_duration(model, token, scale, rng, sigma_scale=1.0):
     return float(np.clip(math.exp(mu + sigma * rng.standard_normal()) * scale, lo * scale, hi * scale))
 
 
-def sample_gap(model, scale, rng, sigma_scale=1.0):
-    zero = rng.random() < model.gap_zero
-    z = rng.standard_normal()   # drawn either way: a fixed number of draws per gap
-    if zero:
-        return 0.0
-    mu, sigma = narrowed(model.gap[0], model.gap[1], sigma_scale)
-    return float(min(math.exp(mu + sigma * z), model.gap_clip) * scale)
+def mean_duration(model, token):
+    """E[duration] of a token's log-normal (seconds, before scaling and clipping)."""
+    mu, sigma = model.params(token)
+    return math.exp(mu + 0.5 * sigma ** 2)
+
+
+@dataclass
+class StepTimes:
+    """CC4D step totals: recipe -> step -> [mu, n] of log seconds over its normal recordings,
+    with one log-sd `sigma` pooled over every step (3-11 recordings a step is too few for its
+    own)."""
+    step: dict = field(default_factory=dict)
+    sigma: float = 0.5
+    n_recordings: dict = field(default_factory=dict)
+
+    def params(self, recipe, step_id):
+        row = self.step.get(recipe, {}).get(str(step_id))
+        return (row[0], self.sigma) if row else None
+
+    def save(self, path):
+        Path(path).write_text(json.dumps(asdict(self), sort_keys=True, indent=1) + "\n")
+
+    @classmethod
+    def load(cls, path):
+        return cls(**json.loads(Path(path).read_text()))
+
+
+def fit_step_times(recordings):
+    """recordings: {recipe: [{step: seconds}]} (normal CC4D recordings) -> StepTimes. A step's
+    mu is the log of its median; sigma pools the within-step log deviations from those medians."""
+    step, dev, n_rec = {}, [], {}
+    for r, recs in recordings.items():
+        n_rec[r] = len(recs)
+        by = {}
+        for durs in recs:
+            for k, d in durs.items():
+                if d > 0:
+                    by.setdefault(str(k), []).append(math.log(d))
+        for k, logs in by.items():
+            mu = float(np.median(logs))
+            step.setdefault(r, {})[k] = [mu, len(logs)]
+            dev += [x - mu for x in logs]
+    sigma = float(np.sqrt(np.mean(np.square(dev)))) if dev else 0.5
+    return StepTimes(step, sigma, n_rec)
+
+
+def sample_step_total(times, recipe, step_id, rng, sigma_scale=1.0):
+    """One step's total time in seconds, or None if CC4D has no recording of the step."""
+    p = times.params(recipe, step_id) if times is not None else None
+    if p is None:
+        return None
+    mu, sigma = narrowed(p[0], p[1], sigma_scale)
+    return math.exp(mu + sigma * rng.standard_normal())

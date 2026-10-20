@@ -1,22 +1,25 @@
 """Stage 9: one session, one person.
 
-Random streams. A person's traits come from (seed, person); each day's draws from (seed, person,
-day); each session's from (seed, person, day, session). None includes the condition, so two
-conditions with the same seed share everything before onset (common random numbers), and a
-drift condition differs from `null` only through theta.
+Time is the session index n. Random streams: a person's traits come from (seed, person); session
+n's state (theta noise, speed, recipe) from (seed, person, n), tag _STATE; its content from
+(seed, person, n), tag _SESSION. None includes the condition, so two conditions with the same
+seed share everything before onset (common random numbers), and a drift condition differs from
+`null` only through theta.
 """
 from dataclasses import dataclass, field
+
+import math
 
 import numpy as np
 
 from cook_ad.drift_synth import knobs as K
-from cook_ad.drift_synth.durations import sample_duration, sample_gap
+from cook_ad.drift_synth.durations import mean_duration, sample_duration, sample_step_total
 from cook_ad.drift_synth.kitchen_state import insert_logistics
-from cook_ad.drift_synth.noise import NoiseCfg, day_speed_factor, recognizer_noise, theta_for_day
-from cook_ad.drift_synth.schedule import DriftRegime, MixShift, PersonCfg, recipes_for_day, theta_at
+from cook_ad.drift_synth.noise import NoiseCfg, recognizer_noise, speed_factor, theta_for_session
+from cook_ad.drift_synth.schedule import DriftRegime, MixShift, PersonCfg, recipe_for_session, theta_at
 from cook_ad.drift_synth.types import Event, Session
 
-_PERSON, _DAY, _SESSION, _MIX = 1, 2, 3, 4  # stream tags
+_PERSON, _STATE, _SESSION, _MIX = 1, 2, 3, 4  # stream tags
 
 
 def rng_for(seed, *keys):
@@ -30,7 +33,7 @@ class ConditionCfg:
     moving: dict = field(default_factory=dict)   # knob -> |delta theta|
     mix_shift: bool = False
     n_persons: int = 8
-    n_days: int = 70
+    n_sessions: int = 90
 
 
 def step_owners(steps):
@@ -44,8 +47,22 @@ def step_owners(steps):
     return out
 
 
+def step_units(recipe, expansions, times, durations):
+    """{step: seconds per unit of expected EPIC time}: the step's CC4D total over its written core
+    actions' expected EPIC durations. A step CC4D never recorded gets the recipe's median unit
+    (1.0 with no CC4D data at all)."""
+    units = {}
+    for s, exp in expansions.items():
+        p = times.params(recipe.recipe_id, s) if times is not None else None
+        base = sum(mean_duration(durations, t) for t in exp.tokens)
+        if p is not None and base > 0:
+            units[s] = math.exp(p[0] + 0.5 * p[1] ** 2) / base
+    fallback = float(np.median(list(units.values()))) if units else 1.0
+    return units, fallback
+
+
 def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
-                   person_id="", day=0, session_idx=0, preferred=None, habit=0.0):
+                   person_id="", index=0, preferred=None, habit=0.0):
     """The spec's order: step order, variants, logistics, repetition, durations, noise."""
     kn, tags, gen = assets.knobs, assets.tags, assets.gen
     affinity = (getattr(assets, "affinity", None) or {}).get(recipe.recipe_id)
@@ -100,34 +117,43 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
             final_kind.append("repeat")
             repeats.append(len(final) - 1)
 
+    # Durations (durations.py). A step's total is drawn from CC4D; each of its actions gets
+    # (its EPIC draw) x (the step's total / its written actions' expected EPIC time), so an added
+    # or removed action adds or removes its own share. Take / put / wash keep EPIC time. Then the
+    # person's multipliers. No gaps: the model reads idle-free streams. A fine-motor repeat follows
+    # a pause of repeat_gap_s, so it shows as a second run before scrubbing.
     slow = K.slow_multiplier(theta, kn)
-    # CC4D step-time calibration (calibrate_cc4d.py --write-scales): every recipe action's
-    # duration and following gap times its step's scale. Fetching and putting away take as long
-    # wherever they happen, so take/put/wash (step None) keep their EPIC time. Absent = 1.
-    scale = (getattr(assets, "step_scale", None) or {}).get(recipe.recipe_id, {})
-    cap = (gen.get("durations") or {}).get("max_event_s")   # None = uncapped
-    k_sigma = (gen.get("durations") or {}).get("sigma_scale", 1.0)
-    owner = step_owners(final_step)
-    rep_next = {i - 1 for i in repeats}          # events followed by their own repeat
+    cfg = gen.get("durations") or {}
+    cap = cfg.get("max_event_s")                  # None = uncapped
+    k_sigma = cfg.get("sigma_scale", 1.0)
+    times = getattr(assets, "step_times", None)
+    units, fallback = step_units(recipe, expansions, times, assets.durations)
+    step_total = {}                               # step -> this session's CC4D draw / expected
+    rep_next = {i - 1 for i in repeats}           # events followed by their own repeat
     rep_gap = kn["fine_motor"].get("repeat_gap_s", 0.0)
     t = 0.0
     clean = []
     for i, tok in enumerate(final):
-        m = scale.get(owner[i], scale.get("_recipe", 1.0)) if scale and final_step[i] is not None else 1.0
-        d = sample_duration(assets.durations, tok,
-                            m * speed * slow * K.token_multiplier(tok, theta, kn, tags), rng, k_sigma)
+        st = final_step[i]
+        x = sample_duration(assets.durations, tok, 1.0, rng, k_sigma)
+        if st is None:
+            m = 1.0
+        else:
+            if st not in step_total:
+                p = times.params(recipe.recipe_id, st) if times is not None else None
+                draw = sample_step_total(times, recipe.recipe_id, st, rng, k_sigma)
+                step_total[st] = 1.0 if draw is None else draw / math.exp(p[0] + 0.5 * p[1] ** 2)
+            m = units.get(st, fallback) * step_total[st]
+        d = x * m * speed * slow * K.token_multiplier(tok, theta, kn, tags)
         d = min(d, cap) if cap else d
-        gap = sample_gap(assets.durations, m * speed * slow, rng, k_sigma)
-        if i in rep_next:
-            gap = max(gap, rep_gap)
         clean.append(Event(round(t, 3), round(t + d, 3), tok[0], tok[1]))
-        t += d + (gap if i + 1 < len(final) else 0.0)
+        t += d + (rep_gap if i in rep_next else 0.0)
 
     pool = ([e.verb for e in clean], [e.noun for e in clean])
     events, counts = recognizer_noise(clean, noise, pool, rng)
     return Session(
-        person_id=person_id, day=day, session_idx=session_idx, recipe_id=recipe.recipe_id,
-        events=events, theta_day=dict(theta),
+        person_id=person_id, index=index, recipe_id=recipe.recipe_id,
+        events=events, theta=dict(theta),
         meta={"order": order, "variants_applied": applied, "skipped_steps": skipped,
               "repetitions": len(repeats), "repeats": repeats, "speed": round(speed, 6), "noise": counts,
               "removed": removed, "merged": merged, "kinds": final_kind,
@@ -150,8 +176,7 @@ def make_person(seed, idx, assets):
     habit_orders = {r: K.sample_topological_order(assets.graphs[r], 0.5, 0.0, rng) for r in rep}
     habit = p.get("habit", 0.0)
     habit = float(rng.uniform(*habit)) if isinstance(habit, (list, tuple)) else float(habit)
-    return PersonCfg(f"p{idx:02d}", rep, tuple(float(x) for x in w), p["p_two_sessions"], theta0,
-                     habit, habit_orders)
+    return PersonCfg(f"p{idx:02d}", rep, tuple(float(x) for x in w), theta0, habit, habit_orders)
 
 
 def theta1_for(theta0, moving):
@@ -169,7 +194,7 @@ def mix_shift_for(seed, idx, person, condition):
         return None
     w1 = rng_for(seed, _MIX, idx).dirichlet(np.full(len(person.repertoire), 1.0))
     r = condition.regime
-    return MixShift(r.onset_day, r.duration_days, tuple(float(x) for x in w1))
+    return MixShift(r.onset, r.duration, tuple(float(x) for x in w1))
 
 
 def generate_person(idx, condition, seed, assets):
@@ -179,37 +204,35 @@ def generate_person(idx, condition, seed, assets):
     theta1 = theta1_for(theta0, condition.moving)
     mix = mix_shift_for(seed, idx, person, condition)
     regime = condition.regime
-    dn = assets.gen["day_noise"]
+    sn = assets.gen["session_noise"]
     noise = NoiseCfg.from_dict(assets.gen["recognizer"])
 
-    sessions, days = [], []
+    sessions, log = [], []
     speed = 1.0
-    for d in range(condition.n_days):
-        rng = rng_for(seed, _DAY, idx, d)
-        base, which = theta_at(d, theta0, theta1, regime, rng)
-        theta = K.keep_side_of_hinge(theta_for_day(base, dn["sigma"], rng), base, assets.knobs)
-        speed = day_speed_factor(speed, dn["speed_rho"], dn["speed_sigma"], rng)
-        recipes = recipes_for_day(person, d, mix, rng)
-        days.append({"day": d, "which": which, "theta_base": _r(base), "theta_day": _r(theta),
-                     "speed": round(speed, 6), "recipes": recipes})
-        for s, rid in enumerate(recipes):
-            sessions.append(sample_session(
-                assets.graphs[rid], assets.expansions[rid], theta, speed, assets, noise,
-                rng_for(seed, _SESSION, idx, d, s), person.person_id, d, s,
-                person.habit_orders.get(rid), person.habit))
+    for n in range(condition.n_sessions):
+        rng = rng_for(seed, _STATE, idx, n)
+        base, which = theta_at(n, theta0, theta1, regime, rng)
+        theta = K.keep_side_of_hinge(theta_for_session(base, sn["sigma"], rng), base, assets.knobs)
+        speed = speed_factor(speed, sn["speed_rho"], sn["speed_sigma"], rng)
+        rid = recipe_for_session(person, n, mix, rng)
+        log.append({"session": n, "which": which, "theta_base": _r(base), "theta": _r(theta),
+                    "speed": round(speed, 6), "recipe": rid})
+        sessions.append(sample_session(
+            assets.graphs[rid], assets.expansions[rid], theta, speed, assets, noise,
+            rng_for(seed, _SESSION, idx, n), person.person_id, n,
+            person.habit_orders.get(rid), person.habit))
 
     gt = {
         "condition": condition.name, "seed": seed, "person_id": person.person_id,
-        "regime": {"kind": regime.kind, "onset_day": regime.onset_day,
-                   "duration_days": regime.duration_days, "period_days": regime.period_days},
+        "regime": {"kind": regime.kind, "onset": regime.onset, "duration": regime.duration,
+                   "period": regime.period, "unit": "session"},
         "moving_knobs": sorted(condition.moving), "delta": {k: round(theta1[k] - theta0[k], 6)
                                                            for k in sorted(condition.moving)},
         "theta0": _r(theta0), "theta1": _r(theta1),
         "repertoire": list(person.repertoire), "habit": person.habit, "weights0": [round(w, 6) for w in person.weights],
-        "mix_shift": None if mix is None else {"onset_day": mix.onset_day,
-                                                "duration_days": mix.duration_days,
+        "mix_shift": None if mix is None else {"onset": mix.onset, "duration": mix.duration,
                                                 "weights1": [round(w, 6) for w in mix.weights1]},
-        "days": days,
+        "sessions": log,
     }
     return person, sessions, gt
 

@@ -1,5 +1,6 @@
 """Everything the seeded generator reads, loaded once: phased graphs, step expansions, tags,
-knobs, the duration model, the vocabulary and the generator config."""
+knobs, the duration models (EPIC actions, CC4D step totals), the vocabulary and the
+generator config."""
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +19,7 @@ class Assets:
     durations: object     # DurationModel
     vocab: dict           # {"verbs": {name: id}, "nouns": {name: id}, ...}
     gen: dict             # configs/drift_synth/generator.yaml
-    step_scale: dict | None = None   # recipe -> {step: CC4D time scale, "_recipe": fallback}
+    step_times: object = None        # durations.StepTimes (CC4D step totals); None = EPIC time only
     affinity: dict | None = None     # recipe -> {flavour knob: affinity in [0, 1]}; None = all 1
 
 
@@ -48,9 +49,11 @@ def load_expansions(path):
     return {k: expansion_from_json(k, d) for k, d in json.loads(Path(path).read_text()).items()}
 
 
-def load_assets(gen_path="configs/drift_synth/generator.yaml", require_reviewed_affinity=True):
-    """The real assets. Needs reviewed tags and built expansions (Stages 2-3), and a reviewed
-    affinity.yaml unless require_reviewed_affinity=False (previews and calibration only)."""
+def load_assets(gen_path="configs/drift_synth/generator.yaml", require_reviewed_affinity=True,
+                require_step_times=True):
+    """The real assets. Needs reviewed tags and built expansions (Stages 2-3), a reviewed
+    affinity.yaml unless require_reviewed_affinity=False (previews and calibration only), and the
+    CC4D step times unless require_step_times=False (calibrate_cc4d.py, which fits them)."""
     from cook_ad.drift_synth.durations import DurationModel, fit_duration_priors
     from cook_ad.drift_synth.graphs import load_phased
     from cook_ad.drift_synth.knobs import load_knobs
@@ -74,15 +77,23 @@ def load_assets(gen_path="configs/drift_synth/generator.yaml", require_reviewed_
         durations=durations,
         vocab=json.loads(Path(p["vocab"]).read_text()),
         gen=gen,
-        step_scale=load_step_scale(gen),
+        step_times=load_step_times(gen, require_step_times),
         affinity=load_affinity(p["affinity"], recipes, require_reviewed_affinity),
     )
 
 
-def load_step_scale(gen):
-    """The CC4D step-time scales if generator.yaml's durations.step_scale names a file."""
-    path = (gen.get("durations") or {}).get("step_scale")
-    return json.loads(Path(path).read_text())["scales"] if path else None
+def load_step_times(gen, required=True):
+    """The CC4D step totals (durations.StepTimes) if generator.yaml's durations.step_times names
+    a file (`calibrate_cc4d.py --write-step-times` writes it)."""
+    from cook_ad.drift_synth.durations import StepTimes
+    path = (gen.get("durations") or {}).get("step_times")
+    if not path:
+        return None
+    if not Path(path).exists():
+        if required:
+            raise FileNotFoundError(f"{path}: run scripts/drift_synth/calibrate_cc4d.py --write-step-times {path}")
+        return None
+    return StepTimes.load(path)
 
 
 def load_affinity(path, recipes, require_reviewed=True):
