@@ -3,12 +3,20 @@
 """
 import json
 import math
+import os
 from pathlib import Path
 
 import numpy as np
 
 from cook_ad.core import Detection, OperatingPoint, Trial
-from cook_ad.eval import metric_g
+from cook_ad.eval import metric_g, metric_h
+
+# COOK_METRIC=H scores with metric H (eval/metric_h.py) instead of G; COOK_DELAY is its slider (G's
+# deadline is fixed at 10). Read once at import: every table in a run uses one rule.
+METRIC = os.environ.get("COOK_METRIC", "G").upper()
+SCORER = metric_h if METRIC == "H" else metric_g
+DELAY = int(os.environ.get("COOK_DELAY", 0 if METRIC == "H" else metric_g.DEADLINE))
+LABEL = f"H, delay {DELAY}" if METRIC == "H" else "G"
 
 CHANNELS = ("s_emit", "s_verb", "s_noun", "s_temporal", "s_dur_two", "s_transition",
             "s_recipe_transition")
@@ -127,7 +135,7 @@ def live_grid(det, trace, alphas, kappas):
 
 def sweep(masks_by_trial, trials, tick_seconds=1.0):
     """masks_by_trial[i]: (T, ...) bool grid for trials[i] = (group, Trial) -> metric G grid."""
-    score = metric_g.GridScore(tick_seconds)
+    score = SCORER.GridScore(tick_seconds, DELAY)
     for m, (group, t) in zip(masks_by_trial, trials):
         score.add(group, m, list(t.spans), t.verbs, t.nouns)
     return score.result()
@@ -172,9 +180,10 @@ def null_masks(trials):
 # ---- output ---------------------------------------------------------------------------------
 
 
-def table(rows, title, metric="G", types=None):
+def table(rows, title, metric=None, types=None):
     """Print one metric-labelled markdown table: precision, recall, F1, alarms/10 min, run FPR,
     healthy-trial FPR, then recall per type."""
+    metric = metric or LABEL
     print(f"\n### {title} -- metric {metric}\n")
     print("| arm | precision | recall | F1 | alarms / 10 min | run FPR | healthy-trial FPR |")
     print("|---|---|---|---|---|---|---|")

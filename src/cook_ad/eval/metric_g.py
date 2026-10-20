@@ -107,15 +107,18 @@ class GridScore:
     `tick_seconds` converts ticks to time for alarms/10 min (1.0 on Breakfast and EPIC-Tent;
     0.5 on EPIC-KITCHENS and the synthetic drift data)."""
 
-    def __init__(self, tick_seconds=1.0):
+    scorer = staticmethod(score_dense)      # metric_h.GridScore swaps the counting rule
+
+    def __init__(self, tick_seconds=1.0, deadline=DEADLINE):
         self.groups = {}
         self.tick_seconds = tick_seconds
+        self.deadline = deadline
 
     def add(self, group, flags, spans, verbs, nouns):
         flags = np.asarray(flags, dtype=bool)
         shape = flags.shape[1:]
-        r = score_dense(flags.reshape(flags.shape[0], -1), spans,
-                        correct_runs(verbs, nouns, spans), run_starts(verbs, nouns))
+        r = self.scorer(flags.reshape(flags.shape[0], -1), spans,
+                        correct_runs(verbs, nouns, spans), run_starts(verbs, nouns), self.deadline)
         st = self.groups.setdefault(group, {"hits": 0, "n_spans": 0, "fp": 0, "onsets": 0,
                                             "any_flag": 0, "runs_flagged": 0, "n_correct": 0,
                                             "ticks": 0, "n_trials": 0})
