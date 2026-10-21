@@ -246,12 +246,13 @@ scored step by step as PREGO's code does.
 
 ### What the tables say
 
-- **Every HSMM arm beats its null by a wide margin**, at about a tenth of the null's alarm rate.
-  The LLM arms sit 0.01–0.08 F1 above the null and flag about half to nine tenths of error-free
-  runs.
-- **Going live costs nothing.** Live matches Hindsight within ±0.01 F1 on every Breakfast model
-  and on EPIC-Tent, and lag (L = 5, ∞) buys nothing.
-- **Knowing the dish moves F1 by ≤ 0.01**; the dish model is no better than 16 latent clusters.
+- **Every HSMM arm beats its null by a wide margin**, at a twentieth (Breakfast) to a fifth
+  (EPIC-Tent, Live) of the null's alarm rate. The LLM arms sit 0.005–0.06 F1 above the null and
+  flag half to nine tenths of error-free runs.
+- **Going live costs nothing in F1.** Live is within −0.001 to +0.022 of Hindsight on every
+  Breakfast model and on EPIC-Tent, and lag (L = 5, ∞) buys nothing. Under H its alarm rate on
+  EPIC-Tent is three times Hindsight's: its flags flicker within a run.
+- **Knowing the dish moves F1 by ≤ 0.01**; the dish model beats 16 latent clusters by 0.01–0.03.
 - **The HSMM's weakness is recall** on omission and repetition (Breakfast) and on everything but
   order (EPIC-Tent, where most annotated errors leave the (verb, noun) stream unchanged).
 - **Under PREGO's own protocol, flagging every step reproduces PREGO's published result.** The
