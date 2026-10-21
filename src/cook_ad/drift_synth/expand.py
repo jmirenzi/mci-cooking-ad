@@ -400,13 +400,12 @@ def add_flavour_variants(recipe, expansions, knobs, vocab, tags, llm_cfg):
     for failed site passes). Keeps the core tokens, the sour inserts and the lower-fat variants;
     rebuilds everything this pass owns, so it can be rerun."""
     from cook_ad.drift_synth.knobs import FLAVOUR
-    rename = {"calorie_conscious": "fatty"}
     out = {}
     for k, e in expansions.items():
         # Every flavour addition is "add <ingredient>" (Jack, 2026-10-17), the recipe's own salt too.
         e = StepExpansion(e.step_id, [(FLAVOUR_VERB, n) if n == "salt" else (v, n) for v, n in e.tokens],
                           e.variants)
-        keep = [Variant(rename.get(v.knob, v.knob), v.kind, v.anchor_step,
+        keep = [Variant(v.knob, v.kind, v.anchor_step,
                         [(FLAVOUR_VERB, n) for _, n in v.tokens] if v.kind == "insert" else v.tokens,
                         v.replaces)
                 for v in e.variants]

@@ -1,4 +1,4 @@
-"""Metric G: the headline metric (docs/eval.md §1). Every table states its letter.
+"""Metric G: the headline until 2026-10-21, now for comparing with older numbers (docs/eval.md §1b).
 
 A RUN is a maximal stretch of ticks with one constant (verb, noun) observation -- observed by
 every detector, and no claim about the user's steps. An ALARM is the first flag inside a run;

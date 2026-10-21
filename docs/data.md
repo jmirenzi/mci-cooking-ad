@@ -232,7 +232,7 @@ control arm and the trial figure.
 new streams, a `window`, the anomalous `anomaly_ticks`, the scored `spans`, and provenance
 (`tick_map`, `edited_ticks`).
 
-| Type | Edit | Span scored by metric G |
+| Type | Edit | Span scored by metric H |
 |---|---|---|
 | substitution | one interior segment's verb **or** noun (chosen at random) → a token with no training evidence for that state | the segment |
 | abandonment | truncate an interior segment to 5–20% of its length | the onset tick |

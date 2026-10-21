@@ -309,7 +309,6 @@ def test_duration_fit_backs_off():
     assert m.params(("cut", "onion"))[0] == pytest.approx(1.5, abs=0.1)
     assert "take|cup" in m.pair and m.params(("take", "jar")) == tuple(m.verb["take"][:2])
     assert m.params(("stir", "pot")) == tuple(m.overall[:2])
-    assert m.gap_zero == pytest.approx(0.25, abs=0.02)
 
 
 def test_export_ticks():

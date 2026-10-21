@@ -1,15 +1,14 @@
-"""Metric H: hit = any flag in a span's window; miss = one per run with a flag outside every window.
-
-Proposed 2026-10-19 after the metric-G double-penalty case (docs/eval.md §1b). A stray flag early
-in a run, followed by a perfect flag on the span, is one TP and one FP here; metric G dates the run's
-alarm by the stray and scores one FP and one FN.
+"""Metric H, the headline: hit = any flag in a span's window; miss = one per run with a flag
+outside every window (docs/eval.md §1). A stray flag early in a run, followed by a perfect flag on
+the span, is one TP and one FP here; metric G dates the run's alarm by the stray and scores one FP
+and one FN.
 
   TP = a span whose window [start, end + delay] contains ANY flag (at most one per span)
   FN = a span with none
   FP = a run holding a flag outside every span's window (one per run, however many flags)
   TN = undefined
 
-`delay` is a slider (ticks after a span's end), default 0. Flag-every-tick is the null: it hits every
+`delay` is a slider (ticks after a span's end); the headline uses DEFAULT_DELAY = 2. Flag-every-tick is the null: it hits every
 span and misses every run that is not wholly inside a window. Alarms per 10 minutes count
 contiguous flagged stretches (a stretch breaks at a gap or a run start), so flicker is charged.
 Same inputs and same result keys as metric_g, so the harness and eval scripts swap one for the other.
@@ -19,8 +18,9 @@ import numpy as np
 from cook_ad.eval.metric_g import (STRENGTH_THRESHOLD, GridScore as _GridScoreG, _kept_ticks,
                                    best_index, correct_runs, run_starts)  # noqa: F401
 
+DEFAULT_DELAY = 2      # the headline's delay, in ticks (docs/eval.md §1)
 METRIC_H = {"onset": False, "hit": "any flag in [start, end + delay]",
-            "miss": "one per run with a flag outside every window"}
+            "miss": "one per run with a flag outside every window", "delay": DEFAULT_DELAY}
 
 
 def _run_ids(starts, n):
@@ -36,7 +36,7 @@ def _stretch_onsets(f, starts):
     return f & ~(prev & ~is_start.reshape((-1,) + (1,) * (f.ndim - 1)))
 
 
-def score_dense(flag_matrix, spans, correct=(), starts=None, delay=0):
+def score_dense(flag_matrix, spans, correct=(), starts=None, delay=DEFAULT_DELAY):
     """Metric H counts for ONE trial at P operating points; same keys as metric_g.score_dense."""
     f = np.asarray(flag_matrix, dtype=bool)
     t_len = f.shape[0]
@@ -64,6 +64,9 @@ class GridScore(_GridScoreG):
     """metric_g.GridScore with metric H's counting rule and a `delay`."""
     scorer = staticmethod(score_dense)
 
+    def __init__(self, tick_seconds=1.0, delay=DEFAULT_DELAY):
+        super().__init__(tick_seconds, delay)
+
 
 def stretches(ticks, starts):
     """Sorted flag ticks -> the first tick of each contiguous stretch (broken at a run start)."""
@@ -76,7 +79,7 @@ def stretches(ticks, starts):
     return out
 
 
-def score_trial(flags, spans, starts, delay=0, threshold=STRENGTH_THRESHOLD):
+def score_trial(flags, spans, starts, delay=DEFAULT_DELAY, threshold=STRENGTH_THRESHOLD):
     """One trial under metric H -> per-span rows (hit, latency, width) and the FP runs."""
     ticks = _kept_ticks(flags, threshold)
     inside = lambda t, s: s[0] <= t <= s[1] + delay  # noqa: E731
@@ -92,7 +95,7 @@ def score_trial(flags, spans, starts, delay=0, threshold=STRENGTH_THRESHOLD):
             "n_flags": len(ticks)}
 
 
-def evaluate(healthy, trials, healthy_starts, trial_starts, error_types=None, delay=0,
+def evaluate(healthy, trials, healthy_starts, trial_starts, error_types=None, delay=DEFAULT_DELAY,
              threshold=STRENGTH_THRESHOLD):
     """Metric H over a pool; the result has metric_g.evaluate's shape (flags_merged = stretches)."""
     import statistics

@@ -1,4 +1,4 @@
-"""Breakfast evaluation under metric G (docs/eval.md): every detector, operating points picked on
+"""Breakfast evaluation under the harness metric (H by default; docs/eval.md): every detector, operating points picked on
 TRAIN, the headline table on TEST.
 
 Pools are the canonical files (scripts/data/build_pools.py): every usable trial healthy plus one
@@ -8,7 +8,7 @@ LLM answers were collected on, so every row -- HSMM, LLM and the nulls -- is sco
 
 For each HSMM model (--models):
   1. TRAIN pool: sweep hindsight over ALPHAS and live/lag over ALPHAS x KAPPAS; pick each arm's
-     best G-F1.
+     best F1.
   2. TEST pool: the same sweep, reported as grids (no picking).
   3. The headline table: each arm at its train-picked operating point on TEST, beside the LLM
      arms and the nulls.
@@ -47,7 +47,7 @@ from cook_ad.detectors.hsmm_live import LiveHSMMDetector  # noqa: E402
 from cook_ad.detectors.llm_verdict import LLMVerdictDetector  # noqa: E402
 from cook_ad.detectors.narrate import Lexicon  # noqa: E402
 from cook_ad.detectors.thresholds import BadSets  # noqa: E402
-from cook_ad.eval import harness, metric_g, pools  # noqa: E402
+from cook_ad.eval import harness, metric_g, metric_h, pools  # noqa: E402
 from cook_ad.hsmm import params as hparams  # noqa: E402
 from cook_ad.hsmm.model import HSMM  # noqa: E402
 from cook_ad.hsmm.train.lexical_init import recipe_label_assignment  # noqa: E402
@@ -207,7 +207,7 @@ def main():
     train_seqs = pools.split_sequences(f"{B}/sequences.json", f"{B}/split.json", "train")
     placement = hparams.load(pool["test"][1]["placement"])
 
-    out = {"metric": harness.LABEL, "metric_g_definition": dict(metric_g.METRIC_G), "alphas": harness.ALPHAS,
+    out = {"metric": harness.LABEL, "metric_definition": dict(metric_h.METRIC_H if harness.METRIC == "H" else metric_g.METRIC_G), "alphas": harness.ALPHAS,
            "kappas": harness.KAPPAS, "lags": lags, "grids": {}, "operating_points": {},
            "pools": {part: meta for part, (_, meta) in pool.items()}}
     def load_model(model):          # stage-4b tables next to the model, unless --nb-durations

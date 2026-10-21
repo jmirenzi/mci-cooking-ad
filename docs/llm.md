@@ -218,12 +218,12 @@ by PID. `pkill -f llm_breakfast.sh` also matches the shell running it.
 
 ## 7. Results
 
-Under metric G, the LLM arms sit 0.02–0.08 F1 above the flag-every-run null on Breakfast and
-~0.01 above it on EPIC-Tent. They flag 49–91% of error-free runs and raise 16–41 alarms per 10
-minutes. The HSMM arms score 0.17–0.29 F1 higher at about a tenth of the alarm rate. Recipe descriptions make the predictive arm flag a
-little less on Breakfast (F1 0.375 → 0.410) and change nothing on EPIC-Tent. Under PREGO's own
-protocol (metric E) the predictive arm reproduces PREGO's published line, and so does flagging
-every step. Tables: README ("Results"); history: [`logbook.md`](logbook.md).
+Under metric H (delay 2), the LLM arms sit 0.005–0.06 F1 above the flag-every-run null on
+Breakfast and ~0.007 above it on EPIC-Tent. They flag 49–91% of error-free runs and raise 24–56
+alarms per 10 minutes. The HSMM arms score 0.26–0.34 F1 higher at about a fifteenth of the alarm
+rate. Recipe descriptions make the predictive arm flag a little less on Breakfast (F1 0.353 →
+0.398) and change nothing on EPIC-Tent. Under PREGO's own protocol (metric E) the predictive arm
+reproduces PREGO's published line, and so does flagging every step. Tables: README ("Results"); history: [`logbook.md`](logbook.md).
 
 ---
 

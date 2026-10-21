@@ -22,7 +22,7 @@ and are covered in [`llm.md`](llm.md). The model they read is in [`model.md`](mo
   dish (int), a (K_R,) log prior, or `None` (infer it). `spans` is the ground truth, as `Span(start,
   end, kind)`.
 - `Alarm(tick, channel, score, known_at)`. `tick` is the tick the alarm is *about*, and is what
-  metric G scores. `known_at` is the first tick at which the detector could have raised it.
+  the metrics score. `known_at` is the first tick at which the detector could have raised it.
 - `Detection(alarms, trace)`. `trace` is detector-specific: `LiveTrace`, `HindsightTrace`, the LLM
   verdicts, or parse statistics.
 - `OperatingPoint(alpha, kappa)`. `alpha` is one tail mass for every channel or a per-channel
@@ -305,8 +305,8 @@ early_9 ≈ 0. Nothing fires.
 ### 3.8 When several channels fire on one event
 
 A skipped step k → i can raise trans_t and the emission p-value on the same tick. The emission
-surprise is caused by the transition. Each channel currently raises its own alarm; metric G merges
-alarms within one run of constant (verb, noun), so this does not inflate the false-alarm count.
+surprise is caused by the transition. Each channel currently raises its own alarm; metric H counts at most one miss per run of
+constant (verb, noun), so this does not inflate the false-alarm count.
 Naming one cause per event (transition before duration before stall before emission) matters only
 for narration, which Live does not have yet.
 
@@ -350,7 +350,7 @@ trace for every α. Every alarm has `known_at = T − 1`.
 The emission channels' π̃ is computed under r̂. Their threshold is indexed by z*_t. The duration
 and transition channels read z*'s boundaries. `s_dur_two` sits on a segment's last tick, before
 the next tick reveals that the segment ended. Live (§3) was built to remove all of this. Under
-metric G it costs no F1 (README, "Results").
+metrics G and H it costs no F1 (README, "Results").
 
 ### 5.1 Emission channels and the dilution correction
 

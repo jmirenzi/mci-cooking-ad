@@ -26,7 +26,7 @@ class Trial:
 
 @dataclass(frozen=True)
 class Alarm:
-    """One flag. `tick` is what metric G scores; `known_at` is when the detector could raise it."""
+    """One flag. `tick` is what the metrics score; `known_at` is when the detector could raise it."""
     tick: int
     channel: str
     score: float

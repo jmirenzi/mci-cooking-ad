@@ -6,8 +6,8 @@ Start at `docs/README.md` (the system, the classes, how to run it). History is i
 - **Update `docs/` in the same commit as any code it describes.** Docs explain the current theory and
   where it lives in the code (each has a "Code" table of `file:class.method`). Past attempts and
   measurements go to `docs/logbook.md` as dated entries, newest first, ≤ 5 lines each.
-- **Every results table states its metric letter** (G is the headline; E only for comparing with
-  PREGO; see `docs/eval.md`). A number without a letter is not citable.
+- **Every results table states its metric letter** (H is the headline; G for older numbers; E only
+  for comparing with PREGO; see `docs/eval.md`). A number without a letter is not citable.
 - **Run Python through `./py`** (`./py -m pytest -q`, `./py scripts/...`). It pins `PYTHONPATH` to this
   checkout and stops JAX preallocating the GPU.
 - **Never `uv sync` without `--extra dev --extra gpu`.** A bare sync uninstalls the CUDA jaxlib and JAX

@@ -6,7 +6,7 @@ real-anomaly corpus do not fit an injected-pool evaluation's shape (docs/eval.md
 1. **Several anomalies per trial, of mixed type.** the Breakfast pools loop over
    error_injection.ERROR_TYPES with one degraded copy of each trial per type. EPIC-Tent sessions
    carry a median of 10 annotated errors spanning up to five types at once, so the unit of
-   iteration is the trial, not (trial, type). Scored through metric_g.evaluate
+   iteration is the trial, not (trial, type). Scored through harness.SCORER.evaluate
    -- see its docstring for why the per-type shape would double-count false positives.
 
 2. **No healthy trial.** Under the mapped-6 taxonomy every one of the 29 sessions carries
@@ -275,7 +275,7 @@ def step_false_alarms(flags, trajectory, lexicon, sil, spans):
 
 
 def score(flags_by_trial, truth, group, trajectories, lexicon, sil):
-    """One arm's per-trial flags under metric G, against `group` with every other type removed,
+    """One arm's per-trial flags under the harness metric, against `group` with every other type removed,
     plus the healthy-population alarm rates and the step- and run-level false-alarm rates."""
     trials, healthy, trial_starts, healthy_starts = [], [], [], []
     healthy_ticks = alarmed_ticks = 0
@@ -376,13 +376,11 @@ def print_group(name, group, reports, truth):
     fragments = [f for t in truth for f in group_truth(t, group)[1]]
     labels = ", ".join(SOURCE_NAME[t] for t in group)
     print(f"\n{'=' * 96}\nGROUP: {name}  ({labels})\n{'=' * 96}")
-    metric = next(iter(reports.values())).get("metric", "D")
+    metric = next(iter(reports.values()))["metric"]
     print(f"  metric {metric}" + {"G": " (one alarm per run of constant (verb, noun); its first flag "
                                        "must land in [start, end+10])",
                                   "H": f" (any flag in [start, end+{harness.DELAY}] finds a span; one "
-                                       "miss per run with a flag outside every window)",
-                                  "G-gap": " (alarm onsets after a 5-tick gap merge; deadline 10)"}.get(
-        metric, " (ANY flag finds a span; merged alarms are FPs; deadline 10)"))
+                                       "miss per run with a flag outside every window)"}[metric])
     print(f"  {n_spans} spans in {len(truth)} sessions; every other error type REMOVED "
           f"(relabelled normal, as PREGO does)")
     print(f"  healthy population: {len(fragments)} error-free fragments, "

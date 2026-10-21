@@ -68,8 +68,7 @@ NOUNS = ["basil", "bowl", "cheese", "egg", "hob", "lemon", "lettuce", "mixture",
 VOCAB = {"verbs": {v: i for i, v in enumerate(VERBS)}, "nouns": {n: i for i, n in enumerate(NOUNS)}}
 
 DURATIONS = DurationModel(source="toy", verb={"cut": [math.log(4.0), 0.4, 100]},
-                          overall=[math.log(2.0), 0.5, 100], gap_zero=0.3,
-                          gap=[math.log(1.0), 0.5, 100])
+                          overall=[math.log(2.0), 0.5, 100])
 
 GEN = {
     "logistics_verbs": {"take": "take", "put": "put", "wash": "wash"},

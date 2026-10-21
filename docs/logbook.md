@@ -7,6 +7,13 @@ and are recoverable at the git tag `pre-restructure`. Scripts, options and `drif
 (§5–§9.9) named in entries from 2026-10-15 to 2026-10-20 were removed in the 2026-10-20 cleanup and
 are recoverable at the git tag `pre-cleanup`.
 
+## 2026-10-21 — metric H (delay 2) is the headline; headline tables regenerated
+
+Jack's call: easier to defend, numbers close. `harness.METRIC` defaults to H; `COOK_METRIC=G` for
+G. Breakfast (stage 4b, train-picked), H: dish given hindsight 0.671, live 0.678, null 0.337 (run)
+/ 0.301 (tick). EPIC-Tent default hindsight 0.326, live 0.341; PREGO split 0.354 / 0.376. Live's
+alarms/10 min triple on EPIC-Tent (flicker inside runs is charged). README tables rewritten.
+
 ## 2026-10-20 — the session-time generator validated (metric G)
 
 4 persons, step pools, stage 4b, F1 / healthy FPR at 10 / 30 / 250 sessions. Hindsight: person only

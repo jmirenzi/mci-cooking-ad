@@ -15,9 +15,8 @@ post-fit at strength lambda (apply_global_prior): the arms are lambda = 0 (perso
 Pools: each held-out session with one real error edited into its clean events
 (drift_synth/inject.py), re-exported and scrubbed. Hindsight picks the transition channels' alpha
 apart from the rest (harness.hindsight_split_grid), Live picks alpha x kappa, both on validation
-by best F1, reported on test. The metric is the harness's (G, or H with COOK_METRIC=H
-COOK_DELAY=d). --core-count adds the s_count channel (hsmm/visit_counts.py) fitted on the
-training decodes: in the transition group for Hindsight, on its own alpha axis for Live.
+by best F1, reported on test. The metric is the harness's (H at delay 2; COOK_METRIC=G for G).
+--core-count adds the s_count channel (hsmm/visit_counts.py) fitted on the training decodes: in the transition group for Hindsight, on its own alpha axis for Live.
 
     ./py scripts/eval/eval_synth_prior.py --stage population
     ./py scripts/eval/eval_synth_prior.py --stage persons
@@ -288,7 +287,9 @@ def fit_counts(hsmm, bad, seqs, labels, n, vocab, chunk_size):
 
 def _suffix():
     from cook_ad.eval import harness
-    return ("_scount" if CORE_COUNT else "") + (f"_H{harness.DELAY}" if harness.METRIC == "H" else "")
+    tag = "" if (harness.METRIC, harness.DELAY) == ("H", 2) else f"_{harness.METRIC}" + (
+        f"{harness.DELAY}" if harness.METRIC == "H" else "")
+    return ("_scount" if CORE_COUNT else "") + tag
 
 
 def _print(pid, n, label, row, extra=""):

@@ -16,7 +16,7 @@ DurationModel: log-normal per verb, with a (verb, noun) row where that pair has 
 """
 import json
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 import numpy as np
@@ -28,10 +28,7 @@ class DurationModel:
     verb: dict = field(default_factory=dict)        # verb -> [mu, sigma, n] of log seconds
     pair: dict = field(default_factory=dict)        # "verb|noun" -> [mu, sigma, n]
     overall: list = field(default_factory=list)     # [mu, sigma, n]
-    gap_zero: float = 0.0                           # P(gap == 0)
-    gap: list = field(default_factory=list)         # [mu, sigma, n] of log positive gaps
     clip: tuple = (0.2, 120.0)                      # seconds, duration samples
-    gap_clip: float = 30.0                          # seconds, gap samples
 
     def params(self, token):
         verb, noun = token
@@ -45,7 +42,8 @@ class DurationModel:
     def load(cls, path):
         d = json.loads(Path(path).read_text())
         d["clip"] = tuple(d["clip"])
-        return cls(**d)
+        keep = {f.name for f in fields(cls)}               # caches from before 2026-10-21 hold gap fits
+        return cls(**{k: v for k, v in d.items() if k in keep})
 
 
 def _lognormal(xs):
@@ -55,27 +53,19 @@ def _lognormal(xs):
 
 def fit_from_intervals(videos, min_verb=20, min_pair=20, min_duration=0.05, source="epic"):
     """videos: {video: [(t0, t1, verb, noun)] sorted by t0}, names not ids."""
-    by_verb, by_pair, allx, gaps = {}, {}, [], []
+    by_verb, by_pair, allx = {}, {}, []
     for narr in videos.values():
-        end = -math.inf
         for t0, t1, verb, noun in narr:
             d = t1 - t0
             if d >= min_duration:
                 by_verb.setdefault(verb, []).append(d)
                 by_pair.setdefault(f"{verb}|{noun}", []).append(d)
                 allx.append(d)
-            if end > -math.inf:
-                gaps.append(max(t0 - end, 0.0))
-            end = max(end, t1)
-    gaps = np.asarray(gaps)
-    pos = gaps[gaps > 0.05]
     return DurationModel(
         source=source,
         verb={v: _lognormal(x) for v, x in by_verb.items() if len(x) >= min_verb},
         pair={k: _lognormal(x) for k, x in by_pair.items() if len(x) >= min_pair},
         overall=_lognormal(allx),
-        gap_zero=float(np.mean(gaps <= 0.05)) if len(gaps) else 0.0,
-        gap=_lognormal(pos) if len(pos) else [0.0, 0.05, 0],
     )
 
 

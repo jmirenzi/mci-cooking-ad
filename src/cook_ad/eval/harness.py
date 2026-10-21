@@ -11,11 +11,12 @@ import numpy as np
 from cook_ad.core import Detection, OperatingPoint, Trial
 from cook_ad.eval import metric_g, metric_h
 
-# COOK_METRIC=H scores with metric H (eval/metric_h.py) instead of G; COOK_DELAY is its slider (G's
-# deadline is fixed at 10). Read once at import: every table in a run uses one rule.
-METRIC = os.environ.get("COOK_METRIC", "G").upper()
+# Metric H (eval/metric_h.py) at delay 2 is the headline (docs/eval.md §1). COOK_METRIC=G scores
+# with metric G instead; COOK_DELAY moves H's delay (G's deadline is fixed at 10). Read once at
+# import: every table in a run uses one rule.
+METRIC = os.environ.get("COOK_METRIC", "H").upper()
 SCORER = metric_h if METRIC == "H" else metric_g
-DELAY = int(os.environ.get("COOK_DELAY", 0 if METRIC == "H" else metric_g.DEADLINE))
+DELAY = int(os.environ.get("COOK_DELAY", metric_h.DEFAULT_DELAY if METRIC == "H" else metric_g.DEADLINE))
 LABEL = f"H, delay {DELAY}" if METRIC == "H" else "G"
 
 CHANNELS = ("s_emit", "s_verb", "s_noun", "s_temporal", "s_dur_two", "s_transition",
@@ -109,7 +110,7 @@ def live_grid(det, trace, alphas, kappas):
 
 
 def sweep(masks_by_trial, trials, tick_seconds=1.0):
-    """masks_by_trial[i]: (T, ...) bool grid for trials[i] = (group, Trial) -> metric G grid."""
+    """masks_by_trial[i]: (T, ...) bool grid for trials[i] = (group, Trial) -> the metric's grid (SCORER)."""
     score = SCORER.GridScore(tick_seconds, DELAY)
     for m, (group, t) in zip(masks_by_trial, trials):
         score.add(group, m, list(t.spans), t.verbs, t.nouns)
@@ -136,7 +137,7 @@ def at(result, idx):
 
 
 def score_masks(masks, trials, tick_seconds=1.0):
-    """One operating point: [(T,) bool] -> the scalar metric G row."""
+    """One operating point: [(T,) bool] -> the scalar row under SCORER."""
     return at(sweep([np.asarray(m)[:, None] for m in masks], trials, tick_seconds), (0,))
 
 
@@ -144,7 +145,7 @@ def score_masks(masks, trials, tick_seconds=1.0):
 
 
 def null_masks(trials):
-    """The two nulls (identical under metric G; both printed): flag every run, flag every tick."""
+    """The two nulls: flag every run, flag every tick (identical under metric G, not under H)."""
     return {
         "null: flag every run": [np.isin(np.arange(len(t.verbs)),
                                          metric_g.run_starts(t.verbs, t.nouns)) for _, t in trials],
@@ -181,7 +182,7 @@ def write_operating_points(path, entries):
     for corpus, models in entries.items():
         for model, dets in models.items():
             data.setdefault(corpus, {}).setdefault(model, {}).update(dets)
-    header = ("# Operating points picked on each corpus's TRAIN split (metric G, best F1) by\n"
+    header = (f"# Operating points picked on each corpus's TRAIN split (metric {LABEL}, best F1) by\n"
               "# scripts/eval/eval_*.py. Never tuned on test. alpha is the bad-set tail mass,\n"
               "# kappa the posterior cutoff of the live/lag event channels.\n")
     p.write_text(header + yaml.safe_dump(data, sort_keys=False))

@@ -18,7 +18,7 @@ parameter row. Two LLM detectors are kept as baselines and scored the same way.
 | [`llm.md`](llm.md) | the two LLM detectors, prompts, the response cache, serving locally |
 | [`training.md`](training.md) | the four training stages and their presets |
 | [`data.md`](data.md) | corpora, ticks, splits, canonical pools, injected errors |
-| [`eval.md`](eval.md) | metric G, metric E, operating points, the eval scripts |
+| [`eval.md`](eval.md) | metric H (headline), metric G, metric E, operating points, the eval scripts |
 | [`next_steps.md`](next_steps.md) | planned work: open vocabulary, drift detection |
 | [`drift_synth.md`](drift_synth.md) | the synthetic data generator (CaptainCook4D graphs, EPIC vocab, knobs, regimes) and the anomaly detector on it |
 | [`logbook.md`](logbook.md) | what was tried, the number, the verdict, newest first |
@@ -173,58 +173,62 @@ LLM arms replay from `dataset/processed/<corpus>/llm_cache/`. A replay needs the
 
 ## Results
 
-### Breakfast, injected errors — metric G
+### Breakfast, injected errors — metric H, delay 2
 
 Test pool: 97 trials per group (healthy + one copy per error type), the same trials for every row.
 HSMM operating points picked on the train pool (378 trials per group) by best F1
-(`configs/operating_points.yaml`). Produced by `scripts/eval/eval_breakfast.py`.
+(`configs/operating_points.yaml`), stage-4b durations. Produced by `scripts/eval/eval_breakfast.py`.
 
 | arm | precision | recall | F1 | alarms / 10 min | run FPR | healthy-trial FPR |
 |---|---|---|---|---|---|---|
-| null: flag every run (= flag every tick) | 0.211 | 0.997 | 0.348 | 32.17 | 1.000 | 1.000 |
-| LLM predictive, no recipes | 0.235 | 0.928 | 0.375 | 25.73 | 0.800 | 1.000 |
-| LLM predictive, + recipes | 0.267 | 0.885 | 0.410 | 20.13 | 0.639 | 1.000 |
-| LLM predictive, no recipes, Auto-CoT | 0.231 | 0.928 | 0.370 | 26.12 | 0.818 | 1.000 |
-| LLM predictive, + recipes, Auto-CoT | 0.276 | 0.893 | 0.422 | 19.63 | 0.618 | 1.000 |
-| LLM verdict, no recipes (tick) | 0.300 | 0.754 | 0.429 | 15.57 | 0.485 | 0.918 |
-| LLM verdict, + recipes (tick) | 0.282 | 0.816 | 0.420 | 17.30 | 0.567 | 0.918 |
-| HSMM dish model, dish given: hindsight (α 0.07) | 0.638 | 0.682 | 0.659 | 3.27 | 0.109 | 0.474 |
-| HSMM dish model, dish given: live L=0 (α 0.035, κ 0.7) | 0.711 | 0.620 | **0.662** | 2.13 | 0.097 | 0.320 |
-| HSMM dish model, dish inferred: hindsight (α 0.035) | 0.709 | 0.607 | 0.654 | 2.03 | **0.075** | 0.309 |
-| HSMM dish model, dish inferred: live L=0 (α 0.02, κ 0.7) | 0.725 | 0.601 | 0.657 | **1.93** | 0.087 | **0.278** |
-| HSMM 16-cluster model: hindsight (α 0.05) | 0.676 | 0.639 | 0.657 | 2.43 | 0.092 | 0.361 |
-| HSMM 16-cluster model: live L=0 (α 0.015, κ 0.05) | 0.697 | 0.620 | 0.656 | 2.23 | 0.107 | 0.330 |
-| HSMM `joint_params.npz` at α 0.005 (the older arm) | **0.804** | 0.393 | 0.528 | 0.50 | 0.022 | 0.103 |
+| null: flag every run | 0.203 | 0.995 | 0.337 | 32.17 | 1.000 | 1.000 |
+| null: flag every tick | 0.177 | 1.000 | 0.301 | 32.17 | 1.000 | 1.000 |
+| LLM predictive, no recipes | 0.216 | 0.952 | 0.353 | 35.89 | 0.800 | 1.000 |
+| LLM predictive, + recipes | 0.254 | 0.918 | 0.398 | 24.88 | 0.639 | 1.000 |
+| LLM predictive, no recipes, Auto-CoT | 0.210 | 0.933 | 0.342 | 35.79 | 0.818 | 1.000 |
+| LLM predictive, + recipes, Auto-CoT | 0.257 | 0.911 | 0.401 | 24.04 | 0.618 | 1.000 |
+| LLM verdict, no recipes (tick) | 0.268 | 0.766 | 0.397 | 28.65 | 0.485 | 0.918 |
+| LLM verdict, + recipes (tick) | 0.246 | 0.835 | 0.380 | 32.62 | 0.567 | 0.918 |
+| HSMM dish model, dish given: hindsight (α 0.02) | 0.769 | 0.595 | 0.671 | 1.54 | **0.055** | 0.237 |
+| HSMM dish model, dish given: live L=0 (α 0.02, κ 0.1) | 0.770 | 0.605 | **0.678** | 1.64 | 0.078 | 0.247 |
+| HSMM dish model, dish inferred: hindsight (α 0.02) | 0.767 | 0.584 | 0.663 | **1.39** | **0.055** | **0.227** |
+| HSMM dish model, dish inferred: live L=0 (α 0.02, κ 0.3) | 0.702 | 0.627 | 0.662 | 2.28 | 0.098 | 0.330 |
+| HSMM 16-cluster model: hindsight (α 0.05) | 0.638 | 0.636 | 0.637 | 2.73 | 0.098 | 0.361 |
+| HSMM 16-cluster model: live L=0 (α 0.007, κ 0.02) | 0.727 | 0.589 | 0.651 | 1.98 | 0.090 | 0.289 |
+| HSMM `joint_params.npz` at α 0.005 (the older arm) | **0.801** | 0.388 | 0.523 | 0.50 | 0.022 | 0.103 |
 
-Recall per type, metric G:
+Recall per type, metric H, delay 2:
 
 | arm | substitution | abandonment | omission | transposition | repetition |
 |---|---|---|---|---|---|
-| LLM verdict, + recipes (tick) | 0.98 | 0.75 | 0.68 | 0.88 | 0.72 |
-| HSMM dish model, dish given: hindsight | 0.99 | 0.84 | 0.44 | 0.71 | 0.41 |
-| HSMM dish model, dish given: live L=0 | 0.99 | 0.70 | 0.34 | 0.64 | 0.40 |
-| HSMM 16-cluster model: live L=0 | 0.98 | 0.66 | 0.37 | 0.67 | 0.37 |
+| LLM verdict, + recipes (tick) | 0.99 | 0.80 | 0.68 | 0.88 | 0.77 |
+| HSMM dish model, dish given: hindsight | 0.98 | 0.74 | 0.27 | 0.62 | 0.34 |
+| HSMM dish model, dish given: live L=0 | 0.98 | 0.74 | 0.31 | 0.63 | 0.34 |
+| HSMM 16-cluster model: live L=0 | 0.98 | 0.59 | 0.30 | 0.65 | 0.36 |
 
-### EPIC-Tent, annotated errors — metric G
+### EPIC-Tent, annotated errors — metric H, delay 2
 
 `procedural` group (order, omit, correction, repeat; other types relabelled normal). HSMM fitted on
 error-excised train fragments, fixed operating point α 0.005, `s_temporal` 1e-5, κ 0.5 (not picked).
-Produced by `scripts/eval/eval_epic_tent.py`. Flag-every-tick has the same precision, recall and
-F1 as flag-every-run.
+Produced by `scripts/eval/eval_epic_tent.py`.
 
 | arm | split | precision | recall | F1 | alarms / 10 min | run FPR |
 |---|---|---|---|---|---|---|
-| null: flag every run | default (9 test sessions) | 0.097 | 0.941 | 0.175 | 44.4 | 1.000 |
-| LLM predictive, no recipes | default | 0.104 | 0.922 | 0.187 | 40.1 | 0.899 |
-| LLM predictive, + instruction order | default | 0.104 | 0.922 | 0.186 | 40.6 | 0.905 |
-| HSMM hindsight | default | 0.419 | 0.353 | 0.383 | 2.81 | 0.062 |
-| HSMM live L=0 | default | 0.450 | 0.353 | **0.396** | **2.63** | **0.058** |
-| null: flag every run | PREGO (15 test sessions) | 0.117 | 0.981 | 0.209 | 46.2 | 1.000 |
-| HSMM hindsight | PREGO | 0.448 | 0.364 | 0.402 | 3.06 | 0.065 |
-| HSMM live L=0 (= L=5 = L=∞) | PREGO | 0.513 | 0.364 | **0.426** | **2.54** | **0.056** |
+| null: flag every tick | default (9 test sessions) | 0.092 | 1.000 | 0.169 | 45.1 | 1.000 |
+| null: flag every run | default | 0.092 | 0.941 | 0.168 | 44.4 | 1.000 |
+| LLM predictive, no recipes | default | 0.097 | 0.922 | 0.175 | 55.5 | 0.899 |
+| LLM predictive, + instruction order | default | 0.097 | 0.922 | 0.175 | 54.3 | 0.905 |
+| HSMM hindsight | default | 0.366 | 0.294 | 0.326 | **2.99** | 0.062 |
+| HSMM live L=0 | default | 0.405 | 0.294 | **0.341** | 9.24 | **0.058** |
+| null: flag every tick | PREGO (15 test sessions) | 0.104 | 1.000 | 0.188 | 47.7 | 1.000 |
+| null: flag every run | PREGO | 0.107 | 0.963 | 0.193 | 46.2 | 1.000 |
+| HSMM hindsight | PREGO | 0.400 | 0.318 | 0.354 | **3.32** | 0.065 |
+| HSMM live L=0 (= L=5 = L=∞) | PREGO | 0.459 | 0.318 | **0.376** | 8.29 | **0.056** |
 
+Live's alarm rate is three times Hindsight's under H (it was below it under G): H counts every
+flagged stretch inside a run, and live channels flicker on and off within a run.
 `procedural+temporal` (adds search and slow) tells the same story: on PREGO's split, hindsight F1
-0.426, live 0.429, null 0.269.
+0.379, live 0.380, null 0.244.
 
 ### EPIC-Tent under PREGO's protocol — metric E
 

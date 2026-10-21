@@ -21,7 +21,7 @@ valid place for that error. A span runs from where the stream first breaks to th
 of the step concerned, never further (the successor of an omitted step, from the omitted step's
 place; the moved step's fetches to its first action, and the jumped step's fetches to its first
 action; the repeat's first action; the cut action; the substituted action), as the tick
-injectors' one-segment spans: metric G counts a span found from its start to DEADLINE ticks after
+injectors' one-segment spans: metric H counts a span found from its start to `delay` ticks after
 its end, so a whole-step span would be far easier to hit.
 """
 from dataclasses import dataclass

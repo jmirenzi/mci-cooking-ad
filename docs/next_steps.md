@@ -24,7 +24,7 @@ Every option below gets its semantics from a fixed text embedding of each token.
 all-MiniLM-L6-v2, run in ~40 lines of numpy, with SIL tokens pinned to an orthogonal direction.
 The verb embedding space failed a nearest-neighbour sanity check, so all options act on nouns
 only. Scores below are metric A accuracy (`trial_loc`, Breakfast test split), the metric of the
-time. Any revival should re-measure under metric G.
+time. Any revival should re-measure under metric H.
 
 **Options measured so far:**
 
