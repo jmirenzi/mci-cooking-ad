@@ -23,10 +23,6 @@ METRIC_H = {"onset": False, "hit": "any flag in [start, end + delay]",
             "miss": "one per run with a flag outside every window", "delay": DEFAULT_DELAY}
 
 
-def _run_ids(starts, n):
-    return np.searchsorted(np.asarray(starts), np.arange(n), side="right") - 1
-
-
 def _stretch_onsets(f, starts):
     """(T, P) bool -> True where a contiguous flagged stretch begins (a run start breaks it)."""
     prev = np.zeros_like(f)

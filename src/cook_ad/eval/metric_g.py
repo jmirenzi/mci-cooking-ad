@@ -46,12 +46,6 @@ def flags_from_channels(flags_by_channel, channels=None):
     return sorted(out)
 
 
-def flags_from_alarms(alarms):
-    """core.Alarm list -> sorted Flags."""
-    return sorted(Flag(int(a.tick), float(a.score) if a.score == a.score else 1.0, a.channel)
-                  for a in alarms)
-
-
 def run_starts(verb_ids, noun_ids):
     """First tick of every maximal run of constant (verb, noun)."""
     v, n = np.asarray(verb_ids), np.asarray(noun_ids)

@@ -53,10 +53,6 @@ def recipe_for_session(person, n, mix_shift, rng):
     return person.repertoire[int(rng.choice(len(person.repertoire), p=mix_weights(person, n, mix_shift)))]
 
 
-def recipe_schedule(person, n_sessions, mix_shift, rng):
-    return [recipe_for_session(person, n, mix_shift, rng) for n in range(n_sessions)]
-
-
 def ramp(n, regime):
     """p(n) for gradual, the interpolation fraction for incremental."""
     return float(np.clip((n - regime.onset) / max(regime.duration, 1), 0.0, 1.0)) \

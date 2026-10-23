@@ -26,9 +26,6 @@ class ObsStats:
     bigram: dict      # "a > b" -> share of all bigrams
     logdur: dict      # token -> np.ndarray of log seconds
 
-    def dur_quantiles(self, qs=(0.1, 0.25, 0.5, 0.75, 0.9)):
-        return {t: np.quantile(x, qs) for t, x in self.logdur.items()}
-
 
 def observable_stats(recipe_id, theta, n_mc, seed, assets):
     graph, exps = assets.graphs[recipe_id], assets.expansions[recipe_id]
