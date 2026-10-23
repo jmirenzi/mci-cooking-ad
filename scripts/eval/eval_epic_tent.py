@@ -6,7 +6,7 @@ real-anomaly corpus do not fit an injected-pool evaluation's shape (docs/eval.md
 1. **Several anomalies per trial, of mixed type.** the Breakfast pools loop over
    error_injection.ERROR_TYPES with one degraded copy of each trial per type. EPIC-Tent sessions
    carry a median of 10 annotated errors spanning up to five types at once, so the unit of
-   iteration is the trial, not (trial, type). Scored through metric_g.evaluate
+   iteration is the trial, not (trial, type). Scored through harness.SCORER.evaluate
    -- see its docstring for why the per-type shape would double-count false positives.
 
 2. **No healthy trial.** Under the mapped-6 taxonomy every one of the 29 sessions carries
@@ -71,7 +71,7 @@ from cook_ad.detectors.hsmm_lag import LagHSMMDetector  # noqa: E402
 from cook_ad.detectors.hsmm_live import LiveHSMMDetector  # noqa: E402
 from cook_ad.detectors.narrate import Lexicon  # noqa: E402
 from cook_ad.detectors.thresholds import BadSets  # noqa: E402
-from cook_ad.eval import metric_e, metric_g, pools  # noqa: E402
+from cook_ad.eval import harness, metric_e, metric_g, pools  # noqa: E402
 from cook_ad.eval.pools import group_truth, slice_flags, trim_at_first_mistake  # noqa: E402
 from cook_ad.hsmm import params as hsmm_params  # noqa: E402
 from cook_ad.hsmm.model import HSMM  # noqa: E402
@@ -275,7 +275,7 @@ def step_false_alarms(flags, trajectory, lexicon, sil, spans):
 
 
 def score(flags_by_trial, truth, group, trajectories, lexicon, sil):
-    """One arm's per-trial flags under metric G, against `group` with every other type removed,
+    """One arm's per-trial flags under the harness metric, against `group` with every other type removed,
     plus the healthy-population alarm rates and the step- and run-level false-alarm rates."""
     trials, healthy, trial_starts, healthy_starts = [], [], [], []
     healthy_ticks = alarmed_ticks = 0
@@ -300,7 +300,8 @@ def score(flags_by_trial, truth, group, trajectories, lexicon, sil):
             alarmed_ticks += len({f if isinstance(f, (int, np.integer)) else f.tick
                                   for f in inside})
         healthy_ticks += sum(end - start + 1 for start, end in fragments)
-    report = metric_g.evaluate(healthy, trials, healthy_starts, trial_starts, error_types=group)
+    report = harness.SCORER.evaluate(healthy, trials, healthy_starts, trial_starts, error_types=group,
+                                     **{"delay" if harness.METRIC == "H" else "deadline": harness.DELAY})
     # The per-fragment false-positive rate is binary per fragment, so it rises with fragment
     # LENGTH, and removing out-of-group types merges fragments into longer ones; it is not
     # comparable across groups. Alarms per 10 minutes of healthy activity is, and the share of
@@ -375,11 +376,11 @@ def print_group(name, group, reports, truth):
     fragments = [f for t in truth for f in group_truth(t, group)[1]]
     labels = ", ".join(SOURCE_NAME[t] for t in group)
     print(f"\n{'=' * 96}\nGROUP: {name}  ({labels})\n{'=' * 96}")
-    metric = next(iter(reports.values())).get("metric", "D")
+    metric = next(iter(reports.values()))["metric"]
     print(f"  metric {metric}" + {"G": " (one alarm per run of constant (verb, noun); its first flag "
                                        "must land in [start, end+10])",
-                                  "G-gap": " (alarm onsets after a 5-tick gap merge; deadline 10)"}.get(
-        metric, " (ANY flag finds a span; merged alarms are FPs; deadline 10)"))
+                                  "H": f" (any flag in [start, end+{harness.DELAY}] finds a span; one "
+                                       "miss per run with a flag outside every window)"}[metric])
     print(f"  {n_spans} spans in {len(truth)} sessions; every other error type REMOVED "
           f"(relabelled normal, as PREGO does)")
     print(f"  healthy population: {len(fragments)} error-free fragments, "
@@ -479,6 +480,8 @@ def main():
                     help="CHANNEL=ALPHA, repeatable. Defaults to the Breakfast arm's measured "
                          "s_temporal override -- re-measure before trusting it on this corpus.")
     ap.add_argument("--chunk-size", type=int, default=8)
+    ap.add_argument("--nb-durations", action="store_true",
+                    help="ignore the model's stage-4b nonparametric duration tables")
     ap.add_argument("--skip-hsmm", action="store_true")
     ap.add_argument("--live", action="store_true",
                     help="add the causal detectors (detectors/hsmm_live.py, hsmm_lag.py) as arm(s) "
@@ -549,7 +552,7 @@ def main():
         truth = [truth_by_id[s["trial_id"]] for s in sequences]
 
     joint = hsmm_params.load(args.joint_params)
-    hsmm = HSMM(joint, d_max)
+    hsmm = HSMM.load(args.joint_params, d_max, durations=None if args.nb_durations else "auto")
     # SIL tokens from the config, not Lexicon's Breakfast defaults: 'kitchen' is not this corpus'
     # sentinel, and phrase() would leak 'stall idle' into every query card.
     lexicon = Lexicon(vocab, joint, sil_verb=sil_verb, sil_noun=sil_noun)
@@ -732,10 +735,11 @@ def main():
         injected = [(f, [(tuple(map(int, s)), g) for s in t["spans"]])
                     for g in pools.ERROR_TYPES for f, t in zip(flags[g], streams[g])]
         starts = lambda items: [metric_g.run_starts(t["verb_ids"], t["noun_ids"]) for t in items]  # noqa: E731
-        reports["control/hsmm-injected"] = metric_g.evaluate(
+        reports["control/hsmm-injected"] = harness.SCORER.evaluate(
             flags["healthy"], injected, starts(streams["healthy"]),
             [rs for g in pools.ERROR_TYPES for rs in starts(streams[g])],
-            error_types=pools.ERROR_TYPES)
+            error_types=pools.ERROR_TYPES,
+            **{"delay" if harness.METRIC == "H" else "deadline": harness.DELAY})
         p = reports["control/hsmm-injected"]["pooled"]
         print(f"\nCONTROL: the same HSMM on INJECTED anomalies, same sessions: precision "
               f"{p['precision']:.3f}  recall {p['recall']:.3f}  F1 {p['f1']:.3f}")

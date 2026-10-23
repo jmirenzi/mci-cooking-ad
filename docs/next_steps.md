@@ -24,7 +24,7 @@ Every option below gets its semantics from a fixed text embedding of each token.
 all-MiniLM-L6-v2, run in ~40 lines of numpy, with SIL tokens pinned to an orthogonal direction.
 The verb embedding space failed a nearest-neighbour sanity check, so all options act on nouns
 only. Scores below are metric A accuracy (`trial_loc`, Breakfast test split), the metric of the
-time. Any revival should re-measure under metric G.
+time. Any revival should re-measure under metric H.
 
 **Options measured so far:**
 
@@ -135,7 +135,8 @@ posterior-predictive simulation) is kept as a baseline. It may have more power o
 shift (a little slower in every state). If permutation power there is within ~10–15 points, use
 permutation alone; otherwise CUSUM alarms and permutation localises.
 
-**Evaluation.** No public dataset has real long-term within-task kitchen drift. Plan: real
+**Evaluation.** The synthetic route is being built: [`drift_synth.md`](drift_synth.md).
+No public dataset has real long-term within-task kitchen drift. Plan: real
 longitudinal data if obtainable (Oatmeal107 / CHEF-VL; the CMU older-adult meal-preparation
 study), else drift injected into real trial sequences at controlled onset, rate and size (abrupt,
 gradual, incremental, recurring). Test cases: null calibration; one state's duration +20%; one

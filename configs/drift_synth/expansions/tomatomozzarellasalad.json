@@ -1,0 +1,198 @@
+{
+ "1": {
+  "tokens": [
+   [
+    "cut",
+    "tomato"
+   ]
+  ],
+  "variants": []
+ },
+ "2": {
+  "tokens": [
+   [
+    "put",
+    "tomato"
+   ]
+  ],
+  "variants": []
+ },
+ "3": {
+  "tokens": [
+   [
+    "pour",
+    "oil"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "fatty",
+    "kind": "omit",
+    "anchor_step": "3",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   },
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "3",
+    "tokens": [
+     [
+      "add",
+      "syrup"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "3",
+    "tokens": [
+     [
+      "add",
+      "oil"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "4": {
+  "tokens": [
+   [
+    "dry",
+    "tomato"
+   ]
+  ],
+  "variants": []
+ },
+ "5": {
+  "tokens": [
+   [
+    "add",
+    "salt"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sour",
+    "kind": "insert",
+    "anchor_step": "5",
+    "tokens": [
+     [
+      "add",
+      "lemon"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "salty",
+    "kind": "omit",
+    "anchor_step": "5",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   },
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "5",
+    "tokens": [
+     [
+      "add",
+      "sugar"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "5",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "6": {
+  "tokens": [
+   [
+    "sprinkle",
+    "cheese"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "fatty",
+    "kind": "omit",
+    "anchor_step": "6",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "6",
+    "tokens": [
+     [
+      "add",
+      "cheese"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "7": {
+  "tokens": [
+   [
+    "wash",
+    "tomato"
+   ]
+  ],
+  "variants": []
+ },
+ "8": {
+  "tokens": [
+   [
+    "season",
+    "tomato"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "8",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "9": {
+  "tokens": [
+   [
+    "sprinkle",
+    "oregano"
+   ]
+  ],
+  "variants": []
+ }
+}

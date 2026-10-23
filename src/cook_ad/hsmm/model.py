@@ -1,6 +1,7 @@
 """class HSMM: the joint (recipe, subtask, duration) model at inference (docs/model.md)."""
 import functools
 import math
+from pathlib import Path
 from typing import NamedTuple
 
 import jax
@@ -9,7 +10,7 @@ import numpy as np
 from jax.scipy.special import logsumexp
 
 from cook_ad.hsmm import kernels
-from cook_ad.hsmm.params import JointHSMMParams, load, to_log_tables
+from cook_ad.hsmm.params import JointHSMMParams, hazard_tables, load, to_log_tables
 
 BUCKET = 64  # trials are padded to a multiple of this many ticks, so jit compiles once per bucket
 
@@ -67,18 +68,39 @@ _predict = jax.jit(kernels.predict)
 _update = jax.jit(kernels.update)
 
 
+def durations_path(model_path):
+    """Where stage 4b writes a model's nonparametric duration tables."""
+    p = str(model_path)
+    return (p[:-4] if p.endswith(".npz") else p) + ".durations.npz"
+
+
 class HSMM:
     """Parameters, their log tables, and the current belief b_t(r, i, j)."""
 
-    def __init__(self, params: JointHSMMParams, d_max: int):
+    def __init__(self, params: JointHSMMParams, d_max: int, duration_tables=None):
+        """`duration_tables`: optional (log_pmf, log_surv), each (K_R, K, D), replacing the
+        negative-binomial ones (hsmm/train/np_hazard.py); `table_durations` then tells the
+        channels that read (r, p) directly to read the tables instead."""
         self.params, self.d_max = params, d_max
         self.tables = to_log_tables(params, d_max)
+        self.table_durations = duration_tables is not None
+        if self.table_durations:
+            log_pmf, log_surv = (jnp.asarray(x, dtype=self.tables.log_pmf.dtype) for x in duration_tables)
+            self.tables = self.tables._replace(log_pmf=log_pmf, log_surv=log_surv,
+                                               **dict(zip(("log_h", "log_stay"), hazard_tables(log_pmf, log_surv))))
         self.k_recipe = int(self.tables.log_pi.shape[0])
         self.reset()
 
     @classmethod
-    def load(cls, path, d_max) -> "HSMM":
-        return cls(load(path), d_max)
+    def load(cls, path, d_max, durations="auto") -> "HSMM":
+        """`durations`: "auto" reads the stage-4b nonparametric tables next to the model
+        (`durations_path`) when they exist; None keeps the negative binomial; or a path."""
+        if durations == "auto":
+            durations = durations_path(path) if Path(durations_path(path)).exists() else None
+        if durations is None:
+            return cls(load(path), d_max)
+        from cook_ad.hsmm.train.np_hazard import load_tables
+        return cls(load(path), d_max, duration_tables=load_tables(durations))
 
     # ---- the per-trial view
 

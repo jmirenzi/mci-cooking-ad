@@ -3,7 +3,232 @@
 Dated entries, newest first, ≤ 5 lines each: what was tried, the number, the verdict, and the
 script or commit that measured it. Every number states its metric letter where it is a detection
 score ([`eval.md`](eval.md)). Scripts named here before 2026-10-14 were deleted in the restructure
-and are recoverable at the git tag `pre-restructure`.
+and are recoverable at the git tag `pre-restructure`. Scripts, options and `drift_synth.md` sections
+(§5–§9.9) named in entries from 2026-10-15 to 2026-10-20 were removed in the 2026-10-20 cleanup and
+are recoverable at the git tag `pre-cleanup`.
+
+## 2026-10-21 — the session-time generator, live, under metric H (delay 2)
+
+4 persons, stage 4b, F1 / healthy FPR at 10 / 30 / 250 sessions, H. Live, person only 0.360 /
+0.525 / 0.782 (FPR 0.87 / 0.64 / 0.23); prior λ = 1 0.465 / 0.688 / 0.826 (0.58 / 0.24 / 0.10).
+0.024–0.038 below G, same ranking: the prior wins at every size. `prior_experiment.sh`,
+runs/headline_H/synth_live_H_23.log (pools p00–p03), runs/drift_synth/prior/live_p0*.json.
+
+## 2026-10-21 — metric H (delay 2) is the headline; headline tables regenerated
+
+Jack's call: easier to defend, numbers close. `harness.METRIC` defaults to H; `COOK_METRIC=G` for
+G. Breakfast (stage 4b, train-picked), H: dish given hindsight 0.671, live 0.678, null 0.337 (run)
+/ 0.301 (tick). EPIC-Tent default hindsight 0.326, live 0.341; PREGO split 0.354 / 0.376. Live's
+alarms/10 min triple on EPIC-Tent (flicker inside runs is charged). README tables rewritten.
+
+## 2026-10-20 — the session-time generator validated (metric G)
+
+4 persons, step pools, stage 4b, F1 / healthy FPR at 10 / 30 / 250 sessions. Hindsight: person only
+0.352 / 0.534 / 0.798 (FPR 0.89 / 0.65 / 0.23), prior λ = 1 0.471 / 0.723 / 0.854 (0.64 / 0.25 / 0.07).
+Live, prior: 0.492 / 0.726 / 0.850. H delay 2 is 0.015–0.02 lower, same ranking. Cold start beats
+the day-based data (0.451 / 0.644); 250 level (0.869). `prior_experiment.sh`, runs/drift_synth/prior/.
+
+## 2026-10-20 — cleanup before merging `synthetic-drift`
+
+Deleted (tag `pre-cleanup`): the skip-idle, count and empirical-duration channels (idle scrubbing
+replaced them); `eval_synth_ad.py`, `diagnose_synth_*`, `validate_s_count.py`, `compare_s_count*`,
+`precheck.py`, the old overnight scripts; the fading and global-only prior, `--np-hazard`/`np_hsmm`,
+the duration-split grid. `eval_synth_prior.py` is the one protocol (§7); drift_synth.md is theory.
+
+## 2026-10-20 — s_count comparison rescored under metric H
+
+Same runs scored G, H delay 2, H delay 10 in one pass (compare_s_count.py). Verdict unchanged:
+Breakfast live precedence-only +0.014 (G) / +0.012 (H2, H10; CI lower end -0.000); extra-visit
+half -0.012 to -0.014 under G and H10; synthetic every rule within +-0.004 under all three. H10
+equals G within 0.004 F1; H2 is 0.007-0.03 lower (shorter window). runs/drift_synth/scount/gh/.
+
+## 2026-10-20 — generator: sessions only, no noise, no gaps, CC4D step totals
+
+Jack's four changes (drift_synth.md §2, §9.9). θ noise, speed, recipe draw and drift regimes step per
+session; recognizer noise 0; no gaps; each step's total drawn from CC4D (median of normal recordings,
+pooled log-sd 0.38), EPIC sets only the split and take/put/wash. Duration check 1.0x on every step
+(was 4.5x before scaling). Prior experiment regenerating in drift_synth_prior_sess/ (overnight_sess.sh).
+
+## 2026-10-20 — s_count is the precedence rule only
+
+Extra-visit half removed from `VisitCounts` and both detectors (Jack, after the comparison below).
+The JSON drops `ge`; s_count stays optional and off unless counts are passed.
+
+## 2026-10-20 — which s_count, if any (metric G)
+
+Ten rules, own alpha axis, picked on validation (`scripts/eval/compare_s_count.py`, `_breakfast.py`).
+Synthetic scrubbed: every rule +-0.006 of off at 30 and 250 sessions, also with 40 population
+sessions/recipe. Breakfast live: missing-step precedence alone +0.014 [+0.001, +0.026] (omission
+0.31 -> 0.46, healthy FPR same); the extra-visit half -0.012 (CI < 0); progress, touched-set and
+end-of-session rules never beat precedence. runs/drift_synth/scount/summary.md.
+
+## 2026-10-20 — training stage 4b: nonparametric hazard, gated (metric G)
+
+Cells with < 30 segments keep the exact NB tables. Synthetic scrubbed: 10 / 30 sessions unchanged
+(0.451 / 0.644), 250: 0.834 -> 0.869. Breakfast hindsight 0.659 -> 0.679, healthy FPR 0.47 -> 0.24.
+EPIC-Tent unchanged. The ungated cold-start loss was mostly a table-path bug (NB zero tail lost,
+CDF rounded); fixed in 7ec63c1. `scripts/train/fit_np_hazard.py`.
+
+## 2026-10-20 — nonparametric duration hazard tested on synthetic, Breakfast, EPIC-Tent (metric G)
+
+Kaplan-Meier hazard from training decodes, swapped for the NB tables. Synthetic scrubbed, 250
+sessions: 0.834 -> 0.871 (abandonment 0.13 -> 0.57); 10-30 sessions -0.02 to -0.035. Breakfast
+hindsight 0.659 -> 0.682 (train-picked), abandonment at alpha 0.005 0.35 -> 0.71. EPIC-Tent
+unchanged. next_steps.md §3.
+
+## 2026-10-19 — metric H (any flag hits, one miss per run), delay 2
+
+Breakfast dish-given test (97/group), metric H delay 2: hindsight 0.655, live 0.656, LLM 0.35-0.40,
+null (tick) 0.301. EPIC-Tent procedural default split (9 sessions, 51 spans): hindsight 0.326, live
+0.337, LLM 0.175, null 0.169. Live alarms/10 min 9.3 vs 2.6 under G: stretches expose flicker.
+`eval/metric_h.py`, `COOK_METRIC=H`; delay sweep 0/2/5/10 on EPIC-Tent only.
+
+## 2026-10-19 — idle scrubbing beats every add-on (metric G)
+
+Same persons refit on idle-free streams: the plain HSMM scores 0.451 / 0.644 / 0.834 at 10 / 30 /
+250 sessions, with healthy FPR 0.03 at 250 (idle kept: 0.218 / 0.274 / 0.409; best add-ons 0.827 at
+FPR 0.11). s_count adds nothing on scrubbed streams. Abandonment (0.13) is what's left. §9.8.
+
+## 2026-10-19 — idle scrubbed before the model; overnight rerun started
+
+`data/scrub.py`: idle ticks dropped before training and scoring ("A, pause, A" merges; Jack);
+`scrub_kept.json` keeps original ticks. `eval_synth_prior.py --variant cal_scrub`,
+`overnight_scrub.sh`: same 4 persons refit, step-level pools, plain HSMM and + count channel.
+
+## 2026-10-18 — skip-idle population prior swept to W = 100 (metric G)
+
+W = 30 / 100: 0.371 / 0.371 (10 sessions), 0.576 / 0.578 (30), 0.794 / 0.827 (250; healthy FPR
+0.11). Cold start levels off by W = 30. W was compared on test, not picked on validation yet.
+
+## 2026-10-18 — population prior for the skip-idle channel (metric G)
+
+W population pseudo-counts per row (prior arm): W = 10 gives 0.354 / 0.561 / 0.767 F1 at 10 / 30 / 250
+sessions (healthy FPR 0.80 / 0.36 / 0.20), against 0.292 / 0.444 / 0.727 without. On the re-scored
+Breakfast-injector pool the channels also help: 0.687 -> 0.744 at 250. `--struct-prior`, §9.7.
+
+## 2026-10-18 — step-level injectors; idle-skipping, count and empirical-duration channels (metric G)
+
+Step-level pools (`inject.py`): the HSMM alone scores 0.409 at 250 sessions (transposition 0.08,
+repetition 0.00): idle gaps hide first-order context. + skip-idle + count: 0.706; + empirical short
+duration: 0.727 (omission 0.88, transposition 0.84, repetition 0.86, abandonment 0.68), healthy
+FPR 0.26. Cold start (10 / 30 sessions) 0.29 / 0.44. drift_synth.md §9.7.
+
+## 2026-10-18 — re-scored on oracle-confirmed anomalies (metric G)
+
+Same models, non-anomalous injections dropped from val and test: F1 at 250 sessions 0.393 -> 0.687
+(prior), healthy FPR 0.05. Transposition recall 0.67; omission 0.19, abandonment 0.01, repetition
+0.05 stay low. `eval_synth_prior.py --pool real`, drift_synth.md §9.6.
+
+## 2026-10-18 — diagnosis: two thirds of structural injections are not anomalies
+
+Oracle against 3,400 extra healthy sessions per person: only 34% of abandonment/omission/
+transposition/repetition injections are outside healthy behaviour (gaps and take/put/wash are hit
+uniformly; repetitions merge in place). HSMM hits 9–69% of the real ones; omissions need counting
+(74% count-only). NB durations: right width, fat left tail. `diagnose_synth_injections.py`, §9.5.
+
+## 2026-10-18 — calibrated prior experiment on the revised generator (metric G)
+
+Mean F1 person only → prior (split α) at 10 / 30 / 250 sessions: 0.161 → 0.180, 0.210 → 0.228,
+0.362 → 0.393 (healthy FPR 0.35 → 0.12 at 250). Old generator: 0.117 → 0.147, 0.185 → 0.301,
+0.353 → 0.373. Injected repetition recall still 0.04–0.08. docs/drift_synth.md §9.4.
+
+## 2026-10-18 — overnight rerun on the revised generator started
+
+`overnight_v2.sh`: all 37 conditions, sanity plots, synthetic AD eval (noise on/off), calibrated prior
+experiment. fine_motor pools now target θ 0.6 / 0.75 / 0.9 (0.6 / 1.1 / 1.7 repeats per session);
++0.2 / 0.4 from a healthy θ0 would have stayed below the hinge. 18-recipe outputs archived.
+Then made opt-in (`--capability-pools`): for now the AD eval scores injected errors only (Jack).
+The AD eval was then stopped mid-training and its output deleted: it uses the uncalibrated generator,
+and only the calibrated prior experiment finished overnight.
+
+## 2026-10-18 — take/put/wash no longer stretch with the CC4D step scale
+
+Logistics inherited their step's scale (a `take salt` next to a 14× step lasted 36 s). Now they keep
+EPIC time (median 1.7 s) and the scales are refit on the step's own actions: global median 4.51,
+session medians within 6% of CC4D on all 8 recipes. `calibrate_cc4d.py --write-scales`.
+
+## 2026-10-18 — rollout fixes: no doubled actions, no fetched dishes, narrower durations
+
+3-person rollouts (`rollout_examples.py`) had 153 back-to-back identical actions in 480 sessions
+(put-backs after the recipe's own put, same-ingredient additions, aliased sauces), `take pancake` in
+every pancake session, and 13× spreads on one person's `take banana`. Now 0 doubled actions in 1200
+sessions, 0 fetched dishes, durations log-sd × 0.5 (mean kept).
+
+## 2026-10-17 — generator revision: 8 recipes, no healthy repeats, two-sided flavour knobs
+
+18-recipe sessions were 40 runs (Breakfast 6), 32 pairs per recipe (8), all unique; cut to 8 simple
+recipes. Healthy fine_motor repeated 12.5% of its tokens (52% merged into one run): now hinged at
+θ 0.5, healthy θ0 U(0, 0.4), 0 repeats in 634 null sessions. sour/sweet/salty/fatty two-sided with
+LLM affinity (awaiting review). Not yet regenerated or re-evaluated.
+
+## 2026-10-17 — CC4D-calibrated prior rerun (metric G)
+
+Mean F1, person only → prior λ = 1 (split α), at 10 / 30 / 250 sessions: 0.117 → 0.147, 0.185 → 0.301,
+0.353 → 0.373; healthy FPR at 250 is 0.23 → 0.10. Every person gains at 30 and 250, p00 included; p00
+and p03 tie or lose at 10 (loose α_trans). Fading = fixed again. `overnight_cal.sh`, 4 h 47 min.
+
+## 2026-10-17 — training size counted in sessions; calibrated rerun started
+
+`eval_synth_prior.py` splits by session index, not day: train on the first N sessions, validate on
+250–324, test on 325–399 (same 150 held-out sessions per person). The CC4D-calibrated overnight
+run (`overnight_cal.sh`, N = 10 / 30 / 250 sessions) was launched on this split.
+
+## 2026-10-16 — split transition α and a fading prior (metric G)
+
+Split α turns the fixed prior's 100–200-day loss into a gain or tie (mean F1 0.382 / 0.394 against
+person-only 0.360 / 0.399). A fading prior λ₀/(1+n/n₀) is within 0.02 of fixed everywhere. p00
+(100–200 days) and p03 (10–30) still lose with any prior. The CC4D-calibrated overnight rerun was
+started, then stopped by Jack: early problems first.
+
+## 2026-10-16 — global population prior + per-person fine-tune (metric G)
+
+60 simulated people → one count prior. Mean over 4 persons, F1 person-only → +prior: 10 days
+0.152 → 0.200, 30 days 0.241 → 0.301, 100 days 0.360 → 0.362, 200 days 0.398 → 0.377. λ (1–100)
+barely matters. All 4 losing cells are validation picks jumping to a loose α. CC4D: real orders
+are as varied as uniform, real step time is 4–5× ours (`docs/drift_synth.md` §9.2–9.3).
+
+## 2026-10-16 — lowering the synthetic healthy alarm floor (metric G)
+
+Hindsight F1 / healthy-trial FPR: baseline 0.202 / 0.90; 600 training days 0.238 / 0.51 (learns
+the noise, structural recall falls); habit 2 0.214 / 0.86; noise × 0.5 0.263 / 0.78; all three
+0.290 / 0.56; noise-free 0.355 / 0.45. The residual floor is unseen transitions (70–80% of
+flags). `s_recipe_transition` duplicates `s_transition` here (`docs/drift_synth.md` §9.1).
+
+## 2026-10-16 — HSMM anomaly detector on synthetic data (metric G)
+
+One person (seed 0, p06), fitted on 265 normal sessions. Injected errors: F1 0.355 noise-free,
+0.202 with recognizer noise (healthy-trial FPR 0.45 → 0.90; unseen transitions set the floor).
+slow and fine_motor at up to +0.55 θ: no per-trial signal (Δ alarms vs twin ≈ 0). Found and fixed:
+metric G's alarms/10 min assumed 1 s ticks (`GridScore(tick_seconds)`).
+
+## 2026-10-15 — synthetic drift data: all conditions + sanity plots (M4)
+
+31 conditions × 3 seeds × 8 persons generated (about 22k sessions, 70 s). At |Δθ| 0.45 every knob
+moves its own feature group and leaves the others at MC noise. The weakest is mise_en_place
+(bigrams 3.9×). Dose-response is monotone. Sessions run 2.8 min against CC4D's 15.7, because
+waits are unmodelled (`docs/drift_synth.md` §8, `scripts/drift_synth/sanity_plots.py`).
+
+## 2026-10-15 — synthetic drift data: step expansions (M2)
+
+gemma3, one pass per step: zero variants, padded pairs ("add pan"). Two passes plus validation:
+257/257 steps, 26 calorie omits, 0 substitutes. Asked per step it put sour into almost every step;
+one call per recipe gives 21 sites. `null` generates: median session 2.9 min against CC4D's ~15,
+because EPIC waits are seconds. Waiting on Jack's spot-check.
+
+## 2026-10-15 — synthetic drift data: phases, tags, seeded generator (M1 + M3)
+
+The 18 recipes were approved. gemma3 phases needed two prompt rules: adding to a hot pan is cook,
+and a recipe with no heat has no cook steps. Its tags proposal over-tags (knife and spoon as
+ingredient, whisk as heat, 34 fine-motor verbs), so it is left as proposed for review. Stages 4–10
+pass the spec's 9 tests on a toy world (`tests/test_drift_synth_generator.py`). EPIC durations
+have no long waits, so sessions will run shorter than CC4D recordings unless expansions use `wait`.
+
+## 2026-10-15 — synthetic drift data: pre-checks
+
+Branch `synthetic-drift`. CC4D has no public fine-grained actions, so durations and exemplars come
+from EPIC-100. All 24 task graphs validate. 18 of 24, including every stovetop dish, leave
+`mise_en_place` nothing to reorder. Proposed 18 recipes, every knob covered by ≥ 6
+(`scripts/drift_synth/precheck.py`, `docs/drift_synth.md` §5). Waiting on Jack's approval.
 
 ## 2026-10-15 — next steps written down
 

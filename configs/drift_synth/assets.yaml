@@ -1,0 +1,20 @@
+# Offline LLM stages (1-3). Every response is cached under cache_dir (keyed on base_url + model +
+# prompt + schema), and the parsed results are committed under configs/drift_synth/.
+llm:
+  model: gemma3:27b
+  base_url: http://localhost:11434/v1
+  temperature: 0.0
+  cache_dir: dataset/drift_synth/llm_cache   # never delete
+  concurrency: 4                             # parallel requests in Stage 3
+paths:
+  cc4d: dataset/captaincook4d
+  epic_annotations: dataset/epic_kitchens/annotations
+  vocab: dataset/processed/epic/vocab.json
+  phases: configs/drift_synth/phases
+  tags: configs/drift_synth/tags.yaml
+  expansions: configs/drift_synth/expansions
+  knobs: configs/drift_synth/knobs.yaml
+  affinity: configs/drift_synth/affinity.yaml
+  reports: runs/drift_synth/reports
+tag_set: [sour, fat, sweet, salty, fine_motor, heat, cleaning, ingredient, tool, container]
+tag_batch_size: 40

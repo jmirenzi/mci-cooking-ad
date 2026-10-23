@@ -1,0 +1,251 @@
+{
+ "1": {
+  "tokens": [
+   [
+    "add",
+    "butter"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "fatty",
+    "kind": "omit",
+    "anchor_step": "1",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "1",
+    "tokens": [
+     [
+      "add",
+      "butter"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "2": {
+  "tokens": [
+   [
+    "add",
+    "salt"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "salty",
+    "kind": "omit",
+    "anchor_step": "2",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   }
+  ]
+ },
+ "3": {
+  "tokens": [
+   [
+    "add",
+    "cheese"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "fatty",
+    "kind": "omit",
+    "anchor_step": "3",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "3",
+    "tokens": [
+     [
+      "add",
+      "cheese"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "4": {
+  "tokens": [
+   [
+    "mix",
+    "cheese"
+   ],
+   [
+    "mix",
+    "pepper"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "fatty",
+    "kind": "omit",
+    "anchor_step": "4",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   },
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "4",
+    "tokens": [
+     [
+      "add",
+      "sugar"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "4",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "5": {
+  "tokens": [
+   [
+    "open",
+    "microwave"
+   ],
+   [
+    "put",
+    "bowl"
+   ],
+   [
+    "close",
+    "microwave"
+   ],
+   [
+    "wait",
+    "microwave"
+   ]
+  ],
+  "variants": []
+ },
+ "6": {
+  "tokens": [
+   [
+    "add",
+    "pepper"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sour",
+    "kind": "insert",
+    "anchor_step": "6",
+    "tokens": [
+     [
+      "add",
+      "vinegar"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "7": {
+  "tokens": [
+   [
+    "add",
+    "water"
+   ]
+  ],
+  "variants": []
+ },
+ "8": {
+  "tokens": [
+   [
+    "cut",
+    "pepper"
+   ]
+  ],
+  "variants": []
+ },
+ "9": {
+  "tokens": [
+   [
+    "put",
+    "bowl"
+   ]
+  ],
+  "variants": []
+ },
+ "10": {
+  "tokens": [
+   [
+    "put",
+    "cup"
+   ],
+   [
+    "turn-on",
+    "microwave"
+   ],
+   [
+    "wait",
+    "cup"
+   ]
+  ],
+  "variants": []
+ },
+ "11": {
+  "tokens": [
+   [
+    "mix",
+    "mixture"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "11",
+    "tokens": [
+     [
+      "add",
+      "syrup"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "11",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ }
+}

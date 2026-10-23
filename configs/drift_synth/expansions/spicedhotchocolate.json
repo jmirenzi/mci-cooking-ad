@@ -1,0 +1,174 @@
+{
+ "1": {
+  "tokens": [
+   [
+    "put",
+    "cup"
+   ],
+   [
+    "wait",
+    "cup"
+   ]
+  ],
+  "variants": []
+ },
+ "2": {
+  "tokens": [
+   [
+    "add",
+    "cinnamon"
+   ]
+  ],
+  "variants": []
+ },
+ "3": {
+  "tokens": [
+   [
+    "mix",
+    "chocolate"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "3",
+    "tokens": [
+     [
+      "add",
+      "cream"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "5": {
+  "tokens": [
+   [
+    "add",
+    "sugar"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sweet",
+    "kind": "omit",
+    "anchor_step": "5",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   },
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "5",
+    "tokens": [
+     [
+      "add",
+      "syrup"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "5",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "6": {
+  "tokens": [
+   [
+    "fill",
+    "cup"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sour",
+    "kind": "insert",
+    "anchor_step": "6",
+    "tokens": [
+     [
+      "add",
+      "lime"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "7": {
+  "tokens": [
+   [
+    "put",
+    "cup"
+   ],
+   [
+    "turn-on",
+    "microwave"
+   ],
+   [
+    "wait",
+    "microwave"
+   ]
+  ],
+  "variants": []
+ },
+ "8": {
+  "tokens": [
+   [
+    "add",
+    "chocolate"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "8",
+    "tokens": [
+     [
+      "add",
+      "sugar"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "8",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "8",
+    "tokens": [
+     [
+      "add",
+      "butter"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ }
+}

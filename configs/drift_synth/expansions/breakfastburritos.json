@@ -1,0 +1,215 @@
+{
+ "1": {
+  "tokens": [
+   [
+    "mix",
+    "egg"
+   ]
+  ],
+  "variants": []
+ },
+ "2": {
+  "tokens": [
+   [
+    "put",
+    "bowl"
+   ],
+   [
+    "wait",
+    "microwave"
+   ]
+  ],
+  "variants": []
+ },
+ "3": {
+  "tokens": [
+   [
+    "add",
+    "sauce"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sour",
+    "kind": "insert",
+    "anchor_step": "3",
+    "tokens": [
+     [
+      "add",
+      "lemon"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "3",
+    "tokens": [
+     [
+      "add",
+      "syrup"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "4": {
+  "tokens": [
+   [
+    "sprinkle",
+    "cheese"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "fatty",
+    "kind": "omit",
+    "anchor_step": "4",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "4",
+    "tokens": [
+     [
+      "add",
+      "butter"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "5": {
+  "tokens": [
+   [
+    "mix",
+    "egg"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "5",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "5",
+    "tokens": [
+     [
+      "add",
+      "cream"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "6": {
+  "tokens": [
+   [
+    "add",
+    "egg"
+   ]
+  ],
+  "variants": []
+ },
+ "7": {
+  "tokens": [
+   [
+    "roll",
+    "wrap"
+   ]
+  ],
+  "variants": []
+ },
+ "8": {
+  "tokens": [
+   [
+    "pour",
+    "egg"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "8",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "9": {
+  "tokens": [
+   [
+    "add",
+    "sauce"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sour",
+    "kind": "insert",
+    "anchor_step": "9",
+    "tokens": [
+     [
+      "add",
+      "lime"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "9",
+    "tokens": [
+     [
+      "add",
+      "sugar"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "10": {
+  "tokens": [
+   [
+    "put",
+    "wrap"
+   ]
+  ],
+  "variants": []
+ },
+ "11": {
+  "tokens": [
+   [
+    "sprinkle",
+    "oregano"
+   ]
+  ],
+  "variants": []
+ }
+}

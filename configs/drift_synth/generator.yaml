@@ -1,0 +1,50 @@
+# The seeded generator (Stages 4-9, docs/drift_synth.md). Values marked (open) are Jack's to
+# tune after the sanity plots.
+paths:
+  recipes: configs/drift_synth/recipes.yaml
+  cc4d: dataset/captaincook4d
+  phases: configs/drift_synth/phases
+  tags: configs/drift_synth/tags.yaml
+  knobs: configs/drift_synth/knobs.yaml
+  affinity: configs/drift_synth/affinity.yaml
+  expansions: configs/drift_synth/expansions
+  vocab: dataset/processed/epic/vocab.json
+  epic_annotations: dataset/epic_kitchens/annotations
+  durations_cache: dataset/drift_synth/durations_epic.json   # refit if absent
+  out: dataset/processed/drift_synth
+
+export:
+  tick_seconds: 1.0          # the HSMM configs (configs/drift_synth/hsmm.yaml)
+  sil: [stall, idle]         # (verb, noun) for gaps
+  fps: 20                    # parse_epic.FPS_REF: the frame grid the tick vote runs on
+
+logistics_verbs: {take: take, put: put, wash: wash}
+
+durations:                   # docs/drift_synth.md §4: one source per quantity
+  source: epic               # take/put/wash times and the split within a step
+  step_times: configs/drift_synth/step_times.json   # CC4D step totals (fit_step_times.py)
+  max_event_s: 600           # cap on one event's duration
+  sigma_scale: 0.5           # log-sd of every draw x this, mean kept (durations.narrowed): one
+                             # person varies less than CC4D's or EPIC's many people
+
+person:
+  repertoire: [6, 10]        # recipes per person, inclusive
+  dirichlet_alpha: 1.0       # recipe frequency weights
+  theta0: [0.25, 0.75]       # each knob's baseline ~ U(lo, hi)
+  theta0_by_knob:            # optional per-knob [lo, hi] overriding theta0
+    fine_motor: [0.0, 0.4]   # healthy: below the repetition hinge (knobs.yaml), so no repeats
+  habit: 0.0                 # routine step order: 0 = uniform over topological orders; or [lo, hi]
+
+session_noise:               # (open) logit-space sigma per knob, drawn every session
+  sigma: {sour: 0.3, sweet: 0.3, salty: 0.3, fatty: 0.3, mise_en_place: 0.3, tidy: 0.3, slow: 0.2,
+          fine_motor: 0.2}
+  speed_rho: 0.7             # AR(1) on log speed, over sessions
+  speed_sigma: 0.08
+
+recognizer:                  # off (Jack, 2026-10-20); rates once used: sub verb 0.03, sub noun
+  p_sub_verb: 0.0            # 0.05, delete 0.04, insert 0.03, jitter 0.3 s
+  p_sub_noun: 0.0
+  p_delete: 0.0
+  p_insert: 0.0
+  jitter_s: 0.0
+  min_event_s: 0.2

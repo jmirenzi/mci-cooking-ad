@@ -196,7 +196,8 @@ class ChatClient:
                  api_key_env=DEFAULT_API_KEY_ENV, cache_dir=None, rpm=None,
                  max_requests=None, temperature=0.0, timeout=DEFAULT_TIMEOUT,
                  max_retries=DEFAULT_MAX_RETRIES, dry_run=False, extra_headers=None,
-                 concurrency=None, max_tokens=None, dry_run_reply="No Anomaly"):
+                 concurrency=None, max_tokens=None, dry_run_reply="No Anomaly",
+                 response_format=None):
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_key_env = api_key_env
@@ -205,6 +206,9 @@ class ChatClient:
         # without a max_tokens field, so folding a None into either the body or the cache key
         # would orphan every one of them.
         self.max_tokens = max_tokens
+        # An OpenAI `response_format` (e.g. a json_schema for structured output). Like max_tokens:
+        # sent and keyed on only when set, so existing cache entries keep their keys.
+        self.response_format = response_format
         # What dry_run returns instead of calling out. Overridable because "No Anomaly" is a valid
         # reply under the verdict protocols and a double parse failure under the predictive one.
         self.dry_run_reply = dry_run_reply
@@ -265,6 +269,8 @@ class ChatClient:
         # payloads to every client that existed before this parameter did.
         if self.max_tokens is not None:
             payload["max_tokens"] = self.max_tokens
+        if self.response_format is not None:
+            payload["response_format"] = self.response_format
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
     def _cache_path(self, key):
@@ -303,6 +309,8 @@ class ChatClient:
         }
         if self.max_tokens is not None:
             payload["max_tokens"] = self.max_tokens
+        if self.response_format is not None:
+            payload["response_format"] = self.response_format
         body = json.dumps(payload).encode()
         headers = {
             "Authorization": f"Bearer {self._api_key()}",

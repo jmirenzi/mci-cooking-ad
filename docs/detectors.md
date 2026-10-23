@@ -22,7 +22,7 @@ and are covered in [`llm.md`](llm.md). The model they read is in [`model.md`](mo
   dish (int), a (K_R,) log prior, or `None` (infer it). `spans` is the ground truth, as `Span(start,
   end, kind)`.
 - `Alarm(tick, channel, score, known_at)`. `tick` is the tick the alarm is *about*, and is what
-  metric G scores. `known_at` is the first tick at which the detector could have raised it.
+  the metrics score. `known_at` is the first tick at which the detector could have raised it.
 - `Detection(alarms, trace)`. `trace` is detector-specific: `LiveTrace`, `HindsightTrace`, the LLM
   verdicts, or parse statistics.
 - `OperatingPoint(alpha, kappa)`. `alpha` is one tail mass for every channel or a per-channel
@@ -251,6 +251,41 @@ with q^(r) renormalised within recipe r (`recipe_transition_prob`). This is the 
 helps most, since r̂ is pinned by everything after the transition. At K_R = 1 its bad set is empty
 (§2.3).
 
+### 3.6a Missing step (`s_count`, optional, off by default)
+
+"Does the subtask beginning now for the first time skip one that should have come before it?"
+Present only when the detector is given fitted statistics (`hsmm/visit_counts.py:VisitCounts`,
+§5.6), so the seven-channel detector is unchanged without them; nothing loads them by default. A
+first-order model sees adjacent pairs only: a step skipped where its neighbours may follow each
+other leaves every transition ordinary.
+
+The entry mass into i at t is the switch posterior summed over what was left,
+m_t(r, i) = Σ_k Σ_j q^(r)_t(k, j, i) (`entry_one_tick`). At t = 0 it is the posterior itself.
+Summing it over the past, within recipe r, gives the expected visits so far:
+
+$$
+\hat c_{t,r,k} = \sum_{t' < t} \frac{m_{t'}(r, k)}{P(r \mid o_{0:t'})}.
+$$
+
+A beginning of i at t that would be its first visit (ĉ_{t,r,i} < ½) is bad at α if some k with
+ĉ_{t,r,k} < ½ has P̂(k not before i's first visit | r, i) ≤ α (k is skipped, or i moved ahead of
+it), or if P̂(i visited | r) ≤ α (a subtask this recipe never had; `VisitCounts.p_first`). Then
+
+$$
+\text{count}_t = \min\Bigl(1,\ \sum_{r,i} m_t(r, i)\ \mathbb 1[\text{bad}_\alpha(r, i)]\Bigr),
+$$
+
+flagged at count_t > κ (`CountState.step`). Using expected visits rather than their distribution
+is an approximation: the exact belief would also have to track which subtasks have been visited.
+When the belief is sure (one-hot entries on the hindsight path) the live rule reduces exactly to
+hindsight's (`tests/test_count_live.py`).
+
+Why this rule: it catches omissions a first-order model misses on Breakfast (where coarse
+actions can follow each other in several orders) without healthy alarms; on idle-scrubbed
+synthetic streams skips are already rare transitions, so it is off by default. The other rules
+tried (extra visits, a touched-set model, progress rank, an end-of-session check, "the usual
+successor began") and their numbers are in [`logbook.md`](logbook.md), 2026-10-20.
+
 ### 3.7 Worked example: a healthy step change
 
 "Pour milk" (typical length ~5 ticks) is followed by "take bowl", with the switch at elapsed 9.
@@ -270,8 +305,8 @@ early_9 ≈ 0. Nothing fires.
 ### 3.8 When several channels fire on one event
 
 A skipped step k → i can raise trans_t and the emission p-value on the same tick. The emission
-surprise is caused by the transition. Each channel currently raises its own alarm; metric G merges
-alarms within one run of constant (verb, noun), so this does not inflate the false-alarm count.
+surprise is caused by the transition. Each channel currently raises its own alarm; metric H counts at most one miss per run of
+constant (verb, noun), so this does not inflate the false-alarm count.
 Naming one cause per event (transition before duration before stall before emission) matters only
 for narration, which Live does not have yet.
 
@@ -315,7 +350,7 @@ trace for every α. Every alarm has `known_at = T − 1`.
 The emission channels' π̃ is computed under r̂. Their threshold is indexed by z*_t. The duration
 and transition channels read z*'s boundaries. `s_dur_two` sits on a segment's last tick, before
 the next tick reveals that the segment ended. Live (§3) was built to remove all of this. Under
-metric G it costs no F1 (README, "Results").
+metrics G and H it costs no F1 (README, "Results").
 
 ### 5.1 Emission channels and the dilution correction
 
@@ -396,6 +431,25 @@ $$
 a signed excess, not a surprisal: "ordinary in general, wrong for this recipe". It can be
 negative, and so can its threshold, so the threshold is +inf on every tick that is not a segment
 start. At K_R = 1 it is zero with +inf thresholds (§2.3).
+
+### 5.6 Missing step (`s_count`, optional)
+
+The statistics are fitted once, after training (`scripts/train/fit_visit_counts.py`). The final
+model decodes its own training sessions; for every recipe r it stores N_r, for every subtask j the
+number of sessions that visit it, and for every pair the number of those in which k came before
+j's first visit. Probabilities are smoothed as (n + 0.5)/(N + 1). Idle subtasks (most likely verb
+`stall`) are not counted. On the decoded path z*, at the first visit of each subtask k:
+
+$$
+s_{\text{count}} = -\log \min\Bigl(\hat P(k \text{ visited} \mid \hat r),\
+\min_{j \text{ not yet visited}} \hat P(j \text{ not before } k \mid \hat r, k)\Bigr)
+$$
+
+(`VisitCounts.path_pvalues`). The threshold is −log α, like the duration channels (the p-values
+are frequencies, not model tails). The smallest reachable p is 0.5/(N + 1), so a recipe with few
+training sessions cannot fire: about 0.1 at 4 sessions per recipe, 0.012 at 40. In the validation
+grid the channel sits with the transition channels (`harness.TRANSITION_CHANNELS`) for
+Hindsight and on its own α axis for Live (`eval_synth_prior.py --core-count`).
 
 ---
 
@@ -482,5 +536,6 @@ README ("Results") and [`eval.md`](eval.md).
 | Hindsight | `detectors/hsmm_hindsight.py:HindsightHSMMDetector` (`traces`, `assemble`, `thresholds`, `flags`, `detect_many`) |
 | Hindsight channels | `HindsightHSMMDetector.emission_surprise`, `stall_surprise`, `duration_surprise`, `transition_surprise`, `recipe_transition_surprise` |
 | Hindsight trace | `hsmm_hindsight.py:HindsightTrace` |
+| missing step (`s_count`, optional) | `hsmm/visit_counts.py:VisitCounts` (`fit`, `path_pvalues`, `p_seen`, `precedence`, `p_first`); `HindsightHSMMDetector(counts=)`, `count_surprise`; `LiveHSMMDetector(counts=)`, `hsmm_live.py:entry_one_tick`, `entry_table`, `CountState`; `scripts/train/fit_visit_counts.py` |
 | narration | `detectors/narrate.py:narrate`, `Query`, `Lexicon`, `severity`, `expected_given`, `expected_pair`, `missing_step` |
-| tests | `tests/test_detector_contract.py`, `test_live.py` (R2, exactness), `test_hindsight.py`, `test_thresholds.py`, `test_narrate.py` |
+| tests | `tests/test_detector_contract.py`, `test_live.py` (R2, exactness), `test_hindsight.py`, `test_thresholds.py`, `test_narrate.py`, `test_count_live.py` (s_count) |

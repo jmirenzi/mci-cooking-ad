@@ -126,12 +126,49 @@ Both are regularisation, chosen on a nested dev split (`scripts/data/make_dev_sp
 the grid and τ = 30 the best. Without backoff the transition table is a lookup of the training
 bigrams: flagged healthy runs were 0.8% on train against 4.3% on test.
 
+**A population prior across people** (`hsmm/train/global_prior.py`, post-fit) is the same move
+as backoff, across people rather than recipes:
+- Run-length counts of first runs and run-to-run transitions per recipe, from many people's streams, keyed by (verb, noun).
+- Each of a person's rows gets λ × the population's row, after lifting every cell to count 1, so λ = 0 is the identity.
+- Used only on the synthetic drift data so far ([`drift_synth.md`](drift_synth.md) §9.2): it helps at cold start, and with a single α it can erase the transition channel's catches.
+
 ## 4. Stage 4: duration refit
 
 `scripts/train/refit_durations.py` → `hsmm/train/refit.py:refit_durations`. Decode every training
 trial with the smoothed model (`synthetic/generate.trajectories_from_real_joint`, under r̂ or the
 labelled dish), histogram the segment lengths per (recipe, state), and refit (ρ, p) with the §5
 fit at κ = 0.001. Each trial's last segment is imputed as censored, as in EM.
+
+### Stage 4b: the nonparametric duration hazard
+
+`scripts/train/fit_np_hazard.py` → `hsmm/train/np_hazard.py:fit_np_hazard`. The final model decodes
+the training split, as in stage 4. Each (recipe, subtask) cell's hazard is then the discrete
+Kaplan–Meier one, shrunk toward the state's hazard pooled over recipes:
+
+$$
+\hat h_{ij} = \frac{n_{ij} + \kappa\, g_{ij}}{N_{i,\ge j} + \kappa},
+$$
+
+with n_ij the cell's training segments that ended at exactly j ticks, N_{i,≥j} those still running
+at j (the censored last segment is at risk up to its length and never an event), and g_ij the
+pooled hazard, itself shrunk with κ₀ = 2 toward the negative binomial's. Counts are smoothed over
+j (triangular kernel, half-width 1) and κ = 5. The tables follow as pmf_j = h_j ∏_{j'<j}(1 − h_j')
+and surv_j = ∏_{j'<j}(1 − h_j'), and everything downstream reads (log_pmf, log_surv).
+
+A cell with fewer than 30 training segments keeps the negative binomial outright: on few segments
+the empirical shape is noise, and ungated it cost 0.02–0.035 F1 at 10–30 sessions. The tables
+are written next to the model as `<model>.durations.npz` (`hsmm/model.py:durations_path`).
+`HSMM.load` reads them automatically (`durations=None` keeps the NB), and `s_dur_two` and the
+early-exit bins then read the tables (`HSMM.table_durations`). Why: the negative binomial has the
+right spread but puts ~10% of mass below where real durations start, so a step cut short never
+looks short (measurements: logbook.md, 2026-10-20).
+
+### Stage 5 (optional): visit counts
+
+`scripts/train/fit_visit_counts.py` → `hsmm/visit_counts.py:VisitCounts.fit`. The final model decodes
+the training split (as stage 4), and per recipe which subtasks each session visits, and which came
+before each one's first visit, are written as JSON next to the model. Only the optional `s_count`
+(missing-step) channel reads them (detectors.md §3.6a, §5.6); `train_hsmm.sh` does not run this stage.
 
 ## 5. The duration fit
 
@@ -179,6 +216,7 @@ dev split.
 | Concept | Where |
 |---|---|
 | the pipeline | `scripts/train/train_hsmm.sh` |
+| population prior (post-fit) | `hsmm/train/global_prior.py:count_global`, `apply_global_prior`, `state_pairs` |
 | lexical warm start | `hsmm/train/lexical_init.py:lexical_to_joint`, `observed_pairs`, `anchored_emission_counts`, `hard_segments`, `cluster_recipes` |
 | dish labels as recipes | `lexical_init.py:recipe_label_assignment`, `pinned_recipe_log_prior` |
 | soft joint EM | `hsmm/train/joint_em.py:run_joint_em`, `e_step`, `m_step`, `make_lam_schedule`, `infer_recipe` |
@@ -186,7 +224,9 @@ dev split.
 | hard EM | `hsmm/train/hard_em.py:hard_em_step`, `hard_counts` |
 | smoothing | `hsmm/train/smoothing.py:shifted_mode_counts`, `backoff_counts` |
 | duration refit | `hsmm/train/refit.py:refit_durations`, `duration_histograms` |
+| nonparametric hazard (stage 4b) | `scripts/train/fit_np_hazard.py`; `hsmm/train/np_hazard.py:fit_np_hazard`, `tables_from_hazard`, `save_tables`, `load_tables`; `hsmm/model.py:HSMM(duration_tables=)`, `HSMM.load(durations=)`, `durations_path` |
+| visit counts (stage 5) | `scripts/train/fit_visit_counts.py`; `hsmm/visit_counts.py:VisitCounts` |
 | NB fit, censoring, shrinkage | `hsmm/train/durations_fit.py:fit_durations_shrunk`, `impute_censored_histogram`, `newton_update_r`, `method_of_moments_r`, `update_p_given_r` |
 | clustering metrics | `hsmm/train/metrics.py:adjusted_rand`, `matched_accuracy`, `effective_k` |
 | XLA autotuning off (EPIC-scale compiles) | `xla_env.py:disable_gpu_autotuning` |
-| tests | `tests/test_joint_em.py`, `test_lexical_init.py`, `test_messages.py`, `test_durations.py` |
+| tests | `tests/test_joint_em.py`, `test_lexical_init.py`, `test_messages.py`, `test_durations.py`, `test_np_hazard.py` |

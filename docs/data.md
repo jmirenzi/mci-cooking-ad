@@ -232,7 +232,7 @@ control arm and the trial figure.
 new streams, a `window`, the anomalous `anomaly_ticks`, the scored `spans`, and provenance
 (`tick_map`, `edited_ticks`).
 
-| Type | Edit | Span scored by metric G |
+| Type | Edit | Span scored by metric H |
 |---|---|---|
 | substitution | one interior segment's verb **or** noun (chosen at random) → a token with no training evidence for that state | the segment |
 | abandonment | truncate an interior segment to 5–20% of its length | the onset tick |
@@ -272,5 +272,6 @@ new streams, a `window`, the anomalous `anomaly_ticks`, the scored `spans`, and 
 | canonical pools | `scripts/data/build_pools.py`; `eval/pools.py:build_pool`, `save_pool`, `load_pool`, `to_streams` |
 | EPIC-Tent pools and groups | `eval/pools.py:freeze_epic_tent_pool`, `load_epic_tent_pool`, `group_truth`, `slice_flags`, `trim_at_first_mistake` |
 | decoding real trials | `synthetic/generate.py:trajectories_from_real_joint` |
+| synthetic drift data (CaptainCook4D) | see [`drift_synth.md`](drift_synth.md) |
 | injection | `synthetic/error_injection.py:inject`, `inject_substitution`, `inject_abandonment`, `inject_omission`, `inject_transposition`, `inject_repetition` |
 | tests | `tests/test_parse_breakfast.py`, `test_parse_epic.py`, `test_parse_epic_tent.py`, `test_split.py`, `test_pools.py` |

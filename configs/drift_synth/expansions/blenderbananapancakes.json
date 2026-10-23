@@ -1,0 +1,254 @@
+{
+ "1": {
+  "tokens": [
+   [
+    "add",
+    "powder"
+   ]
+  ],
+  "variants": []
+ },
+ "2": {
+  "tokens": [
+   [
+    "move",
+    "strawberry"
+   ],
+   [
+    "serve",
+    "strawberry"
+   ]
+  ],
+  "variants": []
+ },
+ "3": {
+  "tokens": [
+   [
+    "put",
+    "pan"
+   ],
+   [
+    "pour",
+    "butter"
+   ],
+   [
+    "wait",
+    "pan"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "fatty",
+    "kind": "omit",
+    "anchor_step": "3",
+    "tokens": [],
+    "replaces": [
+     1
+    ]
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "3",
+    "tokens": [
+     [
+      "add",
+      "oil"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "4": {
+  "tokens": [
+   [
+    "pour",
+    "syrup"
+   ],
+   [
+    "put",
+    "plate"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sweet",
+    "kind": "omit",
+    "anchor_step": "4",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   },
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "4",
+    "tokens": [
+     [
+      "add",
+      "syrup"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "5": {
+  "tokens": [
+   [
+    "add",
+    "banana"
+   ]
+  ],
+  "variants": []
+ },
+ "6": {
+  "tokens": [
+   [
+    "cook",
+    "pancake"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "6",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "7": {
+  "tokens": [
+   [
+    "turn-on",
+    "blender"
+   ],
+   [
+    "wait",
+    "blender"
+   ]
+  ],
+  "variants": []
+ },
+ "8": {
+  "tokens": [
+   [
+    "flip",
+    "pancake"
+   ]
+  ],
+  "variants": []
+ },
+ "9": {
+  "tokens": [
+   [
+    "add",
+    "egg"
+   ]
+  ],
+  "variants": []
+ },
+ "10": {
+  "tokens": [
+   [
+    "cook",
+    "pancake"
+   ]
+  ],
+  "variants": []
+ },
+ "11": {
+  "tokens": [
+   [
+    "pour",
+    "banana"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sour",
+    "kind": "insert",
+    "anchor_step": "11",
+    "tokens": [
+     [
+      "add",
+      "lemon"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "11",
+    "tokens": [
+     [
+      "add",
+      "sugar"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "11",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "11",
+    "tokens": [
+     [
+      "add",
+      "butter"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "12": {
+  "tokens": [
+   [
+    "add",
+    "flour"
+   ]
+  ],
+  "variants": []
+ },
+ "13": {
+  "tokens": [
+   [
+    "cut",
+    "strawberry"
+   ]
+  ],
+  "variants": []
+ },
+ "14": {
+  "tokens": [
+   [
+    "put",
+    "plate"
+   ]
+  ],
+  "variants": []
+ }
+}

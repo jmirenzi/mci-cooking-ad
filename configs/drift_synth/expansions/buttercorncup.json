@@ -1,0 +1,252 @@
+{
+ "1": {
+  "tokens": [
+   [
+    "add",
+    "lime"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sour",
+    "kind": "insert",
+    "anchor_step": "1",
+    "tokens": [
+     [
+      "add",
+      "lime"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "sour",
+    "kind": "omit",
+    "anchor_step": "1",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   }
+  ]
+ },
+ "2": {
+  "tokens": [
+   [
+    "measure",
+    "corn"
+   ]
+  ],
+  "variants": []
+ },
+ "3": {
+  "tokens": [
+   [
+    "add",
+    "pepper"
+   ]
+  ],
+  "variants": []
+ },
+ "4": {
+  "tokens": [
+   [
+    "squeeze",
+    "lime"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sour",
+    "kind": "omit",
+    "anchor_step": "4",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   }
+  ]
+ },
+ "6": {
+  "tokens": [
+   [
+    "add",
+    "corn"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "6",
+    "tokens": [
+     [
+      "add",
+      "butter"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "7": {
+  "tokens": [
+   [
+    "mix",
+    "corn"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "7",
+    "tokens": [
+     [
+      "add",
+      "sugar"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "7",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "7",
+    "tokens": [
+     [
+      "add",
+      "cream"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "8": {
+  "tokens": [
+   [
+    "put",
+    "corn"
+   ],
+   [
+    "wait",
+    "microwave"
+   ]
+  ],
+  "variants": []
+ },
+ "9": {
+  "tokens": [
+   [
+    "put",
+    "corn"
+   ],
+   [
+    "wait",
+    "microwave"
+   ]
+  ],
+  "variants": []
+ },
+ "10": {
+  "tokens": [
+   [
+    "mix",
+    "bowl"
+   ],
+   [
+    "put",
+    "bowl"
+   ]
+  ],
+  "variants": []
+ },
+ "11": {
+  "tokens": [
+   [
+    "add",
+    "salt"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "salty",
+    "kind": "omit",
+    "anchor_step": "11",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   },
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "11",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ },
+ "12": {
+  "tokens": [
+   [
+    "filter",
+    "corn"
+   ],
+   [
+    "shake",
+    "water"
+   ]
+  ],
+  "variants": []
+ },
+ "13": {
+  "tokens": [
+   [
+    "add",
+    "butter"
+   ]
+  ],
+  "variants": [
+   {
+    "knob": "fatty",
+    "kind": "omit",
+    "anchor_step": "13",
+    "tokens": [],
+    "replaces": [
+     0
+    ]
+   },
+   {
+    "knob": "sweet",
+    "kind": "insert",
+    "anchor_step": "13",
+    "tokens": [
+     [
+      "add",
+      "syrup"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
+ }
+}

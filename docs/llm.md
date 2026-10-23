@@ -159,7 +159,11 @@ the same cache entries.
 `llm/client.ChatClient` is a plain OpenAI-compatible `/chat/completions` client with rate limiting,
 a request budget and an on-disk cache.
 
-**The cache key is sha256(base_url + model + messages + temperature [+ max_tokens]).** So:
+**The cache key is sha256(base_url + model + messages + temperature [+ max_tokens]
+[+ response_format]).** The bracketed fields are keyed only when set, so the keys of everything
+collected before they existed are unchanged (`tests/test_predict.py`). `response_format` (a JSON
+schema; Ollama enforces it) is used only by the drift generator's offline stages
+([`drift_synth.md`](drift_synth.md)). So:
 
 - **a replay must use the original `--base-url`.** Breakfast's responses were collected through
   `http://localhost:11435/v1`, EPIC-Tent's through `http://localhost:11434/v1`. The same server on
@@ -214,12 +218,12 @@ by PID. `pkill -f llm_breakfast.sh` also matches the shell running it.
 
 ## 7. Results
 
-Under metric G, the LLM arms sit 0.02–0.08 F1 above the flag-every-run null on Breakfast and
-~0.01 above it on EPIC-Tent. They flag 49–91% of error-free runs and raise 16–41 alarms per 10
-minutes. The HSMM arms score 0.17–0.29 F1 higher at about a tenth of the alarm rate. Recipe descriptions make the predictive arm flag a
-little less on Breakfast (F1 0.375 → 0.410) and change nothing on EPIC-Tent. Under PREGO's own
-protocol (metric E) the predictive arm reproduces PREGO's published line, and so does flagging
-every step. Tables: README ("Results"); history: [`logbook.md`](logbook.md).
+Under metric H (delay 2), the LLM arms sit 0.005–0.06 F1 above the flag-every-run null on
+Breakfast and ~0.007 above it on EPIC-Tent. They flag 49–91% of error-free runs and raise 24–56
+alarms per 10 minutes. The HSMM arms score 0.26–0.34 F1 higher at about a fifteenth of the alarm
+rate. Recipe descriptions make the predictive arm flag a little less on Breakfast (F1 0.353 →
+0.398) and change nothing on EPIC-Tent. Under PREGO's own protocol (metric E) the predictive arm
+reproduces PREGO's published line, and so does flagging every step. Tables: README ("Results"); history: [`logbook.md`](logbook.md).
 
 ---
 

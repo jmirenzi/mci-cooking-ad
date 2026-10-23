@@ -3,12 +3,21 @@
 """
 import json
 import math
+import os
 from pathlib import Path
 
 import numpy as np
 
 from cook_ad.core import Detection, OperatingPoint, Trial
-from cook_ad.eval import metric_g
+from cook_ad.eval import metric_g, metric_h
+
+# Metric H (eval/metric_h.py) at delay 2 is the headline (docs/eval.md §1). COOK_METRIC=G scores
+# with metric G instead; COOK_DELAY moves H's delay (G's deadline is fixed at 10). Read once at
+# import: every table in a run uses one rule.
+METRIC = os.environ.get("COOK_METRIC", "H").upper()
+SCORER = metric_h if METRIC == "H" else metric_g
+DELAY = int(os.environ.get("COOK_DELAY", metric_h.DEFAULT_DELAY if METRIC == "H" else metric_g.DEADLINE))
+LABEL = f"H, delay {DELAY}" if METRIC == "H" else "G"
 
 CHANNELS = ("s_emit", "s_verb", "s_noun", "s_temporal", "s_dur_two", "s_transition",
             "s_recipe_transition")
@@ -36,6 +45,18 @@ def trials_from_streams(streams, recipes=None):
     return out
 
 
+def trials_from_groups(groups):
+    """{group: [(trajectory, recipe or None)]} -> [(group, Trial)]: as trials_from_streams, for
+    pools whose groups hold different trials (a filtered or regenerated pool)."""
+    out = []
+    for group, items in groups.items():
+        for i, (t, r) in enumerate(items):
+            spans = tuple(tuple(map(int, s)) for s in t.get("spans", [])) if group != "healthy" else ()
+            out.append((group, Trial(f"{group}/{i}", np.asarray(t["verb_ids"]), np.asarray(t["noun_ids"]),
+                                     None if r is None else int(r), spans, group)))
+    return out
+
+
 def run(detectors, trials):
     """{name: [Detection]} -- each detector over every Trial (detect_many where batched)."""
     return {name: det.detect_many([t for _, t in trials]) for name, det in detectors.items()}
@@ -56,8 +77,23 @@ def hindsight_grid(det, trace, alphas):
     cols = []
     for a in alphas:
         f = det.flags(trace, OperatingPoint(a))
-        cols.append(np.any(np.stack([f[c] for c in CHANNELS]), axis=0))
+        cols.append(np.any(np.stack(list(f.values())), axis=0))   # every channel the detector has
     return np.stack(cols, axis=1)
+
+
+# The structural group: the transition channels and, when the detector has it, s_count.
+TRANSITION_CHANNELS = ("s_transition", "s_recipe_transition", "s_count")
+
+
+def hindsight_split_grid(det, trace, alphas, split=TRANSITION_CHANNELS):
+    """(T, A, A) bool: the `split` channels at alphas[i] OR every other channel at alphas[j].
+    For priors that make a transition rare rather than impossible, which needs a looser alpha
+    on the transition channels than the emission and duration channels can bear."""
+    per = [det.flags(trace, OperatingPoint(a)) for a in alphas]
+    sp = np.stack([np.any(np.stack([f[c] for c in split if c in f]), axis=0) for f in per], axis=1)
+    rest = np.stack([np.any(np.stack([f[c] for c in f if c not in split]), axis=0)
+                     for f in per], axis=1)
+    return sp[:, :, None] | rest[:, None, :]
 
 
 def live_grid(det, trace, alphas, kappas):
@@ -73,9 +109,9 @@ def live_grid(det, trace, alphas, kappas):
     return out
 
 
-def sweep(masks_by_trial, trials):
-    """masks_by_trial[i]: (T, ...) bool grid for trials[i] = (group, Trial) -> metric G grid."""
-    score = metric_g.GridScore()
+def sweep(masks_by_trial, trials, tick_seconds=1.0):
+    """masks_by_trial[i]: (T, ...) bool grid for trials[i] = (group, Trial) -> the metric's grid (SCORER)."""
+    score = SCORER.GridScore(tick_seconds, DELAY)
     for m, (group, t) in zip(masks_by_trial, trials):
         score.add(group, m, list(t.spans), t.verbs, t.nouns)
     return score.result()
@@ -100,16 +136,16 @@ def at(result, idx):
             "per_type": {k: get(v) for k, v in result["per_type_recall"].items()}}
 
 
-def score_masks(masks, trials):
-    """One operating point: [(T,) bool] -> the scalar metric G row."""
-    return at(sweep([np.asarray(m)[:, None] for m in masks], trials), (0,))
+def score_masks(masks, trials, tick_seconds=1.0):
+    """One operating point: [(T,) bool] -> the scalar row under SCORER."""
+    return at(sweep([np.asarray(m)[:, None] for m in masks], trials, tick_seconds), (0,))
 
 
 # ---- nulls ----------------------------------------------------------------------------------
 
 
 def null_masks(trials):
-    """The two nulls (identical under metric G; both printed): flag every run, flag every tick."""
+    """The two nulls: flag every run, flag every tick (identical under metric G, not under H)."""
     return {
         "null: flag every run": [np.isin(np.arange(len(t.verbs)),
                                          metric_g.run_starts(t.verbs, t.nouns)) for _, t in trials],
@@ -120,9 +156,10 @@ def null_masks(trials):
 # ---- output ---------------------------------------------------------------------------------
 
 
-def table(rows, title, metric="G", types=None):
+def table(rows, title, metric=None, types=None):
     """Print one metric-labelled markdown table: precision, recall, F1, alarms/10 min, run FPR,
     healthy-trial FPR, then recall per type."""
+    metric = metric or LABEL
     print(f"\n### {title} -- metric {metric}\n")
     print("| arm | precision | recall | F1 | alarms / 10 min | run FPR | healthy-trial FPR |")
     print("|---|---|---|---|---|---|---|")
@@ -145,7 +182,7 @@ def write_operating_points(path, entries):
     for corpus, models in entries.items():
         for model, dets in models.items():
             data.setdefault(corpus, {}).setdefault(model, {}).update(dets)
-    header = ("# Operating points picked on each corpus's TRAIN split (metric G, best F1) by\n"
+    header = (f"# Operating points picked on each corpus's TRAIN split (metric {LABEL}, best F1) by\n"
               "# scripts/eval/eval_*.py. Never tuned on test. alpha is the bad-set tail mass,\n"
               "# kappa the posterior cutoff of the live/lag event channels.\n")
     p.write_text(header + yaml.safe_dump(data, sort_keys=False))

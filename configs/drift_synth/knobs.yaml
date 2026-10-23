@@ -1,0 +1,54 @@
+# The generator's knobs (docs/drift_synth.md §2). theta[knob] is in [0, 1]. Knobs act on TAGS
+# (configs/drift_synth/tags.yaml), never on recipe-specific items. A capability knob's high theta
+# is the impaired end (slower, clumsier).
+#
+# Flavour knobs are two-sided around 0.5 (operator: flavour). Above 0.5 each of the knob's
+# insert variants applies with P = 2 (theta - 0.5) * affinity[recipe][knob]
+# (configs/drift_synth/affinity.yaml); below 0.5 each remove variant (substitute or omit) applies
+# with P = 2 (0.5 - theta). At 0.5 the recipe is cooked as written.
+knobs:
+  sour:
+    family: preference
+    operator: flavour
+    target_tags: {nouns: [sour]}
+    nouns: [lemon, lime, vinegar]     # what inserts add and omits drop
+  sweet:
+    family: preference
+    operator: flavour
+    target_tags: {nouns: [sweet]}
+    nouns: [sugar, syrup]             # added sweeteners only, as salty is salt only
+  salty:
+    family: preference
+    operator: flavour
+    target_tags: {nouns: [salty]}
+    nouns: [salt]
+  fatty:
+    family: preference
+    operator: flavour
+    target_tags: {nouns: [fat]}
+    nouns: [butter, oil, cheese, cream]   # what inserts add; removes are the LLM's lower-fat
+                                          # substitute/omit variants of any fat-tagged token
+    fat_duration_k: 0.7               # remaining fat-tagged tokens: duration x exp(k (theta - 0.5))
+  mise_en_place:
+    family: preference
+    operator: ordering
+    beta: 4.0                         # order weight x exp(beta * (2 theta - 1) * is_prep)
+  tidy:
+    family: preference
+    operator: logistics
+    put_back: [0.1, 0.95]             # P(put n after its last use) = lo + (hi - lo) * theta
+    wash: [0.0, 0.8]                  # P(wash a tool/container after its last use), same form
+  slow:
+    family: capability
+    operator: duration_scale
+    a: 1.0                            # every duration and gap x exp(a * (theta - 0.5))
+  fine_motor:
+    family: capability
+    operator: duration_scale+repetition
+    target_tags: {verbs: [fine_motor]}
+    a: 1.0                            # fine-motor verbs: duration x exp(a * (theta - 0.5))
+    hinge: 0.5                        # P(repeat a fine-motor token) =
+    repeat_base: 0.0                  #   base + max * max(0, theta - hinge)
+    repeat_max: 0.6                   # day noise never carries theta across the hinge
+    repeat_gap_s: 2.0                 # a repeat follows a pause of at least this long, so it
+                                      # shows as a second run, not one longer run

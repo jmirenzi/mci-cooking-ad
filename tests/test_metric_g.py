@@ -163,3 +163,15 @@ def test_grid_score_pools_like_the_per_trial_counts():
     assert list(r["precision"]) == pytest.approx([1 / 3, 1 / 3])
     assert list(r["healthy_trial_fpr"]) == [1.0, 1.0]
     assert r["run_fpr"][1] == 1.0
+
+
+def test_alarm_rate_uses_the_tick_length():
+    """600 ticks at 0.5 s are 5 minutes: one alarm in them is 2 per 10 minutes."""
+    verbs, nouns = np.arange(600) // 60, np.zeros(600, dtype=int)
+    flags = np.zeros((600, 1), dtype=bool)
+    flags[0] = True
+    for ts, rate in ((1.0, 1.0), (0.5, 2.0)):
+        g = G.GridScore(tick_seconds=ts)
+        g.add("healthy", flags, [], verbs, nouns)
+        g.add("omission", np.zeros((600, 1), dtype=bool), [(100, 110)], verbs, nouns)
+        assert float(g.result()["alarms_per_10min"][0]) == pytest.approx(rate)

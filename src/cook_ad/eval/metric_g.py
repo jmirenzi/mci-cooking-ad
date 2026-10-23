@@ -1,4 +1,4 @@
-"""Metric G: the headline metric (docs/eval.md §1). Every table states its letter.
+"""Metric G: the headline until 2026-10-21, now for comparing with older numbers (docs/eval.md §1b).
 
 A RUN is a maximal stretch of ticks with one constant (verb, noun) observation -- observed by
 every detector, and no claim about the user's steps. An ALARM is the first flag inside a run;
@@ -44,12 +44,6 @@ def flags_from_channels(flags_by_channel, channels=None):
     for ch in chans:
         out.extend(Flag(int(t), 1.0, ch) for t in np.flatnonzero(np.asarray(flags_by_channel[ch])))
     return sorted(out)
-
-
-def flags_from_alarms(alarms):
-    """core.Alarm list -> sorted Flags."""
-    return sorted(Flag(int(a.tick), float(a.score) if a.score == a.score else 1.0, a.channel)
-                  for a in alarms)
 
 
 def run_starts(verb_ids, noun_ids):
@@ -103,16 +97,22 @@ class GridScore:
     """Accumulates metric G over trials for a whole operating-point grid.
 
     add(group, flags (T, ...) bool, spans, verbs, nouns); `group` "healthy" for error-free
-    trials (they supply alarms/10 min and healthy-trial FPR), else the error type."""
+    trials (they supply alarms/10 min and healthy-trial FPR), else the error type.
+    `tick_seconds` converts ticks to time for alarms/10 min (1.0 on Breakfast and EPIC-Tent;
+    0.5 on EPIC-KITCHENS and the synthetic drift data)."""
 
-    def __init__(self):
+    scorer = staticmethod(score_dense)      # metric_h.GridScore swaps the counting rule
+
+    def __init__(self, tick_seconds=1.0, deadline=DEADLINE):
         self.groups = {}
+        self.tick_seconds = tick_seconds
+        self.deadline = deadline
 
     def add(self, group, flags, spans, verbs, nouns):
         flags = np.asarray(flags, dtype=bool)
         shape = flags.shape[1:]
-        r = score_dense(flags.reshape(flags.shape[0], -1), spans,
-                        correct_runs(verbs, nouns, spans), run_starts(verbs, nouns))
+        r = self.scorer(flags.reshape(flags.shape[0], -1), spans,
+                        correct_runs(verbs, nouns, spans), run_starts(verbs, nouns), self.deadline)
         st = self.groups.setdefault(group, {"hits": 0, "n_spans": 0, "fp": 0, "onsets": 0,
                                             "any_flag": 0, "runs_flagged": 0, "n_correct": 0,
                                             "ticks": 0, "n_trials": 0})
@@ -142,7 +142,7 @@ class GridScore:
             rec = tp / max(n_spans, 1)
             f1 = np.where(prec + rec > 0, 2 * prec * rec / (prec + rec), 0.0)
         return {"precision": prec, "recall": rec, "f1": f1,
-                "alarms_per_10min": 600.0 * h["onsets"] / h["ticks"],
+                "alarms_per_10min": 600.0 * h["onsets"] / (h["ticks"] * self.tick_seconds),
                 "healthy_trial_fpr": h["any_flag"] / h["n_trials"],
                 "run_fpr": runs_flagged / max(n_correct, 1),
                 "per_type_recall": {k: st["hits"] / max(st["n_spans"], 1)
