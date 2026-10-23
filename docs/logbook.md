@@ -7,6 +7,13 @@ and are recoverable at the git tag `pre-restructure`. Scripts, options and `drif
 (§5–§9.9) named in entries from 2026-10-15 to 2026-10-20 were removed in the 2026-10-20 cleanup and
 are recoverable at the git tag `pre-cleanup`.
 
+## 2026-10-21 — the session-time generator, live, under metric H (delay 2)
+
+4 persons, stage 4b, F1 / healthy FPR at 10 / 30 / 250 sessions, H. Live, person only 0.360 /
+0.525 / 0.782 (FPR 0.87 / 0.64 / 0.23); prior λ = 1 0.465 / 0.688 / 0.826 (0.58 / 0.24 / 0.10).
+0.024–0.038 below G, same ranking: the prior wins at every size. `prior_experiment.sh`,
+runs/headline_H/synth_live_H_23.log (pools p00–p03), runs/drift_synth/prior/live_p0*.json.
+
 ## 2026-10-21 — metric H (delay 2) is the headline; headline tables regenerated
 
 Jack's call: easier to defend, numbers close. `harness.METRIC` defaults to H; `COOK_METRIC=G` for
