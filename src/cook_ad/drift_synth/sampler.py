@@ -92,9 +92,10 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
             kinds.append("core" if kind == "core" else f"+{knob}")
 
     put_p, wash_p = K.tidy_rates(theta, kn)
-    phases = [recipe.steps[s].phase for s in steps]
+    ves = (getattr(assets, "vessels", None) or {}).get(recipe.recipe_id) or {}
+    in_use = [ves.get("steps", {}).get(s, []) for s in steps]
     with_log, prov = insert_logistics(tokens, tags, put_p, wash_p, rng, gen["logistics_verbs"],
-                                      phases if all(phases) else None)
+                                      in_use, ves.get("serves_in"))
     it, ik = iter(steps), iter(kinds)
     step_of = [next(it) if p == "core" else None for p in prov]
     kind_of = [next(ik) if p == "core" else "logistics" for p in prov]

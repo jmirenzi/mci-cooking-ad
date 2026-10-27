@@ -7,12 +7,31 @@ and are recoverable at the git tag `pre-restructure`. Scripts, options and `drif
 (§5–§9.9) named in entries from 2026-10-15 to 2026-10-20 were removed in the 2026-10-20 cleanup and
 are recoverable at the git tag `pre-cleanup`.
 
-## 2026-10-27 — vessels are washed after their phase, not after their last mention
+## Open (non-pressing)
 
-Zoodles rollouts showed `wash pan`, `put pan` right after `wait pan`, before the garlic went in:
-`add garlic` / `cook garlic` name the food, so the pan looked finished. `insert_logistics` now
-moves a tool or container's last use to the last token of its phase (`phases=` from the graph).
-Same draws, same counts, only the place moves. `rollout.py --recipe zoodles` shows it.
+Loose ends that block nothing. Remove a line and write a dated entry when it is done.
+
+- Backoff τ on the drift_synth person model: confirm stage 3 uses `backoff_counts` τ = 30 +
+  `shifted_mode_counts` 0.7 there (only `scripts/eval/eval_synth_prior.py` passes them;
+  `configs/drift_synth/hsmm.yaml` does not mention them), then validate τ ∈ {0, 2, 30} under metric H
+  at 10 / 30 / 250 sessions. τ = 30 was chosen on a Breakfast dev fold (metric B, 2026-08-20); the
+  global-prior λ = 0 vs 1 arms both sit on top of it.
+- `s_count` live α with many pending k: `CountState.step` takes the min of P̂(i visited) and
+  P̂(k not before i) over all pending k against one α, a union over tests. On healthy sessions,
+  bucket the first-visit fire rate at fixed α by the number of pending k with P̂ ≤ α. If it climbs
+  with the bucket, use α_eff = α / n_pending (or Šidák). Also untested: the hard ĉ < ½ cut for
+  "not yet happened" (soft alternative: weight by 1 − min(ĉ_k, 1)).
+- Generator durations: a lone token takes its whole CC4D step total (`add cinnamon` 93 s, `wait
+  microwave` 406 s for a 3-minute step), and one action varies 6× (5th to 95th percentile) across
+  sessions at fixed θ.
+
+## 2026-10-27 — logistics: explicit vessels, consumed items, rollout review of all 8 recipes
+
+3 people × 8 recipes read by eye (`rollout.py`): `wash pan` before the garlic went in, the bowl
+fetched after the corn was in it, `put noodle` / `put banana`, a mug washed with the egg in it.
+Fixed with `vessels.yaml` (vessel per step; `serves_in` never washed), `CONSUMED` / `PREPARED` /
+`UNFETCHED`, `pour banana` → `pour mixture`. Extending a vessel to its phase's end was tried and
+dropped (first use stayed wrong). Still open: `put plate` twice, microwave verbs, `put courgette`.
 
 ## 2026-10-21 — the session-time generator, live, under metric H (delay 2)
 

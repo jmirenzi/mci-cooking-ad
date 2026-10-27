@@ -1,0 +1,35 @@
+# Which vessel (container or tool) each recipe step happens in, by hand from the CC4D step text.
+# Many steps never name it (`add garlic` is in the pan), so Stage 4 (kitchen_state.py) takes the
+# vessel before the first step that uses it and washes / puts it away after the last, however the
+# step's tokens are worded. A step maps to a list; a step not listed uses no vessel.
+# serves_in: the vessel the finished dish stays in; it is fetched but never washed or put away.
+vessels:
+  tomatomozzarellasalad:
+    serves_in: plate
+    steps: {2: [plate], 3: [plate], 5: [plate], 6: [plate], 8: [plate], 9: [plate]}
+  buttercorncup:
+    serves_in: bowl
+    steps: {1: [bowl], 3: [bowl], 6: [bowl], 7: [bowl], 8: [bowl], 9: [bowl], 10: [bowl],
+            11: [bowl], 13: [bowl]}
+  zoodles:
+    serves_in: pan
+    steps: {1: [pan], 2: [pan], 3: [pan], 4: [pan], 5: [pan], 6: [pan], 7: [pan], 8: [pan],
+            10: [pan], 11: [pan], 13: [pan]}
+  microwavefrenchtoast:
+    serves_in: plate
+    steps: {1: [cup], 3: [cup], 4: [cup], 5: [cup], 6: [cup], 7: [plate], 8: [cup, plate],
+            9: [cup], 11: [cup], 12: [cup]}
+  breakfastburritos:
+    steps: {1: [bowl], 2: [bowl], 3: [bowl], 5: [bowl], 6: [bowl], 8: [bowl], 9: [bowl],
+            11: [bowl]}
+  spicedhotchocolate:
+    serves_in: cup
+    steps: {1: [cup], 2: [cup], 3: [cup], 5: [cup], 6: [cup], 7: [cup], 8: [cup]}
+  cheesepimiento:
+    serves_in: bowl
+    steps: {1: [bowl], 2: [bowl], 3: [cup], 4: [bowl], 5: [bowl], 6: [bowl], 7: [bowl],
+            9: [bowl], 10: [cup], 11: [bowl]}
+  blenderbananapancakes:
+    serves_in: plate
+    steps: {1: [blender], 2: [plate], 3: [pan], 4: [plate], 5: [blender], 6: [pan], 7: [blender],
+            8: [pan], 9: [blender], 10: [pan], 11: [blender, pan], 12: [blender], 14: [pan, plate]}

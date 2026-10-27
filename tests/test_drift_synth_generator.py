@@ -122,7 +122,7 @@ def test_knobs_move_their_own_features(stats_cache):
     base = stats_cache("omelet", theta(), 11)
     up = {k: stats_cache("omelet", theta(**{k: 0.95}), 12) for k in ("sour", "tidy", "slow")}
     assert GT.count_z(base, up["sour"])["squeeze lemon"] > 5
-    assert GT.count_z(base, up["tidy"])["put tomato"] > 5
+    assert GT.count_z(base, up["tidy"])["put oil"] > 5
     assert GT.drift_magnitude(base, up["slow"])["duration_w1_mean"] > 0.3
 
 
@@ -222,28 +222,42 @@ def test_incremental_and_recurring():
 # ---- stage units -----------------------------------------------------------------------------
 
 def test_logistics_take_put_wash():
-    toks = [("cut", "tomato"), ("pour", "oil"), ("mix", "tomato")]
-    tags = {"nouns": {"tomato": ["ingredient"], "oil": ["ingredient"], "pan": ["container"]}}
+    toks = [("cut", "egg"), ("pour", "oil"), ("mix", "egg")]
+    tags = {"nouns": {"egg": ["ingredient"], "oil": ["ingredient"], "pan": ["container"]}}
     out, prov = insert_logistics(toks + [("mix", "pan")], tags, 1.0, 1.0, np.random.default_rng(0))
-    assert out.index(("take", "tomato")) < out.index(("cut", "tomato"))
-    assert out.index(("put", "tomato")) > out.index(("mix", "tomato"))
+    assert out.index(("take", "egg")) < out.index(("cut", "egg"))
+    assert out.index(("put", "egg")) > out.index(("mix", "egg"))
     assert out.index(("wash", "pan")) < out.index(("put", "pan"))
-    assert ("wash", "tomato") not in out and prov.count("core") == 4
+    assert ("wash", "egg") not in out and prov.count("core") == 4
     none, _ = insert_logistics(toks, tags, 0.0, 0.0, np.random.default_rng(0))
     assert [t for t in none if t[0] == "put"] == []
-    assert Counter(none)[("take", "tomato")] == 1
+    assert Counter(none)[("take", "egg")] == 1
 
 
-def test_a_vessel_is_washed_after_its_phase_not_after_its_last_mention():
+def test_a_vessel_is_in_use_for_its_steps_not_just_where_a_token_names_it():
     tags = {"nouns": {"pan": ["container"], "garlic": ["ingredient"], "plate": ["container"]}}
     toks = [("put", "pan"), ("wait", "pan"), ("add", "garlic"), ("cook", "garlic"), ("put", "plate")]
-    phases = ["cook", "cook", "cook", "cook", "serve"]
+    in_use = [["pan"], ["pan"], ["pan"], ["pan"], ["plate"]]
     rng = lambda: np.random.default_rng(0)
     named, _ = insert_logistics(toks, tags, 1.0, 1.0, rng())
-    assert named.index(("wash", "pan")) < named.index(("add", "garlic"))     # the old behaviour
-    held, _ = insert_logistics(toks, tags, 1.0, 1.0, rng(), phases=phases)
+    assert named.index(("wash", "pan")) < named.index(("add", "garlic"))     # named uses only
+    held, _ = insert_logistics(toks, tags, 1.0, 1.0, rng(), in_use=in_use)
     assert held.index(("wash", "pan")) > held.index(("cook", "garlic"))
-    assert Counter(held) == Counter(named)                                     # only the place moves
+    first, _ = insert_logistics([("add", "garlic")], tags, 0.0, 0.0, rng(), in_use=[["pan"]])
+    assert first == [("take", "garlic"), ("take", "pan"), ("add", "garlic")]   # fetched before use
+    served, _ = insert_logistics(toks, tags, 1.0, 1.0, rng(), in_use=in_use, serves_in="pan")
+    assert ("wash", "pan") not in served and ("put", "pan") == toks[0]
+    assert [t for t in served if t == ("put", "pan")] == [("put", "pan")]     # only the recipe's own
+
+
+def test_consumed_and_made_items_are_not_put_back_and_water_is_not_fetched():
+    tags = {"nouns": {"garlic": ["ingredient"], "noodle": ["ingredient"], "water": ["ingredient"],
+                      "salt": ["ingredient"]}}
+    toks = [("peel", "garlic"), ("add", "noodle"), ("add", "water"), ("add", "salt")]
+    out, _ = insert_logistics(toks, tags, 1.0, 1.0, np.random.default_rng(0))
+    assert ("take", "garlic") in out and ("put", "garlic") not in out      # consumed
+    assert not any(n in ("noodle", "water") for v, n in out if v in ("take", "put"))
+    assert ("take", "salt") in out and ("put", "salt") in out              # stock
 
 
 def test_logistic_counts_do_not_depend_on_order():

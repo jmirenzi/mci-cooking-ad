@@ -21,6 +21,7 @@ class Assets:
     gen: dict             # configs/drift_synth/generator.yaml
     step_times: object = None        # durations.StepTimes (CC4D step totals); None = EPIC time only
     affinity: dict | None = None     # recipe -> {flavour knob: affinity in [0, 1]}; None = all 1
+    vessels: dict | None = None      # recipe -> {"serves_in": noun|None, "steps": {step: [noun]}}; None = named nouns only
 
 
 # ---- expansions on disk: configs/drift_synth/expansions/<recipe>.json -------------------------
@@ -79,6 +80,7 @@ def load_assets(gen_path="configs/drift_synth/generator.yaml", require_reviewed_
         gen=gen,
         step_times=load_step_times(gen, require_step_times),
         affinity=load_affinity(p["affinity"], recipes, require_reviewed_affinity),
+        vessels=load_vessels(p.get("vessels"), recipes),
     )
 
 
@@ -94,6 +96,15 @@ def load_step_times(gen, required=True):
             raise FileNotFoundError(f"{path}: run scripts/drift_synth/calibrate_cc4d.py --write-step-times {path}")
         return None
     return StepTimes.load(path)
+
+
+def load_vessels(path, recipes):
+    """configs/drift_synth/vessels.yaml -> {recipe: {"serves_in": noun | None, "steps": {step: [noun]}}}."""
+    if not path:
+        return None
+    d = yaml.safe_load(Path(path).read_text())["vessels"]
+    return {r: {"serves_in": d[r].get("serves_in"),
+                "steps": {str(s): list(v) for s, v in d[r]["steps"].items()}} for r in recipes}
 
 
 def load_affinity(path, recipes, require_reviewed=True):
