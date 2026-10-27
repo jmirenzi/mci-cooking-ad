@@ -25,8 +25,14 @@ durations:                   # docs/drift_synth.md §4: one source per quantity
   source: epic               # take/put/wash times and the split within a step
   step_times: configs/drift_synth/step_times.json   # CC4D step totals (fit_step_times.py)
   max_event_s: 600           # cap on one event's duration
-  sigma_scale: 0.5           # log-sd of every draw x this, mean kept (durations.narrowed): one
-                             # person varies less than CC4D's or EPIC's many people
+  sigma_scale: 0.4           # log-sd of every draw x this, mean kept (durations.narrowed): one
+                             # person varies less than CC4D's or EPIC's many people. 0.4 puts a
+                             # lone action at log-sd 0.37 = CC4D's within-person step log-sd 0.36
+  active_unit_cap: 4         # an action (not a wait or cook) lasts at most this x its EPIC time;
+                             # the 25th pct of CC4D/EPIC over action-only steps is 3.8, the median
+                             # 5.8: the rest of a long step is reading, finding and measuring
+  timer_verbs: [wait, cook]  # in a step whose text sets a time ("for 3 minutes"), the last of these
+  timer_sigma: 0.1           # lasts that time x exp(0.1 z), with no knob or speed on it
 
 person:
   repertoire: [6, 10]        # recipes per person, inclusive

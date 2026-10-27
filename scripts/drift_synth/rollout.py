@@ -1,7 +1,8 @@
 """Print one rollout of a recipe per person, with start and end times, for slides.
 
 A person is a knob vector (theta in [0, 1]; unnamed knobs sit at 0.5 = cooked as written). Clean
-events (no recognizer or session noise), speed 1, CC4D step totals, as in rollout_examples.py.
+events (no recognizer or session noise), speed 1, the generator's durations (CC4D step totals,
+actions capped, written timers), as in rollout_examples.py.
 
     ./py scripts/drift_synth/rollout.py --recipe zoodles \\
         --person "Sam: salty=1 fatty=1 mise_en_place=0.05 tidy=0.05" \\

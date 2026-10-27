@@ -13,7 +13,7 @@ import math
 import numpy as np
 
 from cook_ad.drift_synth import knobs as K
-from cook_ad.drift_synth.durations import mean_duration, sample_duration, sample_step_total
+from cook_ad.drift_synth.durations import mean_duration, sample_duration, sample_step_total, step_timer
 from cook_ad.drift_synth.kitchen_state import insert_logistics
 from cook_ad.drift_synth.noise import NoiseCfg, recognizer_noise, speed_factor, theta_for_session
 from cook_ad.drift_synth.schedule import DriftRegime, MixShift, PersonCfg, recipe_for_session, theta_at
@@ -47,16 +47,27 @@ def step_owners(steps):
     return out
 
 
-def step_units(recipe, expansions, times, durations):
-    """{step: seconds per unit of expected EPIC time}: the step's CC4D total over its written core
-    actions' expected EPIC durations. A step CC4D never recorded gets the recipe's median unit
-    (1.0 with no CC4D data at all)."""
-    units = {}
+def step_timers(recipe, expansions, timer_verbs):
+    """{step: (token, seconds)} for steps whose text sets a time (durations.step_timer)."""
+    out = {}
+    for s, exp in expansions.items():
+        tm = step_timer(recipe.steps[s].description, exp.tokens, timer_verbs) if s in recipe.steps else None
+        if tm is not None:
+            out[s] = tm
+    return out
+
+
+def step_units(recipe, expansions, times, durations, timers=None):
+    """{step: seconds per unit of expected EPIC time}: the step's CC4D total, less its written
+    timer, over its other written core actions' expected EPIC durations. A step CC4D never
+    recorded gets the recipe's median unit (1.0 with no CC4D data at all)."""
+    units, timers = {}, timers or {}
     for s, exp in expansions.items():
         p = times.params(recipe.recipe_id, s) if times is not None else None
-        base = sum(mean_duration(durations, t) for t in exp.tokens)
+        tm = timers.get(s)
+        base = sum(mean_duration(durations, t) for t in exp.tokens if tm is None or tuple(t) != tm[0])
         if p is not None and base > 0:
-            units[s] = math.exp(p[0] + 0.5 * p[1] ** 2) / base
+            units[s] = max(math.exp(p[0] + 0.5 * p[1] ** 2) - (tm[1] if tm else 0.0), 0.0) / base
     fallback = float(np.median(list(units.values()))) if units else 1.0
     return units, fallback
 
@@ -122,15 +133,22 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
 
     # Durations (durations.py). A step's total is drawn from CC4D; each of its actions gets
     # (its EPIC draw) x (the step's total / its written actions' expected EPIC time), so an added
-    # or removed action adds or removes its own share. Take / put / wash keep EPIC time. Then the
-    # person's multipliers. No gaps: the model reads idle-free streams. A fine-motor repeat follows
-    # a pause of repeat_gap_s, so it shows as a second run before scrubbing.
+    # or removed action adds or removes its own share, but an action (not a wait or cook) at most
+    # active_unit_cap x its EPIC time: the rest of a long step is reading and finding. A wait the
+    # step's text times ("for 3 minutes") lasts that time, and no knob or speed moves the
+    # microwave. Take / put / wash keep EPIC time. Then the person's multipliers. No gaps: the
+    # model reads idle-free streams. A fine-motor repeat follows a pause of repeat_gap_s, so it
+    # shows as a second run before scrubbing.
     slow = K.slow_multiplier(theta, kn)
     cfg = gen.get("durations") or {}
     cap = cfg.get("max_event_s")                  # None = uncapped
     k_sigma = cfg.get("sigma_scale", 1.0)
+    unit_cap = cfg.get("active_unit_cap") or math.inf
+    timer_verbs = set(cfg.get("timer_verbs", ()))
+    timer_sigma = cfg.get("timer_sigma", 0.0)
     times = getattr(assets, "step_times", None)
-    units, fallback = step_units(recipe, expansions, times, assets.durations)
+    timers = step_timers(recipe, expansions, timer_verbs)
+    units, fallback = step_units(recipe, expansions, times, assets.durations, timers)
     step_total = {}                               # step -> this session's CC4D draw / expected
     rep_next = {i - 1 for i in repeats}           # events followed by their own repeat
     rep_gap = kn["fine_motor"].get("repeat_gap_s", 0.0)
@@ -139,15 +157,21 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
     for i, tok in enumerate(final):
         st = final_step[i]
         x = sample_duration(assets.durations, tok, 1.0, rng, k_sigma)
-        if st is None:
-            m = 1.0
+        z = rng.standard_normal()                 # drawn for every event, so streams stay aligned
+        tm = timers.get(st)
+        if tm is not None and final_kind[i] == "core" and tuple(tok) == tm[0]:
+            d = tm[1] * math.exp(timer_sigma * z)     # the appliance's time: no knob, no speed
         else:
-            if st not in step_total:
-                p = times.params(recipe.recipe_id, st) if times is not None else None
-                draw = sample_step_total(times, recipe.recipe_id, st, rng, k_sigma)
-                step_total[st] = 1.0 if draw is None else draw / math.exp(p[0] + 0.5 * p[1] ** 2)
-            m = units.get(st, fallback) * step_total[st]
-        d = x * m * speed * slow * K.token_multiplier(tok, theta, kn, tags)
+            if st is None:
+                m = 1.0
+            else:
+                if st not in step_total:
+                    p = times.params(recipe.recipe_id, st) if times is not None else None
+                    draw = sample_step_total(times, recipe.recipe_id, st, rng, k_sigma)
+                    step_total[st] = 1.0 if draw is None else draw / math.exp(p[0] + 0.5 * p[1] ** 2)
+                u = units.get(st, fallback)
+                m = (u if tok[0] in timer_verbs else min(max(u, 1.0), unit_cap)) * step_total[st]
+            d = x * m * speed * slow * K.token_multiplier(tok, theta, kn, tags)
         d = min(d, cap) if cap else d
         clean.append(Event(round(t, 3), round(t + d, 3), tok[0], tok[1]))
         t += d + (rep_gap if i in rep_next else 0.0)

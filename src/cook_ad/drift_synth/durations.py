@@ -4,18 +4,22 @@
                 log-normal per step: the median of its normal recordings, one pooled spread);
   logistics     EPIC-100 narration times for take / put / wash (DurationModel, per verb);
   within a step EPIC sets only the split: each core action's share of the step total is its
-                EPIC log-normal draw over the step's expected EPIC total (as written).
+                EPIC log-normal draw over the step's expected EPIC total (as written);
+  timers        the step's text: "Microwave for 3 minutes" sets its wait token (step_timer).
 
 A CC4D step interval holds the step's own actions: fetching and putting away fit in the time
 between steps (12% of a recording, 15-190 s per recipe against 10-25 s of simulated logistics),
-so logistics are added on top, not subtracted. There are no gaps between actions: the model
-reads idle-free streams (data/scrub.py), so a gap would be drawn only to be deleted.
+so logistics are added on top, not subtracted. It also holds reading, finding and measuring: an
+action (not a wait) runs at most `active_unit_cap` x its EPIC time, and the rest of the step is
+idle a camera would not label. There are no gaps between actions: the model reads idle-free
+streams (data/scrub.py), so a gap would be drawn only to be deleted.
 
 DurationModel: log-normal per verb, with a (verb, noun) row where that pair has at least
 `min_pair` samples, and a global row behind both; fitted from EPIC-100 start/stop times.
 """
 import json
 import math
+import re
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
@@ -97,6 +101,27 @@ def mean_duration(model, token):
     """E[duration] of a token's log-normal (seconds, before scaling and clipping)."""
     mu, sigma = model.params(token)
     return math.exp(mu + 0.5 * sigma ** 2)
+
+
+_WRITTEN = re.compile(r"(\d+)(?:\s*-\s*(\d+))?\s*(?:more\s+)?(sec(?:ond)?s?|min(?:ute)?s?)\b", re.I)
+
+
+def written_seconds(text):
+    """The time a step's text sets, in seconds ("for 3 more minutes" 180, "20-30 seconds" 25), or
+    None. The first one wins: "30 sec. (... 10 seconds more if needed)" is 30."""
+    m = _WRITTEN.search(text)
+    if m is None:
+        return None
+    lo = float(m.group(1))
+    hi = float(m.group(2)) if m.group(2) else lo
+    return 0.5 * (lo + hi) * (60.0 if m.group(3).lower().startswith("min") else 1.0)
+
+
+def step_timer(description, tokens, timer_verbs):
+    """(token, seconds): the step's last wait/cook token and the time its text sets, or None."""
+    s = written_seconds(description)
+    waits = [t for t in tokens if t[0] in timer_verbs]
+    return (tuple(waits[-1]), s) if s is not None and waits else None
 
 
 @dataclass

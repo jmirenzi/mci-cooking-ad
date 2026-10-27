@@ -21,9 +21,16 @@ Loose ends that block nothing. Remove a line and write a dated entry when it is 
   bucket the first-visit fire rate at fixed α by the number of pending k with P̂ ≤ α. If it climbs
   with the bucket, use α_eff = α / n_pending (or Šidák). Also untested: the hard ĉ < ½ cut for
   "not yet happened" (soft alternative: weight by 1 − min(ĉ_k, 1)).
-- Generator durations: a lone token takes its whole CC4D step total (`add cinnamon` 93 s, `wait
-  microwave` 406 s for a 3-minute step), and one action varies 6× (5th to 95th percentile) across
-  sessions at fixed θ.
+- Zoodles' spiralize is `put courgette`: since the action cap it lasts 4–12 s, not the minutes a
+  spiralizer takes. Needs a real verb (and then probably an uncapped step).
+
+## 2026-10-27 — durations: actions capped, written timers, narrower draws
+
+A lone token took its whole CC4D step (`add cinnamon` 63 s, `put courgette` 217 s median). Now an
+action lasts ≤ 4 × EPIC (`active_unit_cap`; 25th pct of CC4D/EPIC on action-only steps), a step's
+written time sets its wait (3 min → 164–189 s, no `slow`), `sigma_scale` 0.5 → 0.4 (CC4D within-person
+step log-sd 0.36). Action 5–95% spread 4.4× → 3.3×; session at θ .5 1.24–1.57× (was 1.65–1.91×).
+Sessions shrink (zoodles 969 → 426 s): synthetic detection numbers above predate this generator.
 
 ## 2026-10-27 — logistics: explicit vessels, consumed items, rollout review of all 8 recipes
 

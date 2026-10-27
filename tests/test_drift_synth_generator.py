@@ -448,6 +448,44 @@ def test_an_added_action_adds_its_own_share():
     assert np.mean(sour) == pytest.approx(np.mean(plain), rel=0.1)
 
 
+def test_an_action_is_capped_and_a_written_timer_ignores_slow():
+    """Salad step 2 (`cut lettuce`, EPIC 4 s) at 60 s in CC4D: capped at 3 x EPIC. Step 3 says
+    "for 2 minutes": its last timer-verb token lasts 120 s, at any slow."""
+    from cook_ad.drift_synth.durations import mean_duration
+    from cook_ad.drift_synth.noise import NoiseCfg
+    from cook_ad.drift_synth.sampler import sample_session
+    a = toy_assets()
+    a.step_times = _salad_times(60.0)
+    a.gen = dict(a.gen, durations={"active_unit_cap": 3, "timer_verbs": ["mix"], "timer_sigma": 0.0})
+    timed = RecipeGraph("salad", dict(SALAD.steps, **{"3": Step("3", "Dress-dress for 2 minutes", "serve")}),
+                        SALAD.edges)
+
+    def per_step(th, step, verb):
+        return [sum(e[1] - e[0] for e in sample_session(
+            timed, a.expansions["salad"], th, 1.0, a, NoiseCfg().off(), rng_for(3, i)).meta["clean_events"]
+            if e[4] == step and e[2] == verb) for i in range(300)]
+    assert np.mean(per_step(theta(), "2", "cut")) == pytest.approx(
+        3 * mean_duration(a.durations, ("cut", "lettuce")), rel=0.1)
+    assert per_step(theta(slow=0.0), "3", "mix") == pytest.approx([120.0] * 300)
+    assert per_step(theta(slow=1.0), "3", "mix") == pytest.approx([120.0] * 300)
+
+
+@pytest.mark.parametrize("text, seconds", [
+    ("Microwave-Microwave for 3 minutes, stirring in between", 180),
+    ("Microwave-Microwave the corn for 3 more minutes", 180),
+    ("cook-cook for 20-30 seconds more", 25),
+    ("Cook-Cook for 1 min or until the tops start to bubble", 60),
+    ("Melt-Melt the cheese by microwaving cup for 30 sec. (Check after 30 seconds and microwave "
+     "for 10 seconds more if needed)", 30),
+    ("Cook-Cook garlic until fragrant (about 1 minutes). Be careful not to burn garlic", 60),
+    ("Add-Add 1 large minced garlic cloves to the pan", None),
+    ("Add-1/2 tsp baking powder to a blender", None),
+])
+def test_written_seconds(text, seconds):
+    from cook_ad.drift_synth.durations import written_seconds
+    assert written_seconds(text) == seconds
+
+
 def test_sessions_are_the_only_clock():
     cond = ConditionCfg("c", n_persons=1, n_sessions=12)
     _, sessions, gt = generate_person(0, cond, 0, ASSETS)

@@ -36,7 +36,7 @@ session, no days (a day layer, e.g. mealtimes, can go on top later). How it got 
 | 2 tags | LLM proposes tags per vocab item (`sour`, `fat`, `sweet`, `salty` (salt only, by hand), `fine_motor`, `heat`, `cleaning`, `ingredient`, `tool`, `container`); Jack reviews | none |
 | 3 expansion | LLM expands each step into core tokens (pass 1), then a lower-fat variant for steps whose tokens use a fat noun (pass 2), then one call per recipe for ≤ 2 sour sites; the flavour pass adds 1–2 sweet / salty / fatty insert sites per recipe (LLM) and an omit for each core token with the knob's nouns (code); validated, retried 3×, cached | none |
 | 4 kitchen state | `take` before first use, `put` after last use, `wash` after the last use of a tool or container (rates from `tidy`). A vessel is in use for every step that happens in it (`configs/drift_synth/vessels.yaml`, by hand: `add garlic` is in the pan), so it is fetched before the first such step; the dish's own vessel (`serves_in`) is never washed or put away. No fetch or put-back for food made in the session (`kitchen_state.PREPARED`) or water; consumed items (`CONSUMED`: garlic, banana, bread…) are fetched but not put back; no put-back straight after the recipe's own `put` | seeded |
-| 5 durations | step totals: a log-normal per CC4D step (median of its normal recordings, one pooled log-sd 0.38; `durations.StepTimes`); within a step each action's share is its EPIC log-normal draw (per verb, (verb, noun) backoff below 20 samples) over the step's expected EPIC total as written; take/put/wash: EPIC per verb; no gaps; every draw's log-sd × 0.5 with the mean kept (`durations.narrowed`, `generator.yaml: durations.sigma_scale`) | seeded |
+| 5 durations | step totals: a log-normal per CC4D step (median of its normal recordings, one pooled log-sd 0.38; `durations.StepTimes`); within a step each action's share is its EPIC log-normal draw (per verb, (verb, noun) backoff below 20 samples) over the step's expected EPIC total as written, capped at 4 × its EPIC time for an action (`active_unit_cap`); a wait or cook in a step whose text sets a time ("for 3 minutes") lasts that time (`durations.step_timer`); take/put/wash: EPIC per verb; no gaps; every draw's log-sd × 0.4 with the mean kept (`durations.narrowed`, `generator.yaml: durations.sigma_scale`) | seeded |
 | 6 knobs | θ ∈ [0, 1] per knob drives variants, step order, logistics and duration scales | seeded |
 | 7 nuisance | per-session θ noise (logit space), AR(1) speed over sessions, one recipe per session from the mix weights, mix shift; recognizer noise (off) | seeded |
 | 8 drift | θ(n) under none / sudden / incremental / gradual / recurring, n = session index | seeded |
@@ -53,7 +53,7 @@ session, no days (a day layer, e.g. mealtimes, can go on top later). How it got 
 | `fatty` | preference (flavour) | adds butter, oil, cheese, cream; or the LLM's lower-fat substitute/omit; fat-tagged durations × exp(0.7(θ − 0.5)) |
 | `mise_en_place` | preference | step order: prep before cook |
 | `tidy` | preference | put-back and wash rates |
-| `slow` | capability | every duration × exp(a(θ − 0.5)) |
+| `slow` | capability | every duration × exp(a(θ − 0.5)), except a written timer's |
 | `fine_motor` | capability | duration and repetition probability of fine-motor-tagged verbs |
 
 **Knob parameters** (`configs/drift_synth/knobs.yaml`): `tidy` puts back with P from 0.1 to
@@ -77,8 +77,9 @@ where it does not, so it reads as a second addition, never as one action twice.
 spacing additions: a put-back right after the recipe's own `put` of the same thing is dropped, and
 any remaining identical pair is emitted as one event (`meta.merged`; in practice the burritos'
 two sauces, which are both EPIC `sauce`, in about 57% of sessions). Every duration draw is
-narrowed (log-sd × 0.5, same mean): EPIC's and CC4D's spreads mix many people, and at full width
-one person's `take banana` varied 13× between sessions. Removal ignores
+narrowed (log-sd × 0.4, same mean): EPIC's and CC4D's spreads mix many people, and at full width
+one person's `take banana` varied 13× between sessions. At 0.4 a lone action's log-sd is 0.37,
+CC4D's within-person step log-sd (0.36, 201 person × step repeats). Removal ignores
 affinity: an ingredient the recipe has can always be left out.
 
 **Step order.** A softmax over the steps available at each point is *not* uniform over
@@ -98,7 +99,15 @@ is drawn from CC4D (a log-normal per step, its normal recordings' median and a l
 all 88 steps, 0.38; `calibrate_cc4d.py --write-step-times` writes
 `configs/drift_synth/step_times.json`). Each of the step's actions lasts its EPIC draw times
 (the step's CC4D draw) / (the step's written actions' expected EPIC time), so an added action
-(salt for a salty cook) adds its own share and a removed one takes its share away. Take, put and
+(salt for a salty cook) adds its own share and a removed one takes its share away. An action
+(any verb but `wait` / `cook`) lasts at most `active_unit_cap` = 4 × its EPIC draw: CC4D steps run
+a median 5.8 × their actions' EPIC time (25th percentile 3.8), the rest being reading, finding
+and measuring that a camera labels idle, so a lone `add cinnamon` took the whole 63 s step. A
+step whose text sets a time (`durations.written_seconds`: "for 3 minutes", "20-30 seconds" → 25 s;
+14 steps) gives its last `wait` / `cook` token that time × exp(0.1 z), with no speed or knob: the
+microwave does not slow down; the timer comes out of the step's CC4D total before its unit is
+computed. An untimed wait (heat the pan) keeps its uncapped CC4D share. Simulated sessions are
+shorter than CC4D's step sums (median 435 s against 652 s at θ = 0.5, `calibrate_cc4d.py`). Take, put and
 wash keep EPIC time and are added on top: in CC4D the time between steps (median 15–190 s a
 recipe) is far more than they need (10–25 s). Then speed, `slow` and the per-token `fine_motor`
 and `fatty` factors multiply; one event is capped at 600 s. There are no gaps between actions,
@@ -186,7 +195,8 @@ recipes, hand-written expansions and tags, the real knobs) and covers the spec's
 9. `sudden` switches exactly at onset, and `gradual` tracks its ramp within 0.04 per 7-session block.
 
 It also checks that pre-onset sessions are identical between `null` and a drift condition, that
-step totals come from CC4D and logistics from EPIC with no gaps, and that the session index is
+step totals come from CC4D and logistics from EPIC with no gaps, that an action is capped and a
+written timer ignores `slow`, and that the session index is
 the only clock. `tests/test_drift_synth_inject.py` covers the step-level injectors.
 
 ## 7. The anomaly detector on this data
@@ -266,7 +276,7 @@ is why these injectors edit steps.
 | person routine (habit) | `drift_synth/sampler.py:make_person` (`habit_orders`), `knobs.sample_topological_order(preferred, habit)`; `generator.yaml: person.habit` |
 | knobs: variants, step order, duration scales, repetition, tidy rates | `drift_synth/knobs.py:variant_prob`, `pick_inserts`, `apply_variants`, `variant_layout`, `space_inserts`, `sample_topological_order`, `slow_multiplier`, `token_multiplier`, `repetition_prob`, `keep_side_of_hinge`, `tidy_rates`; `configs/drift_synth/knobs.yaml` |
 | take / put / wash | `drift_synth/kitchen_state.py:insert_logistics`, `PREPARED`, `CONSUMED`; vessels: `configs/drift_synth/vessels.yaml`, `assets.py:load_vessels`; look at it: `scripts/drift_synth/rollout.py` |
-| durations (EPIC actions, CC4D step totals) | `drift_synth/durations.py:fit_duration_priors`, `fit_from_intervals`, `narrowed`, `sample_duration`, `mean_duration`, `StepTimes`, `fit_step_times`, `sample_step_total`; `sampler.step_units`; `configs/drift_synth/step_times.json`; `assets.load_step_times` |
+| durations (EPIC actions, CC4D step totals) | `drift_synth/durations.py:fit_duration_priors`, `fit_from_intervals`, `narrowed`, `sample_duration`, `mean_duration`, `StepTimes`, `fit_step_times`, `sample_step_total`, `written_seconds`, `step_timer`; `sampler.step_units`, `step_timers`; `generator.yaml: durations`; `configs/drift_synth/step_times.json`; `assets.load_step_times` |
 | session noise, speed, recognizer noise | `drift_synth/noise.py:theta_for_session`, `speed_factor`, `recognizer_noise` |
 | recipe schedule, mix shift, regimes (in sessions) | `drift_synth/schedule.py:recipe_for_session`, `mix_weights`, `theta_at` |
 | one session, one person | `drift_synth/sampler.py:sample_session`, `make_person`, `generate_person` |

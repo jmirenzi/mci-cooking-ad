@@ -11,8 +11,9 @@
    Each is fitted by grid search to the real distance.
 3. Durations. Per step, the CC4D step duration (normal recordings) against the generator's time
    for that step's actions and, apart, its take / put / wash (noise off, theta 0.5, speed 1). The
-   generator draws each step's total from CC4D (--write-step-times fits those), so core time
-   should match by construction; this checks it.
+   generator draws each step's total from CC4D (--write-step-times fits those), but caps an
+   action at durations.active_unit_cap x its EPIC time and gives a written timer its written
+   time, so steps whose CC4D time is mostly reading and finding come out shorter (by design).
 
     ./py scripts/drift_synth/calibrate_cc4d.py [--sims 200]
 """
