@@ -7,6 +7,13 @@ and are recoverable at the git tag `pre-restructure`. Scripts, options and `drif
 (§5–§9.9) named in entries from 2026-10-15 to 2026-10-20 were removed in the 2026-10-20 cleanup and
 are recoverable at the git tag `pre-cleanup`.
 
+## 2026-10-27 — vessels are washed after their phase, not after their last mention
+
+Zoodles rollouts showed `wash pan`, `put pan` right after `wait pan`, before the garlic went in:
+`add garlic` / `cook garlic` name the food, so the pan looked finished. `insert_logistics` now
+moves a tool or container's last use to the last token of its phase (`phases=` from the graph).
+Same draws, same counts, only the place moves. `rollout.py --recipe zoodles` shows it.
+
 ## 2026-10-21 — the session-time generator, live, under metric H (delay 2)
 
 4 persons, stage 4b, F1 / healthy FPR at 10 / 30 / 250 sessions, H. Live, person only 0.360 /

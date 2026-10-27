@@ -234,6 +234,18 @@ def test_logistics_take_put_wash():
     assert Counter(none)[("take", "tomato")] == 1
 
 
+def test_a_vessel_is_washed_after_its_phase_not_after_its_last_mention():
+    tags = {"nouns": {"pan": ["container"], "garlic": ["ingredient"], "plate": ["container"]}}
+    toks = [("put", "pan"), ("wait", "pan"), ("add", "garlic"), ("cook", "garlic"), ("put", "plate")]
+    phases = ["cook", "cook", "cook", "cook", "serve"]
+    rng = lambda: np.random.default_rng(0)
+    named, _ = insert_logistics(toks, tags, 1.0, 1.0, rng())
+    assert named.index(("wash", "pan")) < named.index(("add", "garlic"))     # the old behaviour
+    held, _ = insert_logistics(toks, tags, 1.0, 1.0, rng(), phases=phases)
+    assert held.index(("wash", "pan")) > held.index(("cook", "garlic"))
+    assert Counter(held) == Counter(named)                                     # only the place moves
+
+
 def test_logistic_counts_do_not_depend_on_order():
     tags = {"nouns": {"a": ["ingredient"], "b": ["tool"]}}
     toks = [("cut", "a"), ("mix", "b"), ("cut", "a")]
