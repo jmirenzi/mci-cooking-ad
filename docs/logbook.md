@@ -24,6 +24,13 @@ Loose ends that block nothing. Remove a line and write a dated entry when it is 
 - Zoodles' spiralize is `put courgette`: since the action cap it lasts 4–12 s, not the minutes a
   spiralizer takes. Needs a real verb (and then probably an uncapped step).
 
+## 2026-10-29 — rollout comb: missing actions, hob on/off, our own graph edges
+
+24 rollouts read. Added what was missing: French toast `add egg` before whisking, cheesepimiento
+`pour cheese` (cup → bowl, one `mix bowl`), `move pan` / `turn-on hob` / `turn-off hob` (pancakes,
+zoodles), `pour milk`, `add pepper` (was `season x`), spiralize `use courgette` (uncapped). More X
+next to an action on X moves a step earlier. Zoodles: 3 edges of ours (noodles before toppings).
+
 ## 2026-10-29 — one microwave sequence, no vinegar, no oil on top of butter
 
 Rollout read: 5 different microwave spellings (some opened it, some turned it on, some waited on

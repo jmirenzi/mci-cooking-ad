@@ -30,8 +30,8 @@
  "3": {
   "tokens": [
    [
-    "season",
-    "courgette"
+    "add",
+    "pepper"
    ]
   ],
   "variants": []
@@ -58,7 +58,7 @@
  "5": {
   "tokens": [
    [
-    "put",
+    "move",
     "pan"
    ],
    [
@@ -77,6 +77,10 @@
    [
     "remove",
     "food"
+   ],
+   [
+    "turn-off",
+    "hob"
    ]
   ],
   "variants": [
@@ -189,7 +193,7 @@
  "12": {
   "tokens": [
    [
-    "put",
+    "use",
     "courgette"
    ]
   ],

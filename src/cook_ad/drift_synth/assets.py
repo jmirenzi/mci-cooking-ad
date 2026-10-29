@@ -71,8 +71,13 @@ def load_assets(gen_path="configs/drift_synth/generator.yaml", require_reviewed_
         durations = fit_duration_priors(gen["durations"]["source"], p["epic_annotations"])
         dur_path.parent.mkdir(parents=True, exist_ok=True)
         durations.save(dur_path)
+    graphs = load_phased(p["cc4d"], recipes, p["phases"])
+    if p.get("graph_edits"):
+        from cook_ad.drift_synth.graphs import with_edges
+        edits = yaml.safe_load(Path(p["graph_edits"]).read_text())["add_edges"] or {}
+        graphs = {r: with_edges(g, edits.get(r, ())) for r, g in graphs.items()}
     return Assets(
-        graphs=load_phased(p["cc4d"], recipes, p["phases"]),
+        graphs=graphs,
         expansions={r: load_expansions(Path(p["expansions"]) / f"{r}.json") for r in recipes},
         tags=load_tags(p["tags"]),
         knobs=load_knobs(p["knobs"]),

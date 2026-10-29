@@ -1,0 +1,5 @@
+# Order edges added to CaptainCook4D's task graphs (docs/drift_synth.md §1), where the published
+# graph lets a step run before the thing it acts on is there. Applied at load
+# (graphs.with_edges, which refuses a cycle). By hand; every edge here is ours, not CC4D's.
+add_edges:
+  zoodles: [[10, 2], [10, 3], [10, 7]]   # the noodles go in before the parmesan, pepper and salt

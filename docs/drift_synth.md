@@ -16,7 +16,10 @@ session, no days (a day layer, e.g. mealtimes, can go on top later). How it got 
 
 ## 1. Design (settled; changes go through Jack)
 
-1. **Recipe structure comes from CaptainCook4D (CC4D) task graphs.** The LLM never invents it.
+1. **Recipe structure comes from CaptainCook4D (CC4D) task graphs.** The LLM never invents it. We add
+   a few order edges of our own where CC4D's graph lets a step run before the thing it acts on is
+   there (`configs/drift_synth/graph_edits.yaml`, applied at load by `graphs.with_edges`; today only
+   zoodles: the noodles go in before the parmesan, pepper and salt).
 2. **LLM for structure, code for randomness.** An LLM runs offline, once per recipe step, to expand
    the step into vocabulary tokens and propose knob variants. Ordering, inclusion, durations, noise
    and drift are all sampled in seeded code.
@@ -80,8 +83,9 @@ rare. Every addition is `add <ingredient>`, and so is the recipe's own salt. Wit
 addition goes in before the step's first `mix` (salt, then stir), else after its last action
 (`knobs.place_inserts`); an insert is listed under the step it belongs in, so the pancakes' salt,
 lemon, sugar and butter sit on blender steps (9, 12), not on the pour into the pan. An addition
-that would land next to the same action (more salt straight after the recipe's salt) moves into
-the nearest step where it does not, so it reads as a second addition, never as one action twice.
+that would land next to an action on the same thing (more salt straight after the recipe's salt,
+more oil straight after `pour oil`) moves into the nearest step where it does not, earlier steps
+first, so it reads as a second addition, never as one action twice.
 
 **No action appears twice in a row** in a clean stream except a `fine_motor` repetition. Besides
 spacing additions: a put-back right after the recipe's own `put` of the same thing is dropped, and
@@ -116,7 +120,9 @@ and measuring that a camera labels idle, so a lone `add cinnamon` took the whole
 step whose text sets a time (`durations.written_seconds`: "for 3 minutes", "20-30 seconds" → 25 s;
 14 steps) gives its last `wait` / `cook` token that time × exp(0.1 z), with no speed or knob: the
 microwave does not slow down; the timer comes out of the step's CC4D total before its unit is
-computed. An untimed wait (heat the pan) keeps its uncapped CC4D share. Simulated sessions are
+computed. An untimed wait (heat the pan) keeps its uncapped CC4D share, and so does a step in
+`durations.uncapped_steps`, whose token stands in for an action EPIC has no verb for (zoodles'
+spiralize, `use courgette`: EPIC's 2 s `use` is wrong for it). Simulated sessions are
 shorter than CC4D's step sums (median 435 s against 652 s at θ = 0.5, `calibrate_cc4d.py`). Take, put and
 wash keep EPIC time and are added on top: in CC4D the time between steps (median 15–190 s a
 recipe) is far more than they need (10–25 s). Then speed, `slow` and the per-token `fine_motor`
@@ -276,7 +282,7 @@ is why these injectors edit steps.
 | Concept | Where |
 |---|---|
 | data types (Step, RecipeGraph, Variant, StepExpansion, Event, Session) | `drift_synth/types.py` |
-| task graph loading, validation, topological-order counting, step deletion | `drift_synth/graphs.py:load_task_graphs`, `validate_graph`, `without_steps`, `linear_extension_counter`, `count_linear_extensions` |
+| task graph loading, validation, topological-order counting, our edges, step deletion | `drift_synth/graphs.py:load_task_graphs`, `validate_graph`, `with_edges` (`configs/drift_synth/graph_edits.yaml`), `without_steps`, `linear_extension_counter`, `count_linear_extensions` |
 | step phases (LLM, cached) | `drift_synth/graphs.py:assign_phase`, `load_phased`; `configs/drift_synth/phases/` |
 | LLM calls with a JSON schema | `drift_synth/llm.py:client_for`, `ask_json`; `llm/client.py:ChatClient(response_format=)` |
 | step expansions (two passes, per-recipe sour sites), validation, EPIC exemplars | `drift_synth/expand.py:expand_step`, `sour_sites`, `validate_expansion`, `ExemplarIndex`, `build_expansions`; `configs/drift_synth/expansions/` |

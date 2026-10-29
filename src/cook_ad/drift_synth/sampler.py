@@ -155,6 +155,7 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
     cap = cfg.get("max_event_s")                  # None = uncapped
     k_sigma = cfg.get("sigma_scale", 1.0)
     unit_cap = cfg.get("active_unit_cap") or math.inf
+    uncapped = set((cfg.get("uncapped_steps") or {}).get(recipe.recipe_id, ()))
     timer_verbs = set(cfg.get("timer_verbs", ()))
     timer_sigma = cfg.get("timer_sigma", 0.0)
     times = getattr(assets, "step_times", None)
@@ -181,7 +182,7 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
                     draw = sample_step_total(times, recipe.recipe_id, st, rng, k_sigma)
                     step_total[st] = 1.0 if draw is None else draw / math.exp(p[0] + 0.5 * p[1] ** 2)
                 u = units.get(st, fallback)
-                m = (u if tok[0] in timer_verbs else min(max(u, 1.0), unit_cap)) * step_total[st]
+                m = (u if tok[0] in timer_verbs or st in uncapped else min(max(u, 1.0), unit_cap)) * step_total[st]
             d = x * m * speed * slow * K.token_multiplier(tok, theta, kn, tags)
         d = min(d, cap) if cap else d
         clean.append(Event(round(t, 3), round(t + d, 3), tok[0], tok[1]))

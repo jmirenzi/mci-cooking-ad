@@ -553,6 +553,26 @@ def test_pick_removals_draws_once_per_ingredient():
     assert np.mean(["oil" in d for d in draws]) == pytest.approx(0.5, abs=0.04)   # 2 (0.5 - 0.25)
 
 
+def test_with_edges_adds_order_and_refuses_cycles_and_unknown_steps():
+    from cook_ad.drift_synth.graphs import with_edges
+    g = with_edges(SALAD, [(1, 3)])
+    assert ("1", "3") in g.edges and set(SALAD.edges) <= set(g.edges)
+    with pytest.raises(ValueError):
+        with_edges(SALAD, [("3", "1")])          # 1 -> 2 -> 3 already
+    with pytest.raises(ValueError):
+        with_edges(SALAD, [("1", "9")])
+
+
+def test_space_inserts_moves_more_oil_off_a_pour_of_oil_to_an_earlier_step():
+    from cook_ad.drift_synth.knobs import space_inserts
+    blocks = [["1", [("core", ("cut", "tomato"), None)], []],
+              ["2", [("core", ("add", "salt"), None)], []],
+              ["3", [("core", ("pour", "oil"), None)], [("ins", ("add", "oil"), "fatty")]]]
+    space_inserts(blocks)
+    flat = [x[1] for _, core, ins in blocks for x in core + ins]
+    assert flat == [("cut", "tomato"), ("add", "oil"), ("add", "salt"), ("pour", "oil")]
+
+
 def test_an_addition_goes_in_before_its_steps_mix():
     from cook_ad.drift_synth.knobs import place_inserts
     core = [("core", ("add", "corn"), None), ("core", ("mix", "corn"), None)]

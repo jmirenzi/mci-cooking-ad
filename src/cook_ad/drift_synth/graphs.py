@@ -86,6 +86,19 @@ def parents(graph):
     return out
 
 
+def with_edges(graph, edges):
+    """The graph with extra order edges [(parent, child)] (configs/drift_synth/graph_edits.yaml);
+    raises if one names a missing step or makes a cycle."""
+    add = {(str(p), str(c)) for p, c in edges}
+    missing = {k for e in add for k in e} - set(graph.steps)
+    if missing:
+        raise ValueError(f"{graph.recipe_id}: graph edits name missing steps {sorted(missing)}")
+    out = RecipeGraph(graph.recipe_id, graph.steps,
+                      sorted(set(graph.edges) | add, key=lambda e: (_id_key(e[0]), _id_key(e[1]))))
+    topological_order(out)
+    return out
+
+
 def without_steps(graph, drop):
     """The graph with the steps in `drop` deleted, each one's parents joined to its children, so
     every order the rest had to keep is still required."""

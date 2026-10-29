@@ -235,8 +235,12 @@
  "12": {
   "tokens": [
    [
-    "mix",
+    "add",
     "egg"
+   ],
+   [
+    "mix",
+    "cup"
    ]
   ],
   "variants": [

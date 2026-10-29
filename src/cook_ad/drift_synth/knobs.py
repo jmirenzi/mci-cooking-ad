@@ -159,10 +159,10 @@ def variant_layout(exp, used):
 
 def space_inserts(blocks):
     """blocks: [[step, [items], [insert items]]] in cooking order (items as variant_layout).
-    An addition next to the same action (more salt right after, or right before, the recipe's own
-    salt) would show as one action twice. It moves into the nearest step (place_inserts), later
-    ones first, where neither neighbour is the same action: a second addition, later in the cook.
-    One with nowhere to go stays (the export then merges the pair)."""
+    An addition next to an action on the same thing (more salt right after the recipe's salt, more
+    oil right after `pour oil`) would read as one action done twice. It moves into the nearest step
+    (place_inserts), earlier ones first, where neither neighbour acts on that noun. One with nowhere
+    to go stays (the export then merges an identical pair)."""
     def seq():
         return [(b, kind, x) for b, (_, core, ins) in enumerate(blocks)
                 for kind, x in place_inserts([("core", x) for x in core], [("ins", x) for x in ins],
@@ -173,18 +173,18 @@ def space_inserts(blocks):
         f = seq()
         i = max(i for i, (bb, kind, x) in enumerate(f) if bb == t and kind == "ins" and x == item)
         blocks[t][2].pop()
-        return item[1] in (f[i - 1][2][1] if i > 0 else None, f[i + 1][2][1] if i + 1 < len(f) else None)
+        return item[1][1] in (f[i - 1][2][1][1] if i > 0 else None, f[i + 1][2][1][1] if i + 1 < len(f) else None)
 
     stuck = 0
     for _ in range(4 * sum(len(ins) for _, _, ins in blocks)):
         f = seq()
         bad = [i for i, (_, kind, x) in enumerate(f) if kind == "ins" and
-               ((i > 0 and f[i - 1][2][1] == x[1]) or (i + 1 < len(f) and f[i + 1][2][1] == x[1]))]
+               ((i > 0 and f[i - 1][2][1][1] == x[1][1]) or (i + 1 < len(f) and f[i + 1][2][1][1] == x[1][1]))]
         if len(bad) <= stuck:
             break
         b, _, item = f[bad[stuck]]
         blocks[b][2].remove(item)
-        cands = list(range(b + 1, len(blocks))) + list(range(b - 1, -1, -1))
+        cands = list(range(b - 1, -1, -1)) + list(range(b + 1, len(blocks)))
         target = next((t for t in cands if not clash_in(item, t)), None)
         if target is None:
             blocks[b][2].append(item)

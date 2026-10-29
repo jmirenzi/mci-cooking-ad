@@ -24,8 +24,12 @@
  "3": {
   "tokens": [
    [
-    "put",
+    "move",
     "pan"
+   ],
+   [
+    "turn-on",
+    "hob"
    ],
    [
     "pour",
@@ -43,7 +47,7 @@
     "anchor_step": "3",
     "tokens": [],
     "replaces": [
-     1
+     2
     ]
    }
   ]
@@ -146,6 +150,10 @@
    [
     "cook",
     "pancake"
+   ],
+   [
+    "turn-off",
+    "hob"
    ]
   ],
   "variants": []
