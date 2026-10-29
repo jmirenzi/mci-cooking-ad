@@ -29,7 +29,7 @@ Loose ends that block nothing. Remove a line and write a dated entry when it is 
 Rollout read: Sam's pancakes salted the pan after the batter (inserts anchored on `pour mixture` /
 `cook pancake`), and 9 inserts in 6 recipes landed after their step's `mix`. `place_inserts` puts an
 addition before the step's first `mix`; pancakes' inserts re-anchored to blender steps 9 / 12; step 4
-(syrup on the plate) lost its second `put plate`. Still open: zoodles' salt into the empty hot pan.
+(syrup on the plate) lost its second `put plate`. Zoodles' salt insert: step 5 (empty hot pan) → 10.
 
 ## 2026-10-27 — durations: actions capped, written timers, narrower draws
 

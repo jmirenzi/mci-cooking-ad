@@ -72,18 +72,6 @@
   ],
   "variants": [
    {
-    "knob": "salty",
-    "kind": "insert",
-    "anchor_step": "5",
-    "tokens": [
-     [
-      "add",
-      "salt"
-     ]
-    ],
-    "replaces": null
-   },
-   {
     "knob": "fatty",
     "kind": "insert",
     "anchor_step": "5",
@@ -184,6 +172,18 @@
      [
       "add",
       "lime"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "10",
+    "tokens": [
+     [
+      "add",
+      "salt"
      ]
     ],
     "replaces": null
