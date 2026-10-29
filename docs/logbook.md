@@ -21,8 +21,11 @@ Loose ends that block nothing. Remove a line and write a dated entry when it is 
   bucket the first-visit fire rate at fixed α by the number of pending k with P̂ ≤ α. If it climbs
   with the bucket, use α_eff = α / n_pending (or Šidák). Also untested: the hard ĉ < ½ cut for
   "not yet happened" (soft alternative: weight by 1 − min(ĉ_k, 1)).
-- Zoodles' spiralize is `put courgette`: since the action cap it lasts 4–12 s, not the minutes a
-  spiralizer takes. Needs a real verb (and then probably an uncapped step).
+
+## 2026-10-29 — cleanup before merging the rollout branch
+
+`scripts/drift_synth/rollout_examples.py` deleted: `rollout.py --recipe all` does the same for any
+people (entries citing it: see git history). Sessions at θ 0.5 now run a median 500 s (CC4D 652 s).
 
 ## 2026-10-29 — rollout comb: missing actions, hob on/off, our own graph edges
 

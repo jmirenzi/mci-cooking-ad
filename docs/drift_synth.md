@@ -38,7 +38,7 @@ session, no days (a day layer, e.g. mealtimes, can go on top later). How it got 
 | 1 graphs | load and validate task graphs; LLM labels each step prep/cook/serve/cleanup | none (LLM, cached) |
 | 2 tags | LLM proposes tags per vocab item (`sour`, `fat`, `sweet`, `salty` (salt only, by hand), `fine_motor`, `heat`, `cleaning`, `ingredient`, `tool`, `container`); Jack reviews | none |
 | 3 expansion | LLM expands each step into core tokens (pass 1), then a lower-fat variant for steps whose tokens use a fat noun (pass 2), then one call per recipe for ≤ 2 sour sites; the flavour pass adds 1–2 sweet / salty / fatty insert sites per recipe (LLM) and an omit for each core token with the knob's nouns (code); validated, retried 3×, cached | none |
-| 4 kitchen state | `take` before first use, `put` after last use, `wash` after the last use of a tool or container (rates from `tidy`). A vessel is in use for every step that happens in it (`configs/drift_synth/vessels.yaml`, by hand: `add garlic` is in the pan), so it is fetched before the first such step; the dish's own vessel (`serves_in`) is never washed or put away. No fetch or put-back for food made in the session (`kitchen_state.PREPARED`) or water; consumed items (`CONSUMED`: garlic, banana, bread…) are fetched but not put back; no put-back straight after the recipe placed the thing (`put` / `insert`). A recipe step's own `put` names what is placed, as EPIC does: food onto the dish (`put pancake`, never `put plate`), a vessel on the hob (`put pan`); into the microwave is `insert bowl` (EPIC files "put bowl in microwave" under `insert`, 18 of 21), so a recipe never puts the dish's own vessel. Every microwave use is the same seven actions in every recipe (`open microwave`, `insert x`, `close microwave`, `turn-on microwave`, `wait microwave`, `open microwave`, `remove x`; EPIC files "take out" under `remove`), pinned by `tests/test_drift_synth_vessels.py`. A put-back is EPIC `put` in the data (EPIC has no other verb for it); `rollout.py` and `rollout_examples.py` print it as `return` | seeded |
+| 4 kitchen state | `take` before first use, `put` after last use, `wash` after the last use of a tool or container (rates from `tidy`). A vessel is in use for every step that happens in it (`configs/drift_synth/vessels.yaml`, by hand: `add garlic` is in the pan), so it is fetched before the first such step; the dish's own vessel (`serves_in`) is never washed or put away. No fetch or put-back for food made in the session (`kitchen_state.PREPARED`) or water; consumed items (`CONSUMED`: garlic, banana, bread…) are fetched but not put back; no put-back straight after the recipe placed the thing (`put` / `insert`). A recipe step's own `put` names what is placed, as EPIC does: food onto the dish (`put pancake`, never `put plate`), a pan onto the hob is `move pan`; into the microwave is `insert bowl` (EPIC files "put bowl in microwave" under `insert`, 18 of 21), so a recipe never puts the dish's own vessel. Every microwave use is the same seven actions in every recipe (`open microwave`, `insert x`, `close microwave`, `turn-on microwave`, `wait microwave`, `open microwave`, `remove x`; EPIC files "take out" under `remove`), pinned by `tests/test_drift_synth_vessels.py`. A put-back is EPIC `put` in the data (EPIC has no other verb for it); `rollout.py` prints it as `return` | seeded |
 | 5 durations | step totals: a log-normal per CC4D step (median of its normal recordings, one pooled log-sd 0.38; `durations.StepTimes`); within a step each action's share is its EPIC log-normal draw (per verb, (verb, noun) backoff below 20 samples) over the step's expected EPIC total as written, capped at 4 × its EPIC time for an action (`active_unit_cap`); a wait or cook in a step whose text sets a time ("for 3 minutes") lasts that time (`durations.step_timer`); take/put/wash: EPIC per verb; no gaps; every draw's log-sd × 0.4 with the mean kept (`durations.narrowed`, `generator.yaml: durations.sigma_scale`) | seeded |
 | 6 knobs | θ ∈ [0, 1] per knob drives variants, step order, logistics and duration scales | seeded |
 | 7 nuisance | per-session θ noise (logit space), AR(1) speed over sessions, one recipe per session from the mix weights, mix shift; recognizer noise (off) | seeded |
@@ -116,14 +116,15 @@ all 88 steps, 0.38; `calibrate_cc4d.py --write-step-times` writes
 (salt for a salty cook) adds its own share and a removed one takes its share away. An action
 (any verb but `wait` / `cook`) lasts at most `active_unit_cap` = 4 × its EPIC draw: CC4D steps run
 a median 5.8 × their actions' EPIC time (25th percentile 3.8), the rest being reading, finding
-and measuring that a camera labels idle, so a lone `add cinnamon` took the whole 63 s step. A
+and measuring that a camera labels idle (uncapped, a lone `add cinnamon` would take the whole
+63 s step). A
 step whose text sets a time (`durations.written_seconds`: "for 3 minutes", "20-30 seconds" → 25 s;
 14 steps) gives its last `wait` / `cook` token that time × exp(0.1 z), with no speed or knob: the
 microwave does not slow down; the timer comes out of the step's CC4D total before its unit is
 computed. An untimed wait (heat the pan) keeps its uncapped CC4D share, and so does a step in
 `durations.uncapped_steps`, whose token stands in for an action EPIC has no verb for (zoodles'
 spiralize, `use courgette`: EPIC's 2 s `use` is wrong for it). Simulated sessions are
-shorter than CC4D's step sums (median 435 s against 652 s at θ = 0.5, `calibrate_cc4d.py`). Take, put and
+shorter than CC4D's step sums (median 500 s against 652 s at θ = 0.5, `calibrate_cc4d.py`). Take, put and
 wash keep EPIC time and are added on top: in CC4D the time between steps (median 15–190 s a
 recipe) is far more than they need (10–25 s). Then speed, `slow` and the per-token `fine_motor`
 and `fatty` factors multiply; one event is capped at 600 s. There are no gaps between actions,
@@ -302,7 +303,7 @@ is why these injectors edit steps.
 | offline assets (stages 1–3) | `scripts/drift_synth/build_assets.py --stage phases\|tags\|expansions\|flavour\|affinity` |
 | generation (stages 4–9) | `scripts/drift_synth/generate.py`; `configs/drift_synth/generator.yaml`, `conditions.yaml` |
 | sanity plots | `scripts/drift_synth/sanity_plots.py` |
-| example rollouts (hand-set people × every recipe, for reading) | `scripts/drift_synth/rollout_examples.py` → `runs/drift_synth/reports/rollout_examples.md` |
+| example rollouts (any knob vectors × one or every recipe, for reading) | `scripts/drift_synth/rollout.py --recipe <name>\|all --person "Name: knob=value ..."` |
 | tests | `tests/test_drift_synth_graphs.py`, `test_drift_synth_generator.py`, `test_drift_synth_expand.py`, `test_drift_synth_inject.py`, `_drift_fixtures.py`; `test_scrub.py`, `test_global_prior.py` |
 | CC word → EPIC class table (exemplar lookup) | `drift_synth/lexicon.py:NOUNS`, `VERBS`, `nouns_in` |
 | CC4D step totals and the calibration check | `scripts/drift_synth/calibrate_cc4d.py --write-step-times configs/drift_synth/step_times.json`; `sampler.step_owners` |

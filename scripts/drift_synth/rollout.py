@@ -2,7 +2,7 @@
 
 A person is a knob vector (theta in [0, 1]; unnamed knobs sit at 0.5 = cooked as written). Clean
 events (no recognizer or session noise), speed 1, the generator's durations (CC4D step totals,
-actions capped, written timers), as in rollout_examples.py.
+actions capped, written timers).
 
     ./py scripts/drift_synth/rollout.py --recipe zoodles \\
         --person "Sam: salty=1 fatty=1 mise_en_place=0.05 tidy=0.05" \\
@@ -10,7 +10,7 @@ actions capped, written timers), as in rollout_examples.py.
         --person "Lee: slow=0.8 fine_motor=0.45"
 
 Knobs: sour sweet salty fatty mise_en_place tidy slow fine_motor. `--person` repeats; a bare vector
-with no `Name:` is called P1, P2, ... `--list` prints the recipes. A tidy put-back prints as
+with no `Name:` is called P1, P2, ... `--recipe all` rolls out every recipe; `--list` prints them. A tidy put-back prints as
 `return X`; in the data it is EPIC's `put X` (EPIC has no separate verb for it).
 """
 import argparse
@@ -47,20 +47,24 @@ def main():
     a = ap.parse_args()
     import cook_ad.drift_synth.assets as A
     from cook_ad.drift_synth.noise import NoiseCfg
-    from cook_ad.drift_synth.sampler import rng_for, sample_session
     assets = A.load_assets()
     if a.list or not a.recipe:
         sys.exit("recipes: " + ", ".join(sorted(assets.graphs)))
-    if a.recipe not in assets.graphs:
+    if a.recipe != "all" and a.recipe not in assets.graphs:
         sys.exit(f"unknown recipe {a.recipe!r}; recipes: {', '.join(sorted(assets.graphs))}")
     if not a.person:
         sys.exit("give at least one --person")
     noise = NoiseCfg().off()
-    r = a.recipe
-    for i, spec in enumerate(a.person, 1):
+    for r in sorted(assets.graphs) if a.recipe == "all" else [a.recipe]:
+        roll_out(r, a.person, a.seed, assets, noise)
+
+
+def roll_out(r, people, seed, assets, noise):
+    from cook_ad.drift_synth.sampler import rng_for, sample_session
+    for i, spec in enumerate(people, 1):
         name, theta = parse_person(spec, i, list(assets.knobs))
         s = sample_session(assets.graphs[r], assets.expansions[r], theta, 1.0, assets, noise,
-                           rng_for(a.seed, 7, i, sorted(assets.graphs).index(r)), name)
+                           rng_for(seed, 7, i, sorted(assets.graphs).index(r)), name)
         ev, kinds = s.meta["clean_events"], s.meta["kinds"]
         gone = [f"-{knob} {v} {n}" for _, v, n, knob in s.meta["removed"]]
         print(f"\n=== {name} on {r} — {len(ev)} runs, {clock(ev[-1][1])} total")
