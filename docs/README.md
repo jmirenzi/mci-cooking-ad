@@ -113,7 +113,7 @@ scripts/
 ├── train/             fit_lexical, fit_hard_em, smooth_params, refit_durations, fit_np_hazard,
 │                      fit_visit_counts, train_hsmm.sh
 ├── eval/              eval_breakfast.py, eval_epic_tent.py, eval_synth_prior.py, llm_*.sh
-├── drift_synth/       build_assets, calibrate_cc4d, generate, prior_experiment.sh, rollout_examples,
+├── drift_synth/       build_assets, calibrate_cc4d, generate, prior_experiment.sh, rollout (one or every recipe, any knob vectors, timed),
 │                      sanity_plots
 ├── figures/           trial_figure.py
 ├── analysis/          participant_variability.py

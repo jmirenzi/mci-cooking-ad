@@ -2,11 +2,31 @@
  "1": {
   "tokens": [
    [
-    "put",
+    "open",
+    "microwave"
+   ],
+   [
+    "insert",
     "cup"
    ],
    [
+    "close",
+    "microwave"
+   ],
+   [
+    "turn-on",
+    "microwave"
+   ],
+   [
     "wait",
+    "microwave"
+   ],
+   [
+    "open",
+    "microwave"
+   ],
+   [
+    "remove",
     "cup"
    ]
   ],
@@ -89,8 +109,8 @@
  "6": {
   "tokens": [
    [
-    "fill",
-    "cup"
+    "pour",
+    "milk"
    ]
   ],
   "variants": [
@@ -111,8 +131,16 @@
  "7": {
   "tokens": [
    [
-    "put",
+    "open",
+    "microwave"
+   ],
+   [
+    "insert",
     "cup"
+   ],
+   [
+    "close",
+    "microwave"
    ],
    [
     "turn-on",
@@ -121,6 +149,14 @@
    [
     "wait",
     "microwave"
+   ],
+   [
+    "open",
+    "microwave"
+   ],
+   [
+    "remove",
+    "cup"
    ]
   ],
   "variants": []

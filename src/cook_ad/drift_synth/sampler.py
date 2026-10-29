@@ -13,7 +13,8 @@ import math
 import numpy as np
 
 from cook_ad.drift_synth import knobs as K
-from cook_ad.drift_synth.durations import mean_duration, sample_duration, sample_step_total
+from cook_ad.drift_synth.durations import mean_duration, sample_duration, sample_step_total, step_timer
+from cook_ad.drift_synth.graphs import without_steps
 from cook_ad.drift_synth.kitchen_state import insert_logistics
 from cook_ad.drift_synth.noise import NoiseCfg, recognizer_noise, speed_factor, theta_for_session
 from cook_ad.drift_synth.schedule import DriftRegime, MixShift, PersonCfg, recipe_for_session, theta_at
@@ -47,36 +48,57 @@ def step_owners(steps):
     return out
 
 
-def step_units(recipe, expansions, times, durations):
-    """{step: seconds per unit of expected EPIC time}: the step's CC4D total over its written core
-    actions' expected EPIC durations. A step CC4D never recorded gets the recipe's median unit
-    (1.0 with no CC4D data at all)."""
-    units = {}
+def step_timers(recipe, expansions, timer_verbs):
+    """{step: (token, seconds)} for steps whose text sets a time (durations.step_timer)."""
+    out = {}
+    for s, exp in expansions.items():
+        tm = step_timer(recipe.steps[s].description, exp.tokens, timer_verbs) if s in recipe.steps else None
+        if tm is not None:
+            out[s] = tm
+    return out
+
+
+def step_units(recipe, expansions, times, durations, timers=None):
+    """{step: seconds per unit of expected EPIC time}: the step's CC4D total, less its written
+    timer, over its other written core actions' expected EPIC durations. A step CC4D never
+    recorded gets the recipe's median unit (1.0 with no CC4D data at all)."""
+    units, timers = {}, timers or {}
     for s, exp in expansions.items():
         p = times.params(recipe.recipe_id, s) if times is not None else None
-        base = sum(mean_duration(durations, t) for t in exp.tokens)
+        tm = timers.get(s)
+        base = sum(mean_duration(durations, t) for t in exp.tokens if tm is None or tuple(t) != tm[0])
         if p is not None and base > 0:
-            units[s] = math.exp(p[0] + 0.5 * p[1] ** 2) / base
+            units[s] = max(math.exp(p[0] + 0.5 * p[1] ** 2) - (tm[1] if tm else 0.0), 0.0) / base
     fallback = float(np.median(list(units.values()))) if units else 1.0
     return units, fallback
 
 
 def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
                    person_id="", index=0, preferred=None, habit=0.0):
-    """The spec's order: step order, variants, logistics, repetition, durations, noise."""
+    """The spec's order: removed ingredients (they shrink the graph), step order, variants,
+    logistics, repetition, durations, noise."""
     kn, tags, gen = assets.knobs, assets.tags, assets.gen
     affinity = (getattr(assets, "affinity", None) or {}).get(recipe.recipe_id)
-    order = K.sample_topological_order(recipe, theta["mise_en_place"], kn["mise_en_place"]["beta"],
-                                       rng, preferred, habit)
+    # A removed ingredient takes every token naming it, and deletes a step that existed only for
+    # it (removals.yaml): no microwaving an empty mug. Ordering then runs on the smaller graph, on
+    # its own stream, so its varying number of draws cannot shift the draws after it.
+    rm = (getattr(assets, "removals", None) or {}).get(recipe.recipe_id) or {}
+    gone = K.pick_removals(expansions, theta, kn, rng, rm.get("keep", ()))
+    drop = K.removed_steps(expansions, gone, tags, rm.get("acts_on"))
+    graph = without_steps(recipe, drop) if drop else recipe
+    pref = [s for s in preferred if s in graph.steps] if preferred else preferred
+    order = K.sample_topological_order(graph, theta["mise_en_place"], kn["mise_en_place"]["beta"],
+                                       rng.spawn(1)[0], pref, habit)
 
-    chosen = K.pick_inserts(expansions, theta, kn, rng, affinity)
-    blocks, applied, skipped, removed = [], {}, [], []
+    chosen = K.pick_inserts({s: e for s, e in expansions.items() if s not in drop}, theta, kn, rng, affinity)
+    blocks, applied, skipped = [], {}, []
+    removed = [[s, v, n, knob] for s, knob in sorted(drop.items()) for v, n in expansions[s].tokens]
     for s in order:
         exp = expansions.get(s)
         if exp is None:
             skipped.append(s)
             continue
-        _, used = K.apply_variants(exp, theta, kn, rng, affinity, chosen.get(s, set()))
+        _, used = K.apply_variants(exp, theta, kn, rng, affinity, chosen.get(s, set()), gone)
         items = K.variant_layout(exp, used)
         removed += [[s, t[0], t[1], knob] for kind, t, knob in items if kind == "removed"]
         blocks.append([s, [x for x in items if x[0] not in ("ins", "removed")],
@@ -86,13 +108,16 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
     K.space_inserts(blocks)
     tokens, steps, kinds = [], [], []
     for s, core, ins in blocks:
-        for kind, tok, knob in core + ins:
+        for kind, tok, knob in K.place_inserts(core, ins):
             tokens.append(tok)
             steps.append(s)
             kinds.append("core" if kind == "core" else f"+{knob}")
 
     put_p, wash_p = K.tidy_rates(theta, kn)
-    with_log, prov = insert_logistics(tokens, tags, put_p, wash_p, rng, gen["logistics_verbs"])
+    ves = (getattr(assets, "vessels", None) or {}).get(recipe.recipe_id) or {}
+    in_use = [ves.get("steps", {}).get(s, []) for s in steps]
+    with_log, prov = insert_logistics(tokens, tags, put_p, wash_p, rng, gen["logistics_verbs"],
+                                      in_use, ves.get("serves_in"))
     it, ik = iter(steps), iter(kinds)
     step_of = [next(it) if p == "core" else None for p in prov]
     kind_of = [next(ik) if p == "core" else "logistics" for p in prov]
@@ -119,15 +144,23 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
 
     # Durations (durations.py). A step's total is drawn from CC4D; each of its actions gets
     # (its EPIC draw) x (the step's total / its written actions' expected EPIC time), so an added
-    # or removed action adds or removes its own share. Take / put / wash keep EPIC time. Then the
-    # person's multipliers. No gaps: the model reads idle-free streams. A fine-motor repeat follows
-    # a pause of repeat_gap_s, so it shows as a second run before scrubbing.
+    # or removed action adds or removes its own share, but an action (not a wait or cook) at most
+    # active_unit_cap x its EPIC time: the rest of a long step is reading and finding. A wait the
+    # step's text times ("for 3 minutes") lasts that time, and no knob or speed moves the
+    # microwave. Take / put / wash keep EPIC time. Then the person's multipliers. No gaps: the
+    # model reads idle-free streams. A fine-motor repeat follows a pause of repeat_gap_s, so it
+    # shows as a second run before scrubbing.
     slow = K.slow_multiplier(theta, kn)
     cfg = gen.get("durations") or {}
     cap = cfg.get("max_event_s")                  # None = uncapped
     k_sigma = cfg.get("sigma_scale", 1.0)
+    unit_cap = cfg.get("active_unit_cap") or math.inf
+    uncapped = set((cfg.get("uncapped_steps") or {}).get(recipe.recipe_id, ()))
+    timer_verbs = set(cfg.get("timer_verbs", ()))
+    timer_sigma = cfg.get("timer_sigma", 0.0)
     times = getattr(assets, "step_times", None)
-    units, fallback = step_units(recipe, expansions, times, assets.durations)
+    timers = step_timers(recipe, expansions, timer_verbs)
+    units, fallback = step_units(recipe, expansions, times, assets.durations, timers)
     step_total = {}                               # step -> this session's CC4D draw / expected
     rep_next = {i - 1 for i in repeats}           # events followed by their own repeat
     rep_gap = kn["fine_motor"].get("repeat_gap_s", 0.0)
@@ -136,15 +169,21 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
     for i, tok in enumerate(final):
         st = final_step[i]
         x = sample_duration(assets.durations, tok, 1.0, rng, k_sigma)
-        if st is None:
-            m = 1.0
+        z = rng.standard_normal()                 # drawn for every event, so streams stay aligned
+        tm = timers.get(st)
+        if tm is not None and final_kind[i] == "core" and tuple(tok) == tm[0]:
+            d = tm[1] * math.exp(timer_sigma * z)     # the appliance's time: no knob, no speed
         else:
-            if st not in step_total:
-                p = times.params(recipe.recipe_id, st) if times is not None else None
-                draw = sample_step_total(times, recipe.recipe_id, st, rng, k_sigma)
-                step_total[st] = 1.0 if draw is None else draw / math.exp(p[0] + 0.5 * p[1] ** 2)
-            m = units.get(st, fallback) * step_total[st]
-        d = x * m * speed * slow * K.token_multiplier(tok, theta, kn, tags)
+            if st is None:
+                m = 1.0
+            else:
+                if st not in step_total:
+                    p = times.params(recipe.recipe_id, st) if times is not None else None
+                    draw = sample_step_total(times, recipe.recipe_id, st, rng, k_sigma)
+                    step_total[st] = 1.0 if draw is None else draw / math.exp(p[0] + 0.5 * p[1] ** 2)
+                u = units.get(st, fallback)
+                m = (u if tok[0] in timer_verbs or st in uncapped else min(max(u, 1.0), unit_cap)) * step_total[st]
+            d = x * m * speed * slow * K.token_multiplier(tok, theta, kn, tags)
         d = min(d, cap) if cap else d
         clean.append(Event(round(t, 3), round(t + d, 3), tok[0], tok[1]))
         t += d + (rep_gap if i in rep_next else 0.0)
@@ -155,6 +194,7 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
         person_id=person_id, index=index, recipe_id=recipe.recipe_id,
         events=events, theta=dict(theta),
         meta={"order": order, "variants_applied": applied, "skipped_steps": skipped,
+              "dropped_steps": sorted(drop),
               "repetitions": len(repeats), "repeats": repeats, "speed": round(speed, 6), "noise": counts,
               "removed": removed, "merged": merged, "kinds": final_kind,
               "clean_events": [[e.t_start, e.t_end, e.verb, e.noun, s] for e, s in zip(clean, final_step)]},

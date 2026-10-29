@@ -7,6 +7,77 @@ and are recoverable at the git tag `pre-restructure`. Scripts, options and `drif
 (§5–§9.9) named in entries from 2026-10-15 to 2026-10-20 were removed in the 2026-10-20 cleanup and
 are recoverable at the git tag `pre-cleanup`.
 
+## Open (non-pressing)
+
+Loose ends that block nothing. Remove a line and write a dated entry when it is done.
+
+- Backoff τ on the drift_synth person model: confirm stage 3 uses `backoff_counts` τ = 30 +
+  `shifted_mode_counts` 0.7 there (only `scripts/eval/eval_synth_prior.py` passes them;
+  `configs/drift_synth/hsmm.yaml` does not mention them), then validate τ ∈ {0, 2, 30} under metric H
+  at 10 / 30 / 250 sessions. τ = 30 was chosen on a Breakfast dev fold (metric B, 2026-08-20); the
+  global-prior λ = 0 vs 1 arms both sit on top of it.
+- `s_count` live α with many pending k: `CountState.step` takes the min of P̂(i visited) and
+  P̂(k not before i) over all pending k against one α, a union over tests. On healthy sessions,
+  bucket the first-visit fire rate at fixed α by the number of pending k with P̂ ≤ α. If it climbs
+  with the bucket, use α_eff = α / n_pending (or Šidák). Also untested: the hard ĉ < ½ cut for
+  "not yet happened" (soft alternative: weight by 1 − min(ĉ_k, 1)).
+
+## 2026-10-29 — cleanup before merging the rollout branch
+
+`scripts/drift_synth/rollout_examples.py` deleted: `rollout.py --recipe all` does the same for any
+people (entries citing it: see git history). Sessions at θ 0.5 now run a median 500 s (CC4D 652 s).
+
+## 2026-10-29 — rollout comb: missing actions, hob on/off, our own graph edges
+
+24 rollouts read. Added what was missing: French toast `add egg` before whisking, cheesepimiento
+`pour cheese` (cup → bowl, one `mix bowl`), `move pan` / `turn-on hob` / `turn-off hob` (pancakes,
+zoodles), `pour milk`, `add pepper` (was `season x`), spiralize `use courgette` (uncapped). More X
+next to an action on X moves a step earlier. Zoodles: 3 edges of ours (noodles before toppings).
+
+## 2026-10-29 — one microwave sequence, no vinegar, no oil on top of butter
+
+Rollout read: 5 different microwave spellings (some opened it, some turned it on, some waited on
+`cup`) → one 7-action sequence everywhere. Sour vinegar → lime (cheesepimiento), dropped (French toast: no sour site). Oil
+added to a pan already getting butter (pancakes 3, zoodles 5) dropped. `roll butter` → `shake butter`
+(EPIC files "swirl" there); cheesepimiento's extra cheese goes to the bowl (step 4), not the cup.
+
+## 2026-10-29 — removing an ingredient deletes its steps from the graph
+
+Ana (fatty 0) still microwaved an empty mug: omits were per token, drawn independently (French toast
+could drop `pour butter` and keep `roll butter`). Now one draw per (knob, ingredient) removes every
+token naming it, and deletes steps that existed only for it (`removals.yaml`: 2 `acts_on`, 3 `keep`)
+before ordering, on its own rng stream. P(all butter gone) is now p, not p² for two butter tokens.
+
+## 2026-10-29 — a recipe's `put` names what it places; microwaving is `insert`
+
+`put plate` / `put bowl` read as putting the dish away (EPIC's `put` is also every put-back). EPIC
+itself names the food when plating (237 of 251 "onto plate") and files "put bowl in microwave" as
+`insert` (18 of 21): 12 tokens in 7 recipes changed to match; French toast step 5 now pours, then
+inserts; cheesepimiento's cup is in use until step 4 (it was washed with the melted cheese in it).
+
+## 2026-10-29 — additions go in before the mix; pancakes' salt in the blender, one `put plate`
+
+Rollout read: 9 inserts in 6 recipes landed after their step's `mix`, and pancakes' salt went in
+the pan after the batter. `place_inserts` puts an addition before its step's first `mix`; pancakes'
+inserts → blender steps 9 / 12, zoodles' salt → step 10 (was the empty hot pan). Double puts gone:
+pancakes step 4's `put plate`, buttercorncup step 10's `put bowl` (step 9's `put corn` does it).
+
+## 2026-10-27 — durations: actions capped, written timers, narrower draws
+
+A lone token took its whole CC4D step (`add cinnamon` 63 s, `put courgette` 217 s median). Now an
+action lasts ≤ 4 × EPIC (`active_unit_cap`; 25th pct of CC4D/EPIC on action-only steps), a step's
+written time sets its wait (3 min → 164–189 s, no `slow`), `sigma_scale` 0.5 → 0.4 (CC4D within-person
+step log-sd 0.36). Action 5–95% spread 4.4× → 3.3×; session at θ .5 1.24–1.57× (was 1.65–1.91×).
+Sessions shrink (zoodles 969 → 426 s): synthetic detection numbers above predate this generator.
+
+## 2026-10-27 — logistics: explicit vessels, consumed items, rollout review of all 8 recipes
+
+3 people × 8 recipes read by eye (`rollout.py`): `wash pan` before the garlic went in, the bowl
+fetched after the corn was in it, `put noodle` / `put banana`, a mug washed with the egg in it.
+Fixed with `vessels.yaml` (vessel per step; `serves_in` never washed), `CONSUMED` / `PREPARED` /
+`UNFETCHED`, `pour banana` → `pour mixture`. Extending a vessel to its phase's end was tried and
+dropped (first use stayed wrong). Still open: microwave verbs, `put courgette` (`put plate` twice: fixed 2026-10-29).
+
 ## 2026-10-21 — the session-time generator, live, under metric H (delay 2)
 
 4 persons, stage 4b, F1 / healthy FPR at 10 / 30 / 250 sessions, H. Live, person only 0.360 /

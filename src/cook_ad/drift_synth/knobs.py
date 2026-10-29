@@ -10,6 +10,7 @@ from cook_ad.drift_synth.graphs import linear_extension_counter, parents
 
 KNOBS = ("sour", "sweet", "salty", "fatty", "mise_en_place", "tidy", "slow", "fine_motor")
 FLAVOUR = ("sour", "sweet", "salty", "fatty")
+MIX_VERBS = ("mix",)
 INSERT_KINDS, REMOVE_KINDS = ("insert",), ("substitute", "omit")
 
 
@@ -41,6 +42,34 @@ def variant_prob(knob, kind, theta, knobs, affinity=None):
     return 0.0
 
 
+def pick_removals(expansions, theta, knobs, rng, keep=()):
+    """The session's removed ingredients, decided once per (knob, ingredient) an omit variant
+    names, with P = variant_prob(omit): a less-fat cook leaves out all the butter or none of it.
+    `keep`: ingredients the dish cannot lose. -> {noun: knob}. One draw per pair, always."""
+    from cook_ad.drift_synth.graphs import _id_key
+    pairs = sorted({(v.knob, expansions[s].tokens[j][1]) for s in sorted(expansions, key=_id_key)
+                    for v in expansions[s].variants if v.kind == "omit" for j in v.replaces or ()})
+    out = {}
+    for knob, noun in pairs:
+        if rng.random() < variant_prob(knob, "omit", theta, knobs) and noun not in keep:
+            out.setdefault(noun, knob)
+    return out
+
+
+def removed_steps(expansions, removed, tags, acts_on=None):
+    """Steps whose whole purpose was a removed ingredient: everything they act on (acts_on[step],
+    else the ingredient nouns of their tokens, containers aside) is in `removed`. -> {step: knob}."""
+    def ingredient(n):
+        t = tags["nouns"].get(n, ())
+        return "ingredient" in t and not {"container", "tool"} & set(t)
+    out = {}
+    for s, exp in expansions.items():
+        on = set((acts_on or {}).get(s) or {n for _, n in exp.tokens if ingredient(n)})
+        if on and on <= set(removed):
+            out[s] = removed[min(on)]
+    return out
+
+
 def pick_inserts(expansions, theta, knobs, rng, affinity=None):
     """The session's flavour additions, decided once per recipe: for each flavour knob, with
     P = variant_prob(insert) the dish gets that flavour added, at ONE of its insert sites picked
@@ -62,13 +91,20 @@ def pick_inserts(expansions, theta, knobs, rng, affinity=None):
     return chosen
 
 
-def apply_variants(exp, theta, knobs, rng, affinity=None, chosen_inserts=None):
+def place_inserts(core, ins, verb=lambda x: x[1][0]):
+    """A step's actions with its additions in: before the step's first mix (salt, then stir),
+    else after its last action. `verb` reads an item's verb (default: (kind, token, knob) items)."""
+    k = next((j for j, x in enumerate(core) if verb(x) in MIX_VERBS), len(core))
+    return core[:k] + ins + core[k:]
+
+
+def apply_variants(exp, theta, knobs, rng, affinity=None, chosen_inserts=None, removed=None):
     """One step's tokens after its knob variants. Each substitute/omit is drawn independently
     with P = variant_prob. Inserts: the ones in `chosen_inserts` (this step's share of
     pick_inserts); None = each insert drawn on its own with P = variant_prob (affinity: this
     recipe's {knob: affinity}, None = 1). Substitute/omit act on base-token indices; a variant
-    whose indices another applied variant already took is skipped. Inserts go after the step's
-    last token. Returns (tokens, [applied variant indices]).
+    whose indices another applied variant already took is skipped. Inserts go in by
+    place_inserts. `removed` (pick_removals): an omit applies iff its ingredients were removed. Returns (tokens, [applied variant indices]).
     """
     replaced = {}      # base index -> replacement tokens ([] for omit)
     inserts = []
@@ -77,6 +113,9 @@ def apply_variants(exp, theta, knobs, rng, affinity=None, chosen_inserts=None):
         draw = rng.random()  # always drawn, so later draws do not depend on which knobs moved
         if v.kind in INSERT_KINDS and chosen_inserts is not None:
             if i not in chosen_inserts:
+                continue
+        elif v.kind == "omit" and removed is not None:
+            if not all(exp.tokens[j][1] in removed for j in v.replaces or ()):
                 continue
         elif draw >= variant_prob(v.knob, v.kind, theta, knobs, affinity):
             continue
@@ -94,7 +133,7 @@ def apply_variants(exp, theta, knobs, rng, affinity=None, chosen_inserts=None):
     out = []
     for j, tok in enumerate(exp.tokens):
         out.extend(replaced.get(j, [tok]))
-    return out + inserts, applied
+    return place_inserts(out, inserts, lambda t: t[0]), applied
 
 
 def variant_layout(exp, used):
@@ -115,38 +154,38 @@ def variant_layout(exp, used):
     out = []
     for j, tok in enumerate(exp.tokens):
         out += replaced.get(j, [("core", tok, None)])
-    return out + inserts
+    return place_inserts(out, inserts)
 
 
 def space_inserts(blocks):
     """blocks: [[step, [items], [insert items]]] in cooking order (items as variant_layout).
-    An addition next to the same action (more salt right after, or right before, the recipe's own
-    salt) would show as one action twice. It moves to the end of the nearest step, later ones
-    first, where neither neighbour is the same action: a second addition, later in the cook. One
-    with nowhere to go stays (the export then merges the pair)."""
+    An addition next to an action on the same thing (more salt right after the recipe's salt, more
+    oil right after `pour oil`) would read as one action done twice. It moves into the nearest step
+    (place_inserts), earlier ones first, where neither neighbour acts on that noun. One with nowhere
+    to go stays (the export then merges an identical pair)."""
     def seq():
         return [(b, kind, x) for b, (_, core, ins) in enumerate(blocks)
-                for kind, x in [("core", x) for x in core] + [("ins", x) for x in ins]]
+                for kind, x in place_inserts([("core", x) for x in core], [("ins", x) for x in ins],
+                                             lambda y: y[1][1][0])]
 
-    def clash_at_end(tok, t):
+    def clash_in(item, t):
+        blocks[t][2].append(item)                 # where place_inserts would put it
         f = seq()
-        upto = [i for i, (b, _, _) in enumerate(f) if b <= t]
-        before = f[upto[-1]][2][1] if upto else None
-        nxt = upto[-1] + 1 if upto else 0
-        after = f[nxt][2][1] if nxt < len(f) else None
-        return tok in (before, after)
+        i = max(i for i, (bb, kind, x) in enumerate(f) if bb == t and kind == "ins" and x == item)
+        blocks[t][2].pop()
+        return item[1][1] in (f[i - 1][2][1][1] if i > 0 else None, f[i + 1][2][1][1] if i + 1 < len(f) else None)
 
     stuck = 0
     for _ in range(4 * sum(len(ins) for _, _, ins in blocks)):
         f = seq()
         bad = [i for i, (_, kind, x) in enumerate(f) if kind == "ins" and
-               ((i > 0 and f[i - 1][2][1] == x[1]) or (i + 1 < len(f) and f[i + 1][2][1] == x[1]))]
+               ((i > 0 and f[i - 1][2][1][1] == x[1][1]) or (i + 1 < len(f) and f[i + 1][2][1][1] == x[1][1]))]
         if len(bad) <= stuck:
             break
         b, _, item = f[bad[stuck]]
         blocks[b][2].remove(item)
-        cands = list(range(b + 1, len(blocks))) + list(range(b - 1, -1, -1))
-        target = next((t for t in cands if not clash_at_end(item[1], t)), None)
+        cands = list(range(b - 1, -1, -1)) + list(range(b + 1, len(blocks)))
+        target = next((t for t in cands if not clash_in(item, t)), None)
         if target is None:
             blocks[b][2].append(item)
             stuck += 1

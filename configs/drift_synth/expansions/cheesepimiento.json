@@ -65,30 +65,18 @@
     "replaces": [
      0
     ]
-   },
-   {
-    "knob": "fatty",
-    "kind": "insert",
-    "anchor_step": "3",
-    "tokens": [
-     [
-      "add",
-      "cheese"
-     ]
-    ],
-    "replaces": null
    }
   ]
  },
  "4": {
   "tokens": [
    [
-    "mix",
+    "pour",
     "cheese"
    ],
    [
     "mix",
-    "pepper"
+    "bowl"
    ]
   ],
   "variants": [
@@ -124,6 +112,18 @@
      ]
     ],
     "replaces": null
+   },
+   {
+    "knob": "fatty",
+    "kind": "insert",
+    "anchor_step": "4",
+    "tokens": [
+     [
+      "add",
+      "cheese"
+     ]
+    ],
+    "replaces": null
    }
   ]
  },
@@ -134,7 +134,7 @@
     "microwave"
    ],
    [
-    "put",
+    "insert",
     "bowl"
    ],
    [
@@ -142,8 +142,20 @@
     "microwave"
    ],
    [
+    "turn-on",
+    "microwave"
+   ],
+   [
     "wait",
     "microwave"
+   ],
+   [
+    "open",
+    "microwave"
+   ],
+   [
+    "remove",
+    "bowl"
    ]
   ],
   "variants": []
@@ -163,7 +175,7 @@
     "tokens": [
      [
       "add",
-      "vinegar"
+      "lime"
      ]
     ],
     "replaces": null
@@ -192,7 +204,7 @@
   "tokens": [
    [
     "put",
-    "bowl"
+    "pepper"
    ]
   ],
   "variants": []
@@ -200,8 +212,16 @@
  "10": {
   "tokens": [
    [
-    "put",
+    "open",
+    "microwave"
+   ],
+   [
+    "insert",
     "cup"
+   ],
+   [
+    "close",
+    "microwave"
    ],
    [
     "turn-on",
@@ -209,6 +229,14 @@
    ],
    [
     "wait",
+    "microwave"
+   ],
+   [
+    "open",
+    "microwave"
+   ],
+   [
+    "remove",
     "cup"
    ]
   ],

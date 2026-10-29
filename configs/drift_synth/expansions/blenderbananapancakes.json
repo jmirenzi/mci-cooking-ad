@@ -24,8 +24,12 @@
  "3": {
   "tokens": [
    [
-    "put",
+    "move",
     "pan"
+   ],
+   [
+    "turn-on",
+    "hob"
    ],
    [
     "pour",
@@ -43,20 +47,8 @@
     "anchor_step": "3",
     "tokens": [],
     "replaces": [
-     1
+     2
     ]
-   },
-   {
-    "knob": "fatty",
-    "kind": "insert",
-    "anchor_step": "3",
-    "tokens": [
-     [
-      "add",
-      "oil"
-     ]
-    ],
-    "replaces": null
    }
   ]
  },
@@ -65,10 +57,6 @@
    [
     "pour",
     "syrup"
-   ],
-   [
-    "put",
-    "plate"
    ]
   ],
   "variants": [
@@ -111,20 +99,7 @@
     "pancake"
    ]
   ],
-  "variants": [
-   {
-    "knob": "salty",
-    "kind": "insert",
-    "anchor_step": "6",
-    "tokens": [
-     [
-      "add",
-      "salt"
-     ]
-    ],
-    "replaces": null
-   }
-  ]
+  "variants": []
  },
  "7": {
   "tokens": [
@@ -155,13 +130,30 @@
     "egg"
    ]
   ],
-  "variants": []
+  "variants": [
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "9",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
+   }
+  ]
  },
  "10": {
   "tokens": [
    [
     "cook",
     "pancake"
+   ],
+   [
+    "turn-off",
+    "hob"
    ]
   ],
   "variants": []
@@ -170,14 +162,23 @@
   "tokens": [
    [
     "pour",
-    "banana"
+    "mixture"
+   ]
+  ],
+  "variants": []
+ },
+ "12": {
+  "tokens": [
+   [
+    "add",
+    "flour"
    ]
   ],
   "variants": [
    {
     "knob": "sour",
     "kind": "insert",
-    "anchor_step": "11",
+    "anchor_step": "12",
     "tokens": [
      [
       "add",
@@ -189,7 +190,7 @@
    {
     "knob": "sweet",
     "kind": "insert",
-    "anchor_step": "11",
+    "anchor_step": "12",
     "tokens": [
      [
       "add",
@@ -201,7 +202,7 @@
    {
     "knob": "salty",
     "kind": "insert",
-    "anchor_step": "11",
+    "anchor_step": "12",
     "tokens": [
      [
       "add",
@@ -213,7 +214,7 @@
    {
     "knob": "fatty",
     "kind": "insert",
-    "anchor_step": "11",
+    "anchor_step": "12",
     "tokens": [
      [
       "add",
@@ -223,15 +224,6 @@
     "replaces": null
    }
   ]
- },
- "12": {
-  "tokens": [
-   [
-    "add",
-    "flour"
-   ]
-  ],
-  "variants": []
  },
  "13": {
   "tokens": [
@@ -246,7 +238,7 @@
   "tokens": [
    [
     "put",
-    "plate"
+    "pancake"
    ]
   ],
   "variants": []

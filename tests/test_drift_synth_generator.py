@@ -122,7 +122,7 @@ def test_knobs_move_their_own_features(stats_cache):
     base = stats_cache("omelet", theta(), 11)
     up = {k: stats_cache("omelet", theta(**{k: 0.95}), 12) for k in ("sour", "tidy", "slow")}
     assert GT.count_z(base, up["sour"])["squeeze lemon"] > 5
-    assert GT.count_z(base, up["tidy"])["put tomato"] > 5
+    assert GT.count_z(base, up["tidy"])["put oil"] > 5
     assert GT.drift_magnitude(base, up["slow"])["duration_w1_mean"] > 0.3
 
 
@@ -222,16 +222,42 @@ def test_incremental_and_recurring():
 # ---- stage units -----------------------------------------------------------------------------
 
 def test_logistics_take_put_wash():
-    toks = [("cut", "tomato"), ("pour", "oil"), ("mix", "tomato")]
-    tags = {"nouns": {"tomato": ["ingredient"], "oil": ["ingredient"], "pan": ["container"]}}
+    toks = [("cut", "egg"), ("pour", "oil"), ("mix", "egg")]
+    tags = {"nouns": {"egg": ["ingredient"], "oil": ["ingredient"], "pan": ["container"]}}
     out, prov = insert_logistics(toks + [("mix", "pan")], tags, 1.0, 1.0, np.random.default_rng(0))
-    assert out.index(("take", "tomato")) < out.index(("cut", "tomato"))
-    assert out.index(("put", "tomato")) > out.index(("mix", "tomato"))
+    assert out.index(("take", "egg")) < out.index(("cut", "egg"))
+    assert out.index(("put", "egg")) > out.index(("mix", "egg"))
     assert out.index(("wash", "pan")) < out.index(("put", "pan"))
-    assert ("wash", "tomato") not in out and prov.count("core") == 4
+    assert ("wash", "egg") not in out and prov.count("core") == 4
     none, _ = insert_logistics(toks, tags, 0.0, 0.0, np.random.default_rng(0))
     assert [t for t in none if t[0] == "put"] == []
-    assert Counter(none)[("take", "tomato")] == 1
+    assert Counter(none)[("take", "egg")] == 1
+
+
+def test_a_vessel_is_in_use_for_its_steps_not_just_where_a_token_names_it():
+    tags = {"nouns": {"pan": ["container"], "garlic": ["ingredient"], "plate": ["container"]}}
+    toks = [("put", "pan"), ("wait", "pan"), ("add", "garlic"), ("cook", "garlic"), ("put", "plate")]
+    in_use = [["pan"], ["pan"], ["pan"], ["pan"], ["plate"]]
+    rng = lambda: np.random.default_rng(0)
+    named, _ = insert_logistics(toks, tags, 1.0, 1.0, rng())
+    assert named.index(("wash", "pan")) < named.index(("add", "garlic"))     # named uses only
+    held, _ = insert_logistics(toks, tags, 1.0, 1.0, rng(), in_use=in_use)
+    assert held.index(("wash", "pan")) > held.index(("cook", "garlic"))
+    first, _ = insert_logistics([("add", "garlic")], tags, 0.0, 0.0, rng(), in_use=[["pan"]])
+    assert first == [("take", "garlic"), ("take", "pan"), ("add", "garlic")]   # fetched before use
+    served, _ = insert_logistics(toks, tags, 1.0, 1.0, rng(), in_use=in_use, serves_in="pan")
+    assert ("wash", "pan") not in served and ("put", "pan") == toks[0]
+    assert [t for t in served if t == ("put", "pan")] == [("put", "pan")]     # only the recipe's own
+
+
+def test_consumed_and_made_items_are_not_put_back_and_water_is_not_fetched():
+    tags = {"nouns": {"garlic": ["ingredient"], "noodle": ["ingredient"], "water": ["ingredient"],
+                      "salt": ["ingredient"]}}
+    toks = [("peel", "garlic"), ("add", "noodle"), ("add", "water"), ("add", "salt")]
+    out, _ = insert_logistics(toks, tags, 1.0, 1.0, np.random.default_rng(0))
+    assert ("take", "garlic") in out and ("put", "garlic") not in out      # consumed
+    assert not any(n in ("noodle", "water") for v, n in out if v in ("take", "put"))
+    assert ("take", "salt") in out and ("put", "salt") in out              # stock
 
 
 def test_logistic_counts_do_not_depend_on_order():
@@ -246,7 +272,7 @@ def test_flavour_knobs_are_two_sided_around_half():
     exp = toy_assets().expansions["salad"]["3"]   # sour insert (vinegar), fatty omit (oil)
     rng = np.random.default_rng(0)
     full, _ = apply_variants(exp, theta(sour=1.0, fatty=0.0), ASSETS.knobs, rng)
-    assert full == [("mix", "lettuce"), ("pour", "vinegar")]
+    assert full == [("pour", "vinegar"), ("mix", "lettuce")]     # in before the mix
     for th in (theta(), theta(sour=0.0, fatty=1.0)):   # as written: 0.5, or the other two sides
         same, used = apply_variants(exp, th, ASSETS.knobs, rng)
         assert same == exp.tokens and used == []
@@ -422,6 +448,44 @@ def test_an_added_action_adds_its_own_share():
     assert np.mean(sour) == pytest.approx(np.mean(plain), rel=0.1)
 
 
+def test_an_action_is_capped_and_a_written_timer_ignores_slow():
+    """Salad step 2 (`cut lettuce`, EPIC 4 s) at 60 s in CC4D: capped at 3 x EPIC. Step 3 says
+    "for 2 minutes": its last timer-verb token lasts 120 s, at any slow."""
+    from cook_ad.drift_synth.durations import mean_duration
+    from cook_ad.drift_synth.noise import NoiseCfg
+    from cook_ad.drift_synth.sampler import sample_session
+    a = toy_assets()
+    a.step_times = _salad_times(60.0)
+    a.gen = dict(a.gen, durations={"active_unit_cap": 3, "timer_verbs": ["mix"], "timer_sigma": 0.0})
+    timed = RecipeGraph("salad", dict(SALAD.steps, **{"3": Step("3", "Dress-dress for 2 minutes", "serve")}),
+                        SALAD.edges)
+
+    def per_step(th, step, verb):
+        return [sum(e[1] - e[0] for e in sample_session(
+            timed, a.expansions["salad"], th, 1.0, a, NoiseCfg().off(), rng_for(3, i)).meta["clean_events"]
+            if e[4] == step and e[2] == verb) for i in range(300)]
+    assert np.mean(per_step(theta(), "2", "cut")) == pytest.approx(
+        3 * mean_duration(a.durations, ("cut", "lettuce")), rel=0.1)
+    assert per_step(theta(slow=0.0), "3", "mix") == pytest.approx([120.0] * 300)
+    assert per_step(theta(slow=1.0), "3", "mix") == pytest.approx([120.0] * 300)
+
+
+@pytest.mark.parametrize("text, seconds", [
+    ("Microwave-Microwave for 3 minutes, stirring in between", 180),
+    ("Microwave-Microwave the corn for 3 more minutes", 180),
+    ("cook-cook for 20-30 seconds more", 25),
+    ("Cook-Cook for 1 min or until the tops start to bubble", 60),
+    ("Melt-Melt the cheese by microwaving cup for 30 sec. (Check after 30 seconds and microwave "
+     "for 10 seconds more if needed)", 30),
+    ("Cook-Cook garlic until fragrant (about 1 minutes). Be careful not to burn garlic", 60),
+    ("Add-Add 1 large minced garlic cloves to the pan", None),
+    ("Add-1/2 tsp baking powder to a blender", None),
+])
+def test_written_seconds(text, seconds):
+    from cook_ad.drift_synth.durations import written_seconds
+    assert written_seconds(text) == seconds
+
+
 def test_sessions_are_the_only_clock():
     cond = ConditionCfg("c", n_persons=1, n_sessions=12)
     _, sessions, gt = generate_person(0, cond, 0, ASSETS)
@@ -454,6 +518,67 @@ def test_space_inserts_moves_a_same_ingredient_addition_off_its_twin():
     flat = [x[1] for _, core, ins in blocks for x in core + ins]
     assert all(a != b for a, b in zip(flat, flat[1:])), flat
     assert flat.count(salt) == 2 and flat.count(lime) == 2
+
+
+def test_without_steps_joins_parents_to_children():
+    from cook_ad.drift_synth.graphs import without_steps
+    g = without_steps(SALAD, {"2"})
+    assert set(g.steps) == {"1", "3"} and ("1", "3") in g.edges
+    assert all("2" not in e for e in g.edges)
+
+
+def test_a_removed_ingredient_takes_its_steps_and_keep_protects_it():
+    """fatty = 0 removes oil everywhere at once; salad step 2 is annotated as existing for the oil,
+    so it is deleted from the graph; `keep` stops all of it."""
+    from cook_ad.drift_synth.sampler import sample_session
+    a = toy_assets()
+    a.removals = {"salad": {"keep": set(), "acts_on": {"2": ["oil"]}}}
+    for i in range(20):
+        s = sample_session(SALAD, a.expansions["salad"], theta(fatty=0.0), 1.0, a, NoiseCfg().off(), rng_for(4, i))
+        toks = [(e[2], e[3]) for e in s.meta["clean_events"]]
+        assert ("pour", "oil") not in toks and ("cut", "lettuce") not in toks
+        assert s.meta["dropped_steps"] == ["2"] and "2" not in s.meta["order"]
+        assert ["2", "cut", "lettuce", "fatty"] in s.meta["removed"]
+    a.removals = {"salad": {"keep": {"oil"}, "acts_on": {"2": ["oil"]}}}
+    s = sample_session(SALAD, a.expansions["salad"], theta(fatty=0.0), 1.0, a, NoiseCfg().off(), rng_for(4, 0))
+    assert ("pour", "oil") in [(e[2], e[3]) for e in s.meta["clean_events"]] and not s.meta["dropped_steps"]
+
+
+def test_pick_removals_draws_once_per_ingredient():
+    from cook_ad.drift_synth.knobs import pick_removals
+    exps = toy_assets().expansions["omelet"] | {"9": toy_assets().expansions["salad"]["3"]}   # oil twice
+    rng = np.random.default_rng(0)
+    draws = [pick_removals(exps, theta(fatty=0.25), ASSETS.knobs, rng) for _ in range(2000)]
+    assert {frozenset(d) for d in draws} == {frozenset(), frozenset({"oil"})}
+    assert np.mean(["oil" in d for d in draws]) == pytest.approx(0.5, abs=0.04)   # 2 (0.5 - 0.25)
+
+
+def test_with_edges_adds_order_and_refuses_cycles_and_unknown_steps():
+    from cook_ad.drift_synth.graphs import with_edges
+    g = with_edges(SALAD, [(1, 3)])
+    assert ("1", "3") in g.edges and set(SALAD.edges) <= set(g.edges)
+    with pytest.raises(ValueError):
+        with_edges(SALAD, [("3", "1")])          # 1 -> 2 -> 3 already
+    with pytest.raises(ValueError):
+        with_edges(SALAD, [("1", "9")])
+
+
+def test_space_inserts_moves_more_oil_off_a_pour_of_oil_to_an_earlier_step():
+    from cook_ad.drift_synth.knobs import space_inserts
+    blocks = [["1", [("core", ("cut", "tomato"), None)], []],
+              ["2", [("core", ("add", "salt"), None)], []],
+              ["3", [("core", ("pour", "oil"), None)], [("ins", ("add", "oil"), "fatty")]]]
+    space_inserts(blocks)
+    flat = [x[1] for _, core, ins in blocks for x in core + ins]
+    assert flat == [("cut", "tomato"), ("add", "oil"), ("add", "salt"), ("pour", "oil")]
+
+
+def test_an_addition_goes_in_before_its_steps_mix():
+    from cook_ad.drift_synth.knobs import place_inserts
+    core = [("core", ("add", "corn"), None), ("core", ("mix", "corn"), None)]
+    salt = [("ins", ("add", "salt"), "salty")]
+    assert place_inserts(core, salt) == [core[0], salt[0], core[1]]
+    assert place_inserts(core[:1], salt) == [core[0], salt[0]]    # no mix: after the last action
 
 
 def test_back_to_back_identical_actions_are_one_event():

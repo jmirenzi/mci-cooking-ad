@@ -2,8 +2,32 @@
  "1": {
   "tokens": [
    [
+    "open",
+    "microwave"
+   ],
+   [
+    "insert",
+    "cup"
+   ],
+   [
+    "close",
+    "microwave"
+   ],
+   [
+    "turn-on",
+    "microwave"
+   ],
+   [
     "wait",
     "microwave"
+   ],
+   [
+    "open",
+    "microwave"
+   ],
+   [
+    "remove",
+    "cup"
    ]
   ],
   "variants": []
@@ -71,12 +95,20 @@
  "5": {
   "tokens": [
    [
-    "put",
+    "pour",
+    "butter"
+   ],
+   [
+    "open",
+    "microwave"
+   ],
+   [
+    "insert",
     "cup"
    ],
    [
-    "pour",
-    "butter"
+    "close",
+    "microwave"
    ],
    [
     "turn-on",
@@ -85,6 +117,14 @@
    [
     "wait",
     "microwave"
+   ],
+   [
+    "open",
+    "microwave"
+   ],
+   [
+    "remove",
+    "cup"
    ]
   ],
   "variants": [
@@ -94,20 +134,8 @@
     "anchor_step": "5",
     "tokens": [],
     "replaces": [
-     1
+     0
     ]
-   },
-   {
-    "knob": "sour",
-    "kind": "insert",
-    "anchor_step": "5",
-    "tokens": [
-     [
-      "add",
-      "vinegar"
-     ]
-    ],
-    "replaces": null
    },
    {
     "knob": "fatty",
@@ -149,7 +177,7 @@
   "tokens": [
    [
     "put",
-    "plate"
+    "bread"
    ]
   ],
   "variants": []
@@ -157,7 +185,7 @@
  "9": {
   "tokens": [
    [
-    "roll",
+    "shake",
     "butter"
    ]
   ],
@@ -207,8 +235,12 @@
  "12": {
   "tokens": [
    [
-    "mix",
+    "add",
     "egg"
+   ],
+   [
+    "mix",
+    "cup"
    ]
   ],
   "variants": [

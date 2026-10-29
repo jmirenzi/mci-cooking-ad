@@ -30,8 +30,8 @@
  "3": {
   "tokens": [
    [
-    "season",
-    "courgette"
+    "add",
+    "pepper"
    ]
   ],
   "variants": []
@@ -58,7 +58,7 @@
  "5": {
   "tokens": [
    [
-    "put",
+    "move",
     "pan"
    ],
    [
@@ -70,38 +70,17 @@
     "pan"
    ]
   ],
-  "variants": [
-   {
-    "knob": "salty",
-    "kind": "insert",
-    "anchor_step": "5",
-    "tokens": [
-     [
-      "add",
-      "salt"
-     ]
-    ],
-    "replaces": null
-   },
-   {
-    "knob": "fatty",
-    "kind": "insert",
-    "anchor_step": "5",
-    "tokens": [
-     [
-      "add",
-      "oil"
-     ]
-    ],
-    "replaces": null
-   }
-  ]
+  "variants": []
  },
  "6": {
   "tokens": [
    [
     "remove",
     "food"
+   ],
+   [
+    "turn-off",
+    "hob"
    ]
   ],
   "variants": [
@@ -187,6 +166,18 @@
      ]
     ],
     "replaces": null
+   },
+   {
+    "knob": "salty",
+    "kind": "insert",
+    "anchor_step": "10",
+    "tokens": [
+     [
+      "add",
+      "salt"
+     ]
+    ],
+    "replaces": null
    }
   ]
  },
@@ -202,7 +193,7 @@
  "12": {
   "tokens": [
    [
-    "put",
+    "use",
     "courgette"
    ]
   ],

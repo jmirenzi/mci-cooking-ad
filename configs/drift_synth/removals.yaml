@@ -1,0 +1,20 @@
+# Removing an ingredient (a flavour knob below 0.5: less fat, less salt) is decided once per
+# session per ingredient, and acts on the task graph (docs/drift_synth.md, Stage 9): every token
+# naming it goes, and a step whose whole purpose was that ingredient is deleted, its parents
+# joined to its children (graphs.without_steps).
+#
+# acts_on: what a step exists for, where its tokens do not say it. By default a step acts on the
+#   ingredient nouns of its own tokens (not containers: `cup` is tagged both). A step is deleted
+#   when everything it acts on was removed; a noun that is never removed (a pan) keeps it.
+# keep: ingredients the dish is named for; never removed, so a less-fat cook still makes it.
+# By hand (2026-10-29); review alongside vessels.yaml.
+removals:
+  blenderbananapancakes:
+    acts_on: {3: [butter, pan]}          # melting the butter also heats the pan
+  buttercorncup:
+    keep: [butter]
+  cheesepimiento:
+    keep: [cheese]
+    acts_on: {10: [cheese]}              # "melt the cheese by microwaving the cup"
+  tomatomozzarellasalad:
+    keep: [cheese]                       # the mozzarella
