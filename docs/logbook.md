@@ -26,10 +26,10 @@ Loose ends that block nothing. Remove a line and write a dated entry when it is 
 
 ## 2026-10-29 — additions go in before the mix; pancakes' salt in the blender, one `put plate`
 
-Rollout read: Sam's pancakes salted the pan after the batter (inserts anchored on `pour mixture` /
-`cook pancake`), and 9 inserts in 6 recipes landed after their step's `mix`. `place_inserts` puts an
-addition before the step's first `mix`; pancakes' inserts re-anchored to blender steps 9 / 12; step 4
-(syrup on the plate) lost its second `put plate`. Zoodles' salt insert: step 5 (empty hot pan) → 10.
+Rollout read: 9 inserts in 6 recipes landed after their step's `mix`, and pancakes' salt went in
+the pan after the batter. `place_inserts` puts an addition before its step's first `mix`; pancakes'
+inserts → blender steps 9 / 12, zoodles' salt → step 10 (was the empty hot pan). Double puts gone:
+pancakes step 4's `put plate`, buttercorncup step 10's `put bowl` (step 9's `put corn` does it).
 
 ## 2026-10-27 — durations: actions capped, written timers, narrower draws
 
