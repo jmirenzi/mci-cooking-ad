@@ -24,6 +24,13 @@ Loose ends that block nothing. Remove a line and write a dated entry when it is 
 - Zoodles' spiralize is `put courgette`: since the action cap it lasts 4–12 s, not the minutes a
   spiralizer takes. Needs a real verb (and then probably an uncapped step).
 
+## 2026-10-29 — additions go in before the mix; pancakes' salt in the blender, one `put plate`
+
+Rollout read: Sam's pancakes salted the pan after the batter (inserts anchored on `pour mixture` /
+`cook pancake`), and 9 inserts in 6 recipes landed after their step's `mix`. `place_inserts` puts an
+addition before the step's first `mix`; pancakes' inserts re-anchored to blender steps 9 / 12; step 4
+(syrup on the plate) lost its second `put plate`. Still open: zoodles' salt into the empty hot pan.
+
 ## 2026-10-27 — durations: actions capped, written timers, narrower draws
 
 A lone token took its whole CC4D step (`add cinnamon` 63 s, `put courgette` 217 s median). Now an
@@ -38,7 +45,7 @@ Sessions shrink (zoodles 969 → 426 s): synthetic detection numbers above preda
 fetched after the corn was in it, `put noodle` / `put banana`, a mug washed with the egg in it.
 Fixed with `vessels.yaml` (vessel per step; `serves_in` never washed), `CONSUMED` / `PREPARED` /
 `UNFETCHED`, `pour banana` → `pour mixture`. Extending a vessel to its phase's end was tried and
-dropped (first use stayed wrong). Still open: `put plate` twice, microwave verbs, `put courgette`.
+dropped (first use stayed wrong). Still open: microwave verbs, `put courgette` (`put plate` twice: fixed 2026-10-29).
 
 ## 2026-10-21 — the session-time generator, live, under metric H (delay 2)
 

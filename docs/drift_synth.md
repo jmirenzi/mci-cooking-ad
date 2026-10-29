@@ -69,9 +69,12 @@ insert sites picked uniformly (`knobs.pick_inserts`). Below it, each `substitute
 with P = 2(0.5 − θ). At 0.5 the recipe is cooked as written. Affinity
 (`configs/drift_synth/affinity.yaml`: rare 0.1, sometimes 0.4, common 1.0) is the chance that a
 flavour-lover (θ = 1) changes this dish in a session, so lime in hot chocolate stays possible but
-rare. Every addition is `add <ingredient>`, and so is the recipe's own salt. An addition that would land next to
-the same action (more salt straight after the recipe's salt) moves to the end of the nearest step
-where it does not, so it reads as a second addition, never as one action twice.
+rare. Every addition is `add <ingredient>`, and so is the recipe's own salt. Within its step an
+addition goes in before the step's first `mix` (salt, then stir), else after its last action
+(`knobs.place_inserts`); an insert is listed under the step it belongs in, so the pancakes' salt,
+lemon, sugar and butter sit on blender steps (9, 12), not on the pour into the pan. An addition
+that would land next to the same action (more salt straight after the recipe's salt) moves into
+the nearest step where it does not, so it reads as a second addition, never as one action twice.
 
 **No action appears twice in a row** in a clean stream except a `fine_motor` repetition. Besides
 spacing additions: a put-back right after the recipe's own `put` of the same thing is dropped, and
@@ -274,7 +277,7 @@ is why these injectors edit steps.
 | flavour pass and affinity | `drift_synth/expand.py:add_flavour_variants`, `flavour_sites`, `code_omits`, `propose_affinity`; `build_assets.py --stage flavour\|affinity`; `assets.load_affinity` (refuses unreviewed); `configs/drift_synth/affinity.yaml`; `runs/drift_synth/reports/flavour_review.md` |
 | assets bundle, expansion I/O | `drift_synth/assets.py:Assets`, `load_assets`, `save_expansions`, `load_expansions` |
 | person routine (habit) | `drift_synth/sampler.py:make_person` (`habit_orders`), `knobs.sample_topological_order(preferred, habit)`; `generator.yaml: person.habit` |
-| knobs: variants, step order, duration scales, repetition, tidy rates | `drift_synth/knobs.py:variant_prob`, `pick_inserts`, `apply_variants`, `variant_layout`, `space_inserts`, `sample_topological_order`, `slow_multiplier`, `token_multiplier`, `repetition_prob`, `keep_side_of_hinge`, `tidy_rates`; `configs/drift_synth/knobs.yaml` |
+| knobs: variants, step order, duration scales, repetition, tidy rates | `drift_synth/knobs.py:variant_prob`, `pick_inserts`, `apply_variants`, `variant_layout`, `place_inserts`, `space_inserts`, `sample_topological_order`, `slow_multiplier`, `token_multiplier`, `repetition_prob`, `keep_side_of_hinge`, `tidy_rates`; `configs/drift_synth/knobs.yaml` |
 | take / put / wash | `drift_synth/kitchen_state.py:insert_logistics`, `PREPARED`, `CONSUMED`; vessels: `configs/drift_synth/vessels.yaml`, `assets.py:load_vessels`; look at it: `scripts/drift_synth/rollout.py` |
 | durations (EPIC actions, CC4D step totals) | `drift_synth/durations.py:fit_duration_priors`, `fit_from_intervals`, `narrowed`, `sample_duration`, `mean_duration`, `StepTimes`, `fit_step_times`, `sample_step_total`, `written_seconds`, `step_timer`; `sampler.step_units`, `step_timers`; `generator.yaml: durations`; `configs/drift_synth/step_times.json`; `assets.load_step_times` |
 | session noise, speed, recognizer noise | `drift_synth/noise.py:theta_for_session`, `speed_factor`, `recognizer_noise` |

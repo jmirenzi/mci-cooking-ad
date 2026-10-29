@@ -10,6 +10,7 @@ from cook_ad.drift_synth.graphs import linear_extension_counter, parents
 
 KNOBS = ("sour", "sweet", "salty", "fatty", "mise_en_place", "tidy", "slow", "fine_motor")
 FLAVOUR = ("sour", "sweet", "salty", "fatty")
+MIX_VERBS = ("mix",)
 INSERT_KINDS, REMOVE_KINDS = ("insert",), ("substitute", "omit")
 
 
@@ -62,13 +63,20 @@ def pick_inserts(expansions, theta, knobs, rng, affinity=None):
     return chosen
 
 
+def place_inserts(core, ins, verb=lambda x: x[1][0]):
+    """A step's actions with its additions in: before the step's first mix (salt, then stir),
+    else after its last action. `verb` reads an item's verb (default: (kind, token, knob) items)."""
+    k = next((j for j, x in enumerate(core) if verb(x) in MIX_VERBS), len(core))
+    return core[:k] + ins + core[k:]
+
+
 def apply_variants(exp, theta, knobs, rng, affinity=None, chosen_inserts=None):
     """One step's tokens after its knob variants. Each substitute/omit is drawn independently
     with P = variant_prob. Inserts: the ones in `chosen_inserts` (this step's share of
     pick_inserts); None = each insert drawn on its own with P = variant_prob (affinity: this
     recipe's {knob: affinity}, None = 1). Substitute/omit act on base-token indices; a variant
-    whose indices another applied variant already took is skipped. Inserts go after the step's
-    last token. Returns (tokens, [applied variant indices]).
+    whose indices another applied variant already took is skipped. Inserts go in by
+    place_inserts. Returns (tokens, [applied variant indices]).
     """
     replaced = {}      # base index -> replacement tokens ([] for omit)
     inserts = []
@@ -94,7 +102,7 @@ def apply_variants(exp, theta, knobs, rng, affinity=None, chosen_inserts=None):
     out = []
     for j, tok in enumerate(exp.tokens):
         out.extend(replaced.get(j, [tok]))
-    return out + inserts, applied
+    return place_inserts(out, inserts, lambda t: t[0]), applied
 
 
 def variant_layout(exp, used):
@@ -115,26 +123,26 @@ def variant_layout(exp, used):
     out = []
     for j, tok in enumerate(exp.tokens):
         out += replaced.get(j, [("core", tok, None)])
-    return out + inserts
+    return place_inserts(out, inserts)
 
 
 def space_inserts(blocks):
     """blocks: [[step, [items], [insert items]]] in cooking order (items as variant_layout).
     An addition next to the same action (more salt right after, or right before, the recipe's own
-    salt) would show as one action twice. It moves to the end of the nearest step, later ones
-    first, where neither neighbour is the same action: a second addition, later in the cook. One
-    with nowhere to go stays (the export then merges the pair)."""
+    salt) would show as one action twice. It moves into the nearest step (place_inserts), later
+    ones first, where neither neighbour is the same action: a second addition, later in the cook.
+    One with nowhere to go stays (the export then merges the pair)."""
     def seq():
         return [(b, kind, x) for b, (_, core, ins) in enumerate(blocks)
-                for kind, x in [("core", x) for x in core] + [("ins", x) for x in ins]]
+                for kind, x in place_inserts([("core", x) for x in core], [("ins", x) for x in ins],
+                                             lambda y: y[1][1][0])]
 
-    def clash_at_end(tok, t):
+    def clash_in(item, t):
+        blocks[t][2].append(item)                 # where place_inserts would put it
         f = seq()
-        upto = [i for i, (b, _, _) in enumerate(f) if b <= t]
-        before = f[upto[-1]][2][1] if upto else None
-        nxt = upto[-1] + 1 if upto else 0
-        after = f[nxt][2][1] if nxt < len(f) else None
-        return tok in (before, after)
+        i = max(i for i, (bb, kind, x) in enumerate(f) if bb == t and kind == "ins" and x == item)
+        blocks[t][2].pop()
+        return item[1] in (f[i - 1][2][1] if i > 0 else None, f[i + 1][2][1] if i + 1 < len(f) else None)
 
     stuck = 0
     for _ in range(4 * sum(len(ins) for _, _, ins in blocks)):
@@ -146,7 +154,7 @@ def space_inserts(blocks):
         b, _, item = f[bad[stuck]]
         blocks[b][2].remove(item)
         cands = list(range(b + 1, len(blocks))) + list(range(b - 1, -1, -1))
-        target = next((t for t in cands if not clash_at_end(item[1], t)), None)
+        target = next((t for t in cands if not clash_in(item, t)), None)
         if target is None:
             blocks[b][2].append(item)
             stuck += 1

@@ -97,7 +97,7 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
     K.space_inserts(blocks)
     tokens, steps, kinds = [], [], []
     for s, core, ins in blocks:
-        for kind, tok, knob in core + ins:
+        for kind, tok, knob in K.place_inserts(core, ins):
             tokens.append(tok)
             steps.append(s)
             kinds.append("core" if kind == "core" else f"+{knob}")

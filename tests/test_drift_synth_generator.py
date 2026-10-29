@@ -272,7 +272,7 @@ def test_flavour_knobs_are_two_sided_around_half():
     exp = toy_assets().expansions["salad"]["3"]   # sour insert (vinegar), fatty omit (oil)
     rng = np.random.default_rng(0)
     full, _ = apply_variants(exp, theta(sour=1.0, fatty=0.0), ASSETS.knobs, rng)
-    assert full == [("mix", "lettuce"), ("pour", "vinegar")]
+    assert full == [("pour", "vinegar"), ("mix", "lettuce")]     # in before the mix
     for th in (theta(), theta(sour=0.0, fatty=1.0)):   # as written: 0.5, or the other two sides
         same, used = apply_variants(exp, th, ASSETS.knobs, rng)
         assert same == exp.tokens and used == []
@@ -518,6 +518,14 @@ def test_space_inserts_moves_a_same_ingredient_addition_off_its_twin():
     flat = [x[1] for _, core, ins in blocks for x in core + ins]
     assert all(a != b for a, b in zip(flat, flat[1:])), flat
     assert flat.count(salt) == 2 and flat.count(lime) == 2
+
+
+def test_an_addition_goes_in_before_its_steps_mix():
+    from cook_ad.drift_synth.knobs import place_inserts
+    core = [("core", ("add", "corn"), None), ("core", ("mix", "corn"), None)]
+    salt = [("ins", ("add", "salt"), "salty")]
+    assert place_inserts(core, salt) == [core[0], salt[0], core[1]]
+    assert place_inserts(core[:1], salt) == [core[0], salt[0]]    # no mix: after the last action
 
 
 def test_back_to_back_identical_actions_are_one_event():
