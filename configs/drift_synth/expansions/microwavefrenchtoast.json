@@ -71,12 +71,12 @@
  "5": {
   "tokens": [
    [
-    "put",
-    "cup"
-   ],
-   [
     "pour",
     "butter"
+   ],
+   [
+    "insert",
+    "cup"
    ],
    [
     "turn-on",
@@ -94,7 +94,7 @@
     "anchor_step": "5",
     "tokens": [],
     "replaces": [
-     1
+     0
     ]
    },
    {
@@ -149,7 +149,7 @@
   "tokens": [
    [
     "put",
-    "plate"
+    "bread"
    ]
   ],
   "variants": []

@@ -134,7 +134,7 @@
     "microwave"
    ],
    [
-    "put",
+    "insert",
     "bowl"
    ],
    [
@@ -192,7 +192,7 @@
   "tokens": [
    [
     "put",
-    "bowl"
+    "pepper"
    ]
   ],
   "variants": []
@@ -200,7 +200,7 @@
  "10": {
   "tokens": [
    [
-    "put",
+    "insert",
     "cup"
    ],
    [

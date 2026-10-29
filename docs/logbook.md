@@ -24,6 +24,13 @@ Loose ends that block nothing. Remove a line and write a dated entry when it is 
 - Zoodles' spiralize is `put courgette`: since the action cap it lasts 4–12 s, not the minutes a
   spiralizer takes. Needs a real verb (and then probably an uncapped step).
 
+## 2026-10-29 — a recipe's `put` names what it places; microwaving is `insert`
+
+`put plate` / `put bowl` read as putting the dish away (EPIC's `put` is also every put-back). EPIC
+itself names the food when plating (237 of 251 "onto plate") and files "put bowl in microwave" as
+`insert` (18 of 21): 12 tokens in 7 recipes changed to match; French toast step 5 now pours, then
+inserts; cheesepimiento's cup is in use until step 4 (it was washed with the melted cheese in it).
+
 ## 2026-10-29 — additions go in before the mix; pancakes' salt in the blender, one `put plate`
 
 Rollout read: 9 inserts in 6 recipes landed after their step's `mix`, and pancakes' salt went in

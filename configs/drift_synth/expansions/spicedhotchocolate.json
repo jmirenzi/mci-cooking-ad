@@ -2,7 +2,7 @@
  "1": {
   "tokens": [
    [
-    "put",
+    "insert",
     "cup"
    ],
    [
@@ -111,7 +111,7 @@
  "7": {
   "tokens": [
    [
-    "put",
+    "insert",
     "cup"
    ],
    [

@@ -10,8 +10,8 @@ Exceptions:
 - Food made during the session (PREPARED: a pancake, the mixture, the zucchini noodles) is never
   fetched or put away, and water (UNFETCHED) comes from the tap.
 - A CONSUMED item (a garlic clove, the banana, the bread) is fetched but never put back.
-- A put-back right after the recipe's own `put n` (placing the bowl in the microwave, the plate on
-  the table) is dropped, since it would show as the same action twice.
+- A put-back right after the recipe placed the thing (`put n` on the hob, `insert n` into the
+  microwave) is dropped: it is not being put away, and `put n` twice would read as one action.
 - A vessel is in use for every step that happens in it (`in_use`, from vessels.yaml), whether or
   not a token names it: `add garlic` is in the pan. `serves_in` is the vessel the finished dish
   stays in; it is fetched but never washed or put away.
@@ -24,6 +24,7 @@ CONSUMED = ("garlic", "courgette", "banana", "bread", "strawberry", "tomato", "c
             "lemon", "lime", "wrap")
 WASHABLE_TAGS = ("tool", "container")
 DEFAULT_VERBS = {"take": "take", "put": "put", "wash": "wash"}
+PLACING = ("insert",)          # recipe verbs that place a thing somewhere, besides put
 
 
 def insert_logistics(tokens, tags, put_p, wash_p, rng, verbs=DEFAULT_VERBS, in_use=None, serves_in=None):
@@ -45,7 +46,8 @@ def insert_logistics(tokens, tags, put_p, wash_p, rng, verbs=DEFAULT_VERBS, in_u
     for noun in sorted(first, key=first.get):
         washable = any(t in tags["nouns"].get(noun, ()) for t in WASHABLE_TAGS)
         do_wash = rng.random() < wash_p and washable
-        do_put = rng.random() < put_p and (do_wash or tokens[last[noun]] != (verbs["put"], noun))
+        placed = tokens[last[noun]][1] == noun and tokens[last[noun]][0] in (verbs["put"], *PLACING)
+        do_put = rng.random() < put_p and (do_wash or not placed)
         if noun == serves_in:
             do_wash = do_put = False
         elif noun in CONSUMED:

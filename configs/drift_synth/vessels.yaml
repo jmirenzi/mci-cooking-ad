@@ -27,7 +27,7 @@ vessels:
     steps: {1: [cup], 2: [cup], 3: [cup], 5: [cup], 6: [cup], 7: [cup], 8: [cup]}
   cheesepimiento:
     serves_in: bowl
-    steps: {1: [bowl], 2: [bowl], 3: [cup], 4: [bowl], 5: [bowl], 6: [bowl], 7: [bowl],
+    steps: {1: [bowl], 2: [bowl], 3: [cup], 4: [bowl, cup], 5: [bowl], 6: [bowl], 7: [bowl],
             9: [bowl], 10: [cup], 11: [bowl]}
   blenderbananapancakes:
     serves_in: plate
