@@ -14,6 +14,7 @@ import numpy as np
 
 from cook_ad.drift_synth import knobs as K
 from cook_ad.drift_synth.durations import mean_duration, sample_duration, sample_step_total, step_timer
+from cook_ad.drift_synth.graphs import without_steps
 from cook_ad.drift_synth.kitchen_state import insert_logistics
 from cook_ad.drift_synth.noise import NoiseCfg, recognizer_noise, speed_factor, theta_for_session
 from cook_ad.drift_synth.schedule import DriftRegime, MixShift, PersonCfg, recipe_for_session, theta_at
@@ -74,20 +75,30 @@ def step_units(recipe, expansions, times, durations, timers=None):
 
 def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
                    person_id="", index=0, preferred=None, habit=0.0):
-    """The spec's order: step order, variants, logistics, repetition, durations, noise."""
+    """The spec's order: removed ingredients (they shrink the graph), step order, variants,
+    logistics, repetition, durations, noise."""
     kn, tags, gen = assets.knobs, assets.tags, assets.gen
     affinity = (getattr(assets, "affinity", None) or {}).get(recipe.recipe_id)
-    order = K.sample_topological_order(recipe, theta["mise_en_place"], kn["mise_en_place"]["beta"],
-                                       rng, preferred, habit)
+    # A removed ingredient takes every token naming it, and deletes a step that existed only for
+    # it (removals.yaml): no microwaving an empty mug. Ordering then runs on the smaller graph, on
+    # its own stream, so its varying number of draws cannot shift the draws after it.
+    rm = (getattr(assets, "removals", None) or {}).get(recipe.recipe_id) or {}
+    gone = K.pick_removals(expansions, theta, kn, rng, rm.get("keep", ()))
+    drop = K.removed_steps(expansions, gone, tags, rm.get("acts_on"))
+    graph = without_steps(recipe, drop) if drop else recipe
+    pref = [s for s in preferred if s in graph.steps] if preferred else preferred
+    order = K.sample_topological_order(graph, theta["mise_en_place"], kn["mise_en_place"]["beta"],
+                                       rng.spawn(1)[0], pref, habit)
 
-    chosen = K.pick_inserts(expansions, theta, kn, rng, affinity)
-    blocks, applied, skipped, removed = [], {}, [], []
+    chosen = K.pick_inserts({s: e for s, e in expansions.items() if s not in drop}, theta, kn, rng, affinity)
+    blocks, applied, skipped = [], {}, []
+    removed = [[s, v, n, knob] for s, knob in sorted(drop.items()) for v, n in expansions[s].tokens]
     for s in order:
         exp = expansions.get(s)
         if exp is None:
             skipped.append(s)
             continue
-        _, used = K.apply_variants(exp, theta, kn, rng, affinity, chosen.get(s, set()))
+        _, used = K.apply_variants(exp, theta, kn, rng, affinity, chosen.get(s, set()), gone)
         items = K.variant_layout(exp, used)
         removed += [[s, t[0], t[1], knob] for kind, t, knob in items if kind == "removed"]
         blocks.append([s, [x for x in items if x[0] not in ("ins", "removed")],
@@ -182,6 +193,7 @@ def sample_session(recipe, expansions, theta, speed, assets, noise, rng,
         person_id=person_id, index=index, recipe_id=recipe.recipe_id,
         events=events, theta=dict(theta),
         meta={"order": order, "variants_applied": applied, "skipped_steps": skipped,
+              "dropped_steps": sorted(drop),
               "repetitions": len(repeats), "repeats": repeats, "speed": round(speed, 6), "noise": counts,
               "removed": removed, "merged": merged, "kinds": final_kind,
               "clean_events": [[e.t_start, e.t_end, e.verb, e.noun, s] for e, s in zip(clean, final_step)]},

@@ -9,6 +9,7 @@ paths:
   affinity: configs/drift_synth/affinity.yaml
   expansions: configs/drift_synth/expansions
   vessels: configs/drift_synth/vessels.yaml
+  removals: configs/drift_synth/removals.yaml
   vocab: dataset/processed/epic/vocab.json
   epic_annotations: dataset/epic_kitchens/annotations
   durations_cache: dataset/drift_synth/durations_epic.json   # refit if absent

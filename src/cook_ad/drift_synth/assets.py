@@ -22,6 +22,7 @@ class Assets:
     step_times: object = None        # durations.StepTimes (CC4D step totals); None = EPIC time only
     affinity: dict | None = None     # recipe -> {flavour knob: affinity in [0, 1]}; None = all 1
     vessels: dict | None = None      # recipe -> {"serves_in": noun|None, "steps": {step: [noun]}}; None = named nouns only
+    removals: dict | None = None     # recipe -> {"keep": set, "acts_on": {step: [noun]}}; None = no annotation
 
 
 # ---- expansions on disk: configs/drift_synth/expansions/<recipe>.json -------------------------
@@ -81,6 +82,7 @@ def load_assets(gen_path="configs/drift_synth/generator.yaml", require_reviewed_
         step_times=load_step_times(gen, require_step_times),
         affinity=load_affinity(p["affinity"], recipes, require_reviewed_affinity),
         vessels=load_vessels(p.get("vessels"), recipes),
+        removals=load_removals(p.get("removals"), recipes),
     )
 
 
@@ -105,6 +107,16 @@ def load_vessels(path, recipes):
     d = yaml.safe_load(Path(path).read_text())["vessels"]
     return {r: {"serves_in": d[r].get("serves_in"),
                 "steps": {str(s): list(v) for s, v in d[r]["steps"].items()}} for r in recipes}
+
+
+def load_removals(path, recipes):
+    """configs/drift_synth/removals.yaml -> {recipe: {"keep": set, "acts_on": {step: [noun]}}}."""
+    if not path:
+        return None
+    d = yaml.safe_load(Path(path).read_text())["removals"] or {}
+    return {r: {"keep": set((d.get(r) or {}).get("keep", ())),
+                "acts_on": {str(s): list(v) for s, v in ((d.get(r) or {}).get("acts_on") or {}).items()}}
+            for r in recipes}
 
 
 def load_affinity(path, recipes, require_reviewed=True):

@@ -24,6 +24,13 @@ Loose ends that block nothing. Remove a line and write a dated entry when it is 
 - Zoodles' spiralize is `put courgette`: since the action cap it lasts 4–12 s, not the minutes a
   spiralizer takes. Needs a real verb (and then probably an uncapped step).
 
+## 2026-10-29 — removing an ingredient deletes its steps from the graph
+
+Ana (fatty 0) still microwaved an empty mug: omits were per token, drawn independently (French toast
+could drop `pour butter` and keep `roll butter`). Now one draw per (knob, ingredient) removes every
+token naming it, and deletes steps that existed only for it (`removals.yaml`: 2 `acts_on`, 3 `keep`)
+before ordering, on its own rng stream. P(all butter gone) is now p, not p² for two butter tokens.
+
 ## 2026-10-29 — a recipe's `put` names what it places; microwaving is `insert`
 
 `put plate` / `put bowl` read as putting the dish away (EPIC's `put` is also every put-back). EPIC

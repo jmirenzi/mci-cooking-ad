@@ -86,6 +86,18 @@ def parents(graph):
     return out
 
 
+def without_steps(graph, drop):
+    """The graph with the steps in `drop` deleted, each one's parents joined to its children, so
+    every order the rest had to keep is still required."""
+    steps, edges = dict(graph.steps), set(graph.edges)
+    for k in sorted(drop, key=_id_key):
+        par = {p for p, c in edges if c == k}
+        chi = {c for p, c in edges if p == k}
+        edges = {e for e in edges if k not in e} | {(p, c) for p in par for c in chi}
+        del steps[k]
+    return RecipeGraph(graph.recipe_id, steps, sorted(edges, key=lambda e: (_id_key(e[0]), _id_key(e[1]))))
+
+
 def topological_order(graph):
     """One deterministic topological order (Kahn, smallest id first); raises on a cycle."""
     par = parents(graph)

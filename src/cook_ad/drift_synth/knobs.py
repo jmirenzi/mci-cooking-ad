@@ -42,6 +42,34 @@ def variant_prob(knob, kind, theta, knobs, affinity=None):
     return 0.0
 
 
+def pick_removals(expansions, theta, knobs, rng, keep=()):
+    """The session's removed ingredients, decided once per (knob, ingredient) an omit variant
+    names, with P = variant_prob(omit): a less-fat cook leaves out all the butter or none of it.
+    `keep`: ingredients the dish cannot lose. -> {noun: knob}. One draw per pair, always."""
+    from cook_ad.drift_synth.graphs import _id_key
+    pairs = sorted({(v.knob, expansions[s].tokens[j][1]) for s in sorted(expansions, key=_id_key)
+                    for v in expansions[s].variants if v.kind == "omit" for j in v.replaces or ()})
+    out = {}
+    for knob, noun in pairs:
+        if rng.random() < variant_prob(knob, "omit", theta, knobs) and noun not in keep:
+            out.setdefault(noun, knob)
+    return out
+
+
+def removed_steps(expansions, removed, tags, acts_on=None):
+    """Steps whose whole purpose was a removed ingredient: everything they act on (acts_on[step],
+    else the ingredient nouns of their tokens, containers aside) is in `removed`. -> {step: knob}."""
+    def ingredient(n):
+        t = tags["nouns"].get(n, ())
+        return "ingredient" in t and not {"container", "tool"} & set(t)
+    out = {}
+    for s, exp in expansions.items():
+        on = set((acts_on or {}).get(s) or {n for _, n in exp.tokens if ingredient(n)})
+        if on and on <= set(removed):
+            out[s] = removed[min(on)]
+    return out
+
+
 def pick_inserts(expansions, theta, knobs, rng, affinity=None):
     """The session's flavour additions, decided once per recipe: for each flavour knob, with
     P = variant_prob(insert) the dish gets that flavour added, at ONE of its insert sites picked
@@ -70,13 +98,13 @@ def place_inserts(core, ins, verb=lambda x: x[1][0]):
     return core[:k] + ins + core[k:]
 
 
-def apply_variants(exp, theta, knobs, rng, affinity=None, chosen_inserts=None):
+def apply_variants(exp, theta, knobs, rng, affinity=None, chosen_inserts=None, removed=None):
     """One step's tokens after its knob variants. Each substitute/omit is drawn independently
     with P = variant_prob. Inserts: the ones in `chosen_inserts` (this step's share of
     pick_inserts); None = each insert drawn on its own with P = variant_prob (affinity: this
     recipe's {knob: affinity}, None = 1). Substitute/omit act on base-token indices; a variant
     whose indices another applied variant already took is skipped. Inserts go in by
-    place_inserts. Returns (tokens, [applied variant indices]).
+    place_inserts. `removed` (pick_removals): an omit applies iff its ingredients were removed. Returns (tokens, [applied variant indices]).
     """
     replaced = {}      # base index -> replacement tokens ([] for omit)
     inserts = []
@@ -85,6 +113,9 @@ def apply_variants(exp, theta, knobs, rng, affinity=None, chosen_inserts=None):
         draw = rng.random()  # always drawn, so later draws do not depend on which knobs moved
         if v.kind in INSERT_KINDS and chosen_inserts is not None:
             if i not in chosen_inserts:
+                continue
+        elif v.kind == "omit" and removed is not None:
+            if not all(exp.tokens[j][1] in removed for j in v.replaces or ()):
                 continue
         elif draw >= variant_prob(v.knob, v.kind, theta, knobs, affinity):
             continue

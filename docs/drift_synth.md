@@ -40,7 +40,7 @@ session, no days (a day layer, e.g. mealtimes, can go on top later). How it got 
 | 6 knobs | θ ∈ [0, 1] per knob drives variants, step order, logistics and duration scales | seeded |
 | 7 nuisance | per-session θ noise (logit space), AR(1) speed over sessions, one recipe per session from the mix weights, mix shift; recognizer noise (off) | seeded |
 | 8 drift | θ(n) under none / sudden / incremental / gradual / recurring, n = session index | seeded |
-| 9 sample, export | one session = order → variants (additions spaced off their twins, `knobs.space_inserts`) → logistics → back-to-back identical actions merged into one → repetition → durations → noise | seeded |
+| 9 sample, export | one session = removed ingredients (they delete steps from the graph) → order → variants (additions spaced off their twins, `knobs.space_inserts`) → logistics → back-to-back identical actions merged into one → repetition → durations → noise | seeded |
 | 10 ground truth | Monte Carlo observable statistics at θ0 and θ1; JS and W1 per recipe | seeded |
 
 **Knobs.**
@@ -65,8 +65,15 @@ knob's high θ is the impaired end.
 
 **Flavour knobs are two-sided around θ = 0.5** (`knobs.variant_prob`). Above it, the dish gets the
 flavour added with P = 2(θ − 0.5)·affinity[recipe][knob], once per session, at one of its 1–2
-insert sites picked uniformly (`knobs.pick_inserts`). Below it, each `substitute` or `omit` applies
-with P = 2(0.5 − θ). At 0.5 the recipe is cooked as written. Affinity
+insert sites picked uniformly (`knobs.pick_inserts`). Below it, each `substitute` applies with
+P = 2(0.5 − θ), and each ingredient an `omit` names is removed with that P, once per session for
+the whole recipe (`knobs.pick_removals`): every token naming it goes, and a step that existed only
+for it is deleted from the task graph before ordering, its parents joined to its children
+(`knobs.removed_steps`, `graphs.without_steps`). A step exists for the ingredient nouns of its own
+tokens unless `configs/drift_synth/removals.yaml` says otherwise ("melt the cheese by microwaving
+the cup" is for the cheese; melting the butter in the pan also heats the pan), so a less-fat cook
+never microwaves an empty mug. `removals.yaml` also lists the ingredients a dish is named for
+(the salad's mozzarella, buttercorncup's butter, cheesepimiento's cheese), which are never removed. At 0.5 the recipe is cooked as written. Affinity
 (`configs/drift_synth/affinity.yaml`: rare 0.1, sometimes 0.4, common 1.0) is the chance that a
 flavour-lover (θ = 1) changes this dish in a session, so lime in hot chocolate stays possible but
 rare. Every addition is `add <ingredient>`, and so is the recipe's own salt. Within its step an
@@ -83,7 +90,7 @@ two sauces, which are both EPIC `sauce`, in about 57% of sessions). Every durati
 narrowed (log-sd × 0.4, same mean): EPIC's and CC4D's spreads mix many people, and at full width
 one person's `take banana` varied 13× between sessions. At 0.4 a lone action's log-sd is 0.37,
 CC4D's within-person step log-sd (0.36, 201 person × step repeats). Removal ignores
-affinity: an ingredient the recipe has can always be left out.
+affinity: an ingredient the recipe has can always be left out (unless `removals.yaml` keeps it).
 
 **Step order.** A softmax over the steps available at each point is *not* uniform over
 topological orders. Each candidate is therefore weighted by the number of orders that complete it
@@ -269,11 +276,12 @@ is why these injectors edit steps.
 | Concept | Where |
 |---|---|
 | data types (Step, RecipeGraph, Variant, StepExpansion, Event, Session) | `drift_synth/types.py` |
-| task graph loading, validation, topological-order counting | `drift_synth/graphs.py:load_task_graphs`, `validate_graph`, `linear_extension_counter`, `count_linear_extensions` |
+| task graph loading, validation, topological-order counting, step deletion | `drift_synth/graphs.py:load_task_graphs`, `validate_graph`, `without_steps`, `linear_extension_counter`, `count_linear_extensions` |
 | step phases (LLM, cached) | `drift_synth/graphs.py:assign_phase`, `load_phased`; `configs/drift_synth/phases/` |
 | LLM calls with a JSON schema | `drift_synth/llm.py:client_for`, `ask_json`; `llm/client.py:ChatClient(response_format=)` |
 | step expansions (two passes, per-recipe sour sites), validation, EPIC exemplars | `drift_synth/expand.py:expand_step`, `sour_sites`, `validate_expansion`, `ExemplarIndex`, `build_expansions`; `configs/drift_synth/expansions/` |
 | tags | `drift_synth/tagging.py:propose_tags`, `write_tags`, `load_tags` (refuses unreviewed); `configs/drift_synth/tags.yaml` |
+| removed ingredients | `drift_synth/knobs.py:pick_removals`, `removed_steps`; `sampler.sample_session` (`meta.dropped_steps`); `configs/drift_synth/removals.yaml`, `assets.load_removals` |
 | flavour pass and affinity | `drift_synth/expand.py:add_flavour_variants`, `flavour_sites`, `code_omits`, `propose_affinity`; `build_assets.py --stage flavour\|affinity`; `assets.load_affinity` (refuses unreviewed); `configs/drift_synth/affinity.yaml`; `runs/drift_synth/reports/flavour_review.md` |
 | assets bundle, expansion I/O | `drift_synth/assets.py:Assets`, `load_assets`, `save_expansions`, `load_expansions` |
 | person routine (habit) | `drift_synth/sampler.py:make_person` (`habit_orders`), `knobs.sample_topological_order(preferred, habit)`; `generator.yaml: person.habit` |

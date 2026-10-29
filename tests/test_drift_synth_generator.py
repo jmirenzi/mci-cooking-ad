@@ -520,6 +520,39 @@ def test_space_inserts_moves_a_same_ingredient_addition_off_its_twin():
     assert flat.count(salt) == 2 and flat.count(lime) == 2
 
 
+def test_without_steps_joins_parents_to_children():
+    from cook_ad.drift_synth.graphs import without_steps
+    g = without_steps(SALAD, {"2"})
+    assert set(g.steps) == {"1", "3"} and ("1", "3") in g.edges
+    assert all("2" not in e for e in g.edges)
+
+
+def test_a_removed_ingredient_takes_its_steps_and_keep_protects_it():
+    """fatty = 0 removes oil everywhere at once; salad step 2 is annotated as existing for the oil,
+    so it is deleted from the graph; `keep` stops all of it."""
+    from cook_ad.drift_synth.sampler import sample_session
+    a = toy_assets()
+    a.removals = {"salad": {"keep": set(), "acts_on": {"2": ["oil"]}}}
+    for i in range(20):
+        s = sample_session(SALAD, a.expansions["salad"], theta(fatty=0.0), 1.0, a, NoiseCfg().off(), rng_for(4, i))
+        toks = [(e[2], e[3]) for e in s.meta["clean_events"]]
+        assert ("pour", "oil") not in toks and ("cut", "lettuce") not in toks
+        assert s.meta["dropped_steps"] == ["2"] and "2" not in s.meta["order"]
+        assert ["2", "cut", "lettuce", "fatty"] in s.meta["removed"]
+    a.removals = {"salad": {"keep": {"oil"}, "acts_on": {"2": ["oil"]}}}
+    s = sample_session(SALAD, a.expansions["salad"], theta(fatty=0.0), 1.0, a, NoiseCfg().off(), rng_for(4, 0))
+    assert ("pour", "oil") in [(e[2], e[3]) for e in s.meta["clean_events"]] and not s.meta["dropped_steps"]
+
+
+def test_pick_removals_draws_once_per_ingredient():
+    from cook_ad.drift_synth.knobs import pick_removals
+    exps = toy_assets().expansions["omelet"] | {"9": toy_assets().expansions["salad"]["3"]}   # oil twice
+    rng = np.random.default_rng(0)
+    draws = [pick_removals(exps, theta(fatty=0.25), ASSETS.knobs, rng) for _ in range(2000)]
+    assert {frozenset(d) for d in draws} == {frozenset(), frozenset({"oil"})}
+    assert np.mean(["oil" in d for d in draws]) == pytest.approx(0.5, abs=0.04)   # 2 (0.5 - 0.25)
+
+
 def test_an_addition_goes_in_before_its_steps_mix():
     from cook_ad.drift_synth.knobs import place_inserts
     core = [("core", ("add", "corn"), None), ("core", ("mix", "corn"), None)]
