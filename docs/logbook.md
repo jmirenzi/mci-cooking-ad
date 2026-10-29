@@ -27,7 +27,7 @@ Loose ends that block nothing. Remove a line and write a dated entry when it is 
 ## 2026-10-29 — one microwave sequence, no vinegar, no oil on top of butter
 
 Rollout read: 5 different microwave spellings (some opened it, some turned it on, some waited on
-`cup`) → one 7-action sequence everywhere. Sour vinegar (cheesepimiento, French toast) → lemon. Oil
+`cup`) → one 7-action sequence everywhere. Sour vinegar → lime (cheesepimiento), dropped (French toast: no sour site). Oil
 added to a pan already getting butter (pancakes 3, zoodles 5) dropped. `roll butter` → `shake butter`
 (EPIC files "swirl" there); cheesepimiento's extra cheese goes to the bowl (step 4), not the cup.
 

@@ -251,18 +251,6 @@
      ]
     ],
     "replaces": null
-   },
-   {
-    "knob": "sour",
-    "kind": "insert",
-    "anchor_step": "12",
-    "tokens": [
-     [
-      "add",
-      "lemon"
-     ]
-    ],
-    "replaces": null
    }
   ]
  }
