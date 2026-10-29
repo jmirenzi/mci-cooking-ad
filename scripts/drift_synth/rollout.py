@@ -10,7 +10,8 @@ actions capped, written timers), as in rollout_examples.py.
         --person "Lee: slow=0.8 fine_motor=0.45"
 
 Knobs: sour sweet salty fatty mise_en_place tidy slow fine_motor. `--person` repeats; a bare vector
-with no `Name:` is called P1, P2, ... `--list` prints the recipes.
+with no `Name:` is called P1, P2, ... `--list` prints the recipes. A tidy put-back prints as
+`return X`; in the data it is EPIC's `put X` (EPIC has no separate verb for it).
 """
 import argparse
 import os
@@ -68,7 +69,8 @@ def main():
             print("left out: " + ", ".join(gone))
         for (t0, t1, verb, noun, _), kind in zip(ev, kinds):
             tag = "" if kind == "core" else "  [logistics]" if kind == "logistics" else f"  [{kind}]"
-            print(f"  {clock(t0)}-{clock(t1)}  {t1 - t0:4.0f}s  {verb} {noun}{tag}")
+            shown = "return" if kind == "logistics" and verb == "put" else verb
+            print(f"  {clock(t0)}-{clock(t1)}  {t1 - t0:4.0f}s  {shown} {noun}{tag}")
 
 
 if __name__ == "__main__":

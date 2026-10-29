@@ -45,7 +45,8 @@ def render(session):
         if step is not None and step not in shown:
             parts += gone.get(step, [])
             shown.add(step)
-        txt = f"{verb} {noun} ({t1 - t0:.0f}s)"
+        shown = "return" if kind == "logistics" and verb == "put" else verb   # EPIC: put
+        txt = f"{shown} {noun} ({t1 - t0:.0f}s)"
         if kind == "logistics":
             parts.append(f"*{txt}*")
         elif kind == "core":
@@ -72,7 +73,7 @@ def main():
     noise = NoiseCfg().off()
     lines = ["# Example rollouts: 3 people × every recipe", "",
              "Clean events (no recognizer or session noise), CC4D step totals. *Italics* = "
-             "take/put/wash logistics; **bold (+knob)** = a flavour addition; ~~struck (−knob)~~ = "
+             "take/return/wash logistics (`return` is EPIC `put`); **bold (+knob)** = a flavour addition; ~~struck (−knob)~~ = "
              "a removed ingredient. Seconds in brackets.", ""]
     lines += [f"- **{k}** — {who}: " + ", ".join(f"{n} {v:g}" for n, v in th.items())
               for k, (who, th) in PEOPLE.items()]
