@@ -70,20 +70,7 @@
     "pan"
    ]
   ],
-  "variants": [
-   {
-    "knob": "fatty",
-    "kind": "insert",
-    "anchor_step": "5",
-    "tokens": [
-     [
-      "add",
-      "oil"
-     ]
-    ],
-    "replaces": null
-   }
-  ]
+  "variants": []
  },
  "6": {
   "tokens": [

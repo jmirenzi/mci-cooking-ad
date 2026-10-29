@@ -2,8 +2,32 @@
  "1": {
   "tokens": [
    [
+    "open",
+    "microwave"
+   ],
+   [
+    "insert",
+    "cup"
+   ],
+   [
+    "close",
+    "microwave"
+   ],
+   [
+    "turn-on",
+    "microwave"
+   ],
+   [
     "wait",
     "microwave"
+   ],
+   [
+    "open",
+    "microwave"
+   ],
+   [
+    "remove",
+    "cup"
    ]
   ],
   "variants": []
@@ -75,8 +99,16 @@
     "butter"
    ],
    [
+    "open",
+    "microwave"
+   ],
+   [
     "insert",
     "cup"
+   ],
+   [
+    "close",
+    "microwave"
    ],
    [
     "turn-on",
@@ -85,6 +117,14 @@
    [
     "wait",
     "microwave"
+   ],
+   [
+    "open",
+    "microwave"
+   ],
+   [
+    "remove",
+    "cup"
    ]
   ],
   "variants": [
@@ -96,18 +136,6 @@
     "replaces": [
      0
     ]
-   },
-   {
-    "knob": "sour",
-    "kind": "insert",
-    "anchor_step": "5",
-    "tokens": [
-     [
-      "add",
-      "vinegar"
-     ]
-    ],
-    "replaces": null
    },
    {
     "knob": "fatty",
@@ -157,7 +185,7 @@
  "9": {
   "tokens": [
    [
-    "roll",
+    "shake",
     "butter"
    ]
   ],
@@ -220,6 +248,18 @@
      [
       "add",
       "salt"
+     ]
+    ],
+    "replaces": null
+   },
+   {
+    "knob": "sour",
+    "kind": "insert",
+    "anchor_step": "12",
+    "tokens": [
+     [
+      "add",
+      "lemon"
      ]
     ],
     "replaces": null

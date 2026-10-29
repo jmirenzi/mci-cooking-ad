@@ -11,12 +11,32 @@
  "2": {
   "tokens": [
    [
+    "open",
+    "microwave"
+   ],
+   [
     "insert",
     "bowl"
    ],
    [
+    "close",
+    "microwave"
+   ],
+   [
+    "turn-on",
+    "microwave"
+   ],
+   [
     "wait",
     "microwave"
+   ],
+   [
+    "open",
+    "microwave"
+   ],
+   [
+    "remove",
+    "bowl"
    ]
   ],
   "variants": []

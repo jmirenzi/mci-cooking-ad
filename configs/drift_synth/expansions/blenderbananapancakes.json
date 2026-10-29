@@ -45,18 +45,6 @@
     "replaces": [
      1
     ]
-   },
-   {
-    "knob": "fatty",
-    "kind": "insert",
-    "anchor_step": "3",
-    "tokens": [
-     [
-      "add",
-      "oil"
-     ]
-    ],
-    "replaces": null
    }
   ]
  },
